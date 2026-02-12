@@ -114,8 +114,8 @@ contract L2Proxy {
         }
     }
 
-    /// @notice Allows the proxy to receive ETH
-    receive() external payable {}
+    // NOTE: No receive() function - all calls (including plain ETH transfers) go to fallback()
+    // This ensures the bridging logic is always triggered.
 
     /// @notice Executes a call on behalf of another authorized proxy
     /// @dev Only callable by the Rollups contract or other authorized proxies
