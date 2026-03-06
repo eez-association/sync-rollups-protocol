@@ -4,13 +4,13 @@ pragma solidity ^0.8.24;
 import {IZKVerifier} from "./IZKVerifier.sol";
 import {CrossChainProxy} from "./CrossChainProxy.sol";
 
-/// @notice Action type enum
+/// @notice Action types used in the cross-chain execution protocol
 enum ActionType {
-    CALL,
-    RESULT,
-    L2TX,
-    REVERT,
-    REVERT_CONTINUE
+    CALL,             // A cross-chain call to execute on the destination rollup
+    RESULT,           // The result of a CALL (success/failure + return data)
+    L2TX,             // A pre-computed L2 transaction (RLP-encoded, permissionless)
+    REVERT,           // Signals a scope revert — triggers state rollback
+    REVERT_CONTINUE   // Continuation action after a REVERT, looked up from the execution table
 }
 
 /// @notice Represents an action in the state transition
@@ -61,8 +61,13 @@ struct RollupConfig {
 }
 
 /// @title Rollups
-/// @notice Main contract for L1/L2 rollup synchronization
-/// @dev Manages rollup state roots and L2 execution transitions
+/// @notice L1 contract managing rollup state roots, ZK-proven batch posting, and cross-chain call execution
+/// @dev Execution entries are posted via `postBatch()` with a ZK proof. Immediate entries (actionHash == 0)
+///      update state on the spot. Deferred entries are stored in an execution table keyed by action hash.
+///      When a CrossChainProxy forwards a call to `executeCrossChainCall()`, the contract reconstructs the
+///      CALL action, hashes it, looks up a matching execution (whose state deltas match on-chain state),
+///      applies the deltas, and returns the pre-computed next action. Nested calls are resolved via
+///      recursive `newScope()` calls with try/catch for revert handling.
 contract Rollups {
     /// @notice The ZK verifier contract
     IZKVerifier public immutable ZK_VERIFIER;
@@ -237,7 +242,7 @@ contract Rollups {
         for (uint256 i = 0; i < entries.length; i++) {
             if (entries[i].actionHash == bytes32(0)) {
                 // Immediate: apply state deltas now
-                _applyStateDeltas(entries[i].stateDeltas); // udpate state roots
+                _applyStateDeltas(entries[i].stateDeltas);
 
                 // Track ether deltas for conservation check
                 for (uint256 j = 0; j < entries[i].stateDeltas.length; j++) {
@@ -256,6 +261,7 @@ contract Rollups {
         lastStateUpdateBlock = block.number;
     }
 
+    /// @notice Verifies a ZK proof against the computed public inputs hash
     function _verifyProof(bytes calldata proof, bytes32 publicInputsHash) internal view {
         if (!ZK_VERIFIER.verify(proof, publicInputsHash)) {
             revert InvalidProof();
@@ -630,6 +636,7 @@ contract Rollups {
         return _createCrossChainProxyInternal(originalAddress, originalRollupId);
     }
 
+    /// @notice Deploys a CrossChainProxy via CREATE2 and registers it as authorized
     function _createCrossChainProxyInternal(address originalAddress, uint256 originalRollupId) internal returns (address proxy) {
         bytes32 salt = keccak256(abi.encodePacked(block.chainid, originalRollupId, originalAddress));
 
@@ -667,7 +674,7 @@ contract Rollups {
     //  Views
     // ──────────────────────────────────────────────
 
-    /// @notice Computes the CREATE2 address for an CrossChainProxy
+    /// @notice Computes the deterministic CREATE2 address for a CrossChainProxy
     /// @param originalAddress The original address this proxy represents
     /// @param originalRollupId The original rollup ID
     /// @param domain The domain (chain ID) for the address computation

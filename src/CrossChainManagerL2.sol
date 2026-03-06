@@ -26,14 +26,27 @@ contract CrossChainManagerL2 {
     /// @notice Mapping of authorized CrossChainProxy contracts to their identity
     mapping(address proxy => ProxyInfo info) public authorizedProxies;
 
+    /// @notice Error when caller is not the system address
     error Unauthorized();
+
+    /// @notice Error when caller is not a registered CrossChainProxy
     error UnauthorizedProxy();
+
+    /// @notice Error when no matching execution entry exists for the action hash
     error ExecutionNotFound();
+
+    /// @notice Error when a cross-chain call resolves to a failed or non-RESULT action
     error CallExecutionFailed();
+
+    /// @notice Error used to unwind scope during revert handling, carrying the continuation action
+    /// @param nextAction The ABI-encoded continuation action to resume with after the revert
     error ScopeReverted(bytes nextAction);
 
+    /// @notice Emitted when a new CrossChainProxy is deployed and registered
     event CrossChainProxyCreated(address indexed proxy, address indexed originalAddress, uint256 indexed originalRollupId);
 
+    /// @param _rollupId The rollup ID this L2 instance belongs to
+    /// @param _systemAddress The privileged address allowed to load execution tables and call executeRemoteCall
     constructor(uint256 _rollupId, address _systemAddress) {
         ROLLUP_ID = _rollupId;
         SYSTEM_ADDRESS = _systemAddress;
@@ -132,6 +145,13 @@ contract CrossChainManagerL2 {
     //  Scope navigation
     // ──────────────────────────────────────────────
 
+    /// @notice Recursively navigates the scope tree to execute nested cross-chain calls
+    /// @dev Called via `this.newScope()` (external self-call) so that try/catch can isolate reverts
+    ///      per scope level. Each scope level processes CALL actions at its depth, delegates deeper
+    ///      scopes to recursive calls, and bubbles up REVERT actions via ScopeReverted.
+    /// @param scope The current scope level (e.g., [0] means first child of root)
+    /// @param action The action to start processing at this scope level
+    /// @return nextAction The resulting action after scope processing (RESULT, or a CALL/REVERT for a parent scope)
     function newScope(
         uint256[] memory scope,
         Action memory action
@@ -145,6 +165,7 @@ contract CrossChainManagerL2 {
         while (true) {
             if (nextAction.actionType == ActionType.CALL) {
                 if (_isChildScope(scope, nextAction.scope)) {
+                    // Target is deeper — recurse into child scope
                     uint256[] memory newScopeArr = _appendToScope(scope, nextAction.scope[scope.length]);
                     try this.newScope(newScopeArr, nextAction) returns (Action memory retAction) {
                         nextAction = retAction;
@@ -152,18 +173,22 @@ contract CrossChainManagerL2 {
                         nextAction = _handleScopeRevert(revertData);
                     }
                 } else if (_scopesMatch(scope, nextAction.scope)) {
+                    // At target scope — execute the call via source proxy
                     (, nextAction) = _processCallAtScope(scope, nextAction);
                 } else {
+                    // Action belongs to a parent/sibling scope — return to caller
                     break;
                 }
             } else if (nextAction.actionType == ActionType.REVERT) {
                 if (_scopesMatch(scope, nextAction.scope)) {
+                    // Revert at this scope — look up continuation and bubble up via ScopeReverted
                     Action memory continuation = _getRevertContinuation(nextAction.rollupId);
                     revert ScopeReverted(abi.encode(continuation));
                 } else {
                     break;
                 }
             } else {
+                // RESULT or other — return to caller
                 break;
             }
         }
@@ -175,6 +200,10 @@ contract CrossChainManagerL2 {
     //  Proxy creation
     // ──────────────────────────────────────────────
 
+    /// @notice Creates a new CrossChainProxy for an address on another rollup
+    /// @param originalAddress The address this proxy represents on the source rollup
+    /// @param originalRollupId The source rollup ID
+    /// @return proxy The deployed proxy address
     function createCrossChainProxy(address originalAddress, uint256 originalRollupId) external returns (address proxy) {
         return _createProxyInternal(originalAddress, originalRollupId);
     }
@@ -183,6 +212,7 @@ contract CrossChainManagerL2 {
     //  Internal helpers
     // ──────────────────────────────────────────────
 
+    /// @notice Deploys a CrossChainProxy via CREATE2 and registers it as authorized
     function _createProxyInternal(address originalAddress, uint256 originalRollupId) internal returns (address proxy) {
         bytes32 salt = keccak256(abi.encodePacked(block.chainid, originalRollupId, originalAddress));
         proxy = address(new CrossChainProxy{salt: salt}(address(this), originalAddress, originalRollupId));
@@ -202,6 +232,9 @@ contract CrossChainManagerL2 {
         return nextAction;
     }
 
+    /// @notice If nextAction is a CALL, enters scope navigation; then asserts a successful RESULT
+    /// @param nextAction The action to resolve (CALL triggers scope navigation, RESULT returns directly)
+    /// @return result The return data from the resolved execution
     function _resolveScopes(Action memory nextAction) internal returns (bytes memory result) {
         if (nextAction.actionType == ActionType.CALL) {
             uint256[] memory emptyScope = new uint256[](0);
@@ -218,6 +251,13 @@ contract CrossChainManagerL2 {
         return nextAction.data;
     }
 
+    /// @notice Executes a CALL action at the current scope by forwarding through the source proxy
+    /// @dev Auto-creates the source proxy if it doesn't exist yet. After execution, builds a
+    ///      RESULT action from the call outcome and consumes the next execution entry.
+    /// @param currentScope The current scope level
+    /// @param action The CALL action to execute
+    /// @return scope The scope after processing (always currentScope)
+    /// @return nextAction The next action from the execution table
     function _processCallAtScope(
         uint256[] memory currentScope,
         Action memory action
@@ -254,6 +294,9 @@ contract CrossChainManagerL2 {
         return (currentScope, nextAction);
     }
 
+    /// @notice Decodes a ScopeReverted error's payload back into a continuation Action
+    /// @param revertData The raw revert bytes (includes the 4-byte selector)
+    /// @return nextAction The decoded continuation action
     function _handleScopeRevert(bytes memory revertData) internal pure returns (Action memory nextAction) {
         require(revertData.length > 4, "Invalid revert data");
         bytes memory withoutSelector = new bytes(revertData.length - 4);
@@ -264,6 +307,9 @@ contract CrossChainManagerL2 {
         return abi.decode(actionBytes, (Action));
     }
 
+    /// @notice Builds a REVERT_CONTINUE action and looks up the next action from the execution table
+    /// @param rollupId The rollup ID that reverted
+    /// @return nextAction The continuation action after the revert
     function _getRevertContinuation(uint256 rollupId) internal returns (Action memory nextAction) {
         Action memory revertContinueAction = Action({
             actionType: ActionType.REVERT_CONTINUE,
@@ -281,6 +327,7 @@ contract CrossChainManagerL2 {
         return _consumeExecution(revertHash);
     }
 
+    /// @notice Appends an element to a scope array, creating a new child scope level
     function _appendToScope(uint256[] memory scope, uint256 element) internal pure returns (uint256[] memory) {
         uint256[] memory result = new uint256[](scope.length + 1);
         for (uint256 i = 0; i < scope.length; i++) {
@@ -290,6 +337,7 @@ contract CrossChainManagerL2 {
         return result;
     }
 
+    /// @notice Returns true if two scope arrays are identical
     function _scopesMatch(uint256[] memory a, uint256[] memory b) internal pure returns (bool) {
         if (a.length != b.length) return false;
         for (uint256 i = 0; i < a.length; i++) {
@@ -298,6 +346,7 @@ contract CrossChainManagerL2 {
         return true;
     }
 
+    /// @notice Returns true if targetScope is strictly deeper than currentScope (shares its prefix)
     function _isChildScope(uint256[] memory currentScope, uint256[] memory targetScope) internal pure returns (bool) {
         if (targetScope.length <= currentScope.length) return false;
         for (uint256 i = 0; i < currentScope.length; i++) {
@@ -310,6 +359,11 @@ contract CrossChainManagerL2 {
     //  Views
     // ──────────────────────────────────────────────
 
+    /// @notice Computes the deterministic CREATE2 address for a CrossChainProxy
+    /// @param originalAddress The address this proxy represents on the source rollup
+    /// @param originalRollupId The source rollup ID
+    /// @param domain The domain (chain ID) used in the CREATE2 salt
+    /// @return The computed proxy address
     function computeCrossChainProxyAddress(
         address originalAddress,
         uint256 originalRollupId,
