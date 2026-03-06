@@ -105,6 +105,9 @@ contract Rollups {
     /// @notice Emitted when an L2 execution is performed
     event L2ExecutionPerformed(uint256 indexed rollupId, bytes32 currentState, bytes32 newState);
 
+    /// @notice Emitted when an execution is found and applied
+    event ExecutionConsumed(bytes32 indexed actionHash, Action action);
+
     /// @notice Error when proof verification fails
     error InvalidProof();
 
@@ -305,7 +308,7 @@ contract Rollups {
         });
 
         bytes32 actionHash = keccak256(abi.encode(action));
-        Action memory nextAction = _findAndApplyExecution(actionHash);
+        Action memory nextAction = _findAndApplyExecution(actionHash, action);
 
         return _resolveScopes(nextAction);
     }
@@ -333,7 +336,7 @@ contract Rollups {
         });
 
         bytes32 currentActionHash = keccak256(abi.encode(action));
-        Action memory nextAction = _findAndApplyExecution(currentActionHash);
+        Action memory nextAction = _findAndApplyExecution(currentActionHash, action);
 
         return _resolveScopes(nextAction);
     }
@@ -445,7 +448,7 @@ contract Rollups {
 
         // Get next action from execution lookup
         bytes32 resultHash = keccak256(abi.encode(resultAction));
-        nextAction = _findAndApplyExecution(resultHash);
+        nextAction = _findAndApplyExecution(resultHash, resultAction);
 
         return (currentScope, nextAction);
     }
@@ -468,7 +471,7 @@ contract Rollups {
     /// @dev Matches by checking that all deltas' currentState match their rollup's on-chain stateRoot
     /// @param actionHash The action hash to look up
     /// @return nextAction The next action to perform
-    function _findAndApplyExecution(bytes32 actionHash) internal returns (Action memory nextAction) {
+    function _findAndApplyExecution(bytes32 actionHash, Action memory action) internal returns (Action memory nextAction) {
         ExecutionEntry[] storage executions = _executions[actionHash];
 
         // Search from the last entry backwards to find matching execution
@@ -499,6 +502,7 @@ contract Rollups {
                 }
                 executions.pop();
 
+                emit ExecutionConsumed(actionHash, action);
                 return nextAction;
             }
         }
@@ -586,7 +590,7 @@ contract Rollups {
 
         // Get next action from execution lookup
         bytes32 revertHash = keccak256(abi.encode(revertContinueAction));
-        return _findAndApplyExecution(revertHash);
+        return _findAndApplyExecution(revertHash, revertContinueAction);
     }
 
     /// @notice Appends an element to a scope array
