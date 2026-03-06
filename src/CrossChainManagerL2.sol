@@ -12,7 +12,7 @@ import {
 /// @title CrossChainManagerL2
 /// @notice L2-side contract for cross-chain execution via pre-computed execution tables
 /// @dev No rollups, no state deltas, no ZK proofs. System address loads execution tables,
-///      which are consumed via proxy calls (executeL2Call) or system executeRemoteCall.
+///      which are consumed via proxy calls (executeCrossChainCall) or system executeRemoteCall.
 contract CrossChainManagerL2 {
     /// @notice The rollup ID this L2 belongs to
     uint256 public immutable ROLLUP_ID;

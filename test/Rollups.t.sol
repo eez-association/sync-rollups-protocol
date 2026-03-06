@@ -199,7 +199,7 @@ contract RollupsTest is Test {
 
         bytes memory callData = abi.encodeCall(TestTarget.setValue, (42));
 
-        // Build the CALL action as executeL2Call would
+        // Build the CALL action as executeCrossChainCall would
         Action memory action = Action({
             actionType: ActionType.CALL,
             rollupId: rollupId,
@@ -293,7 +293,7 @@ contract RollupsTest is Test {
         rollups.setStateByOwner(rollupId, keccak256("alice's state"));
     }
 
-    function test_ExecuteL2Call_Simple() public {
+    function test_ExecuteCrossChainCall_Simple() public {
         uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
 
         address proxyAddr = rollups.createCrossChainProxy(address(target), rollupId);
@@ -303,7 +303,7 @@ contract RollupsTest is Test {
 
         bytes memory callData = abi.encodeCall(TestTarget.setValue, (42));
 
-        // Build the CALL action matching what executeL2Call builds
+        // Build the CALL action matching what executeCrossChainCall builds
         Action memory action = Action({
             actionType: ActionType.CALL,
             rollupId: rollupId,
@@ -335,15 +335,15 @@ contract RollupsTest is Test {
         assertEq(_getRollupState(rollupId), newState);
     }
 
-    function test_ExecuteL2Call_UnauthorizedProxy() public {
+    function test_ExecuteCrossChainCall_UnauthorizedProxy() public {
         rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
 
-        // Call executeL2Call directly (not from a proxy)
+        // Call executeCrossChainCall directly (not from a proxy)
         vm.expectRevert(Rollups.UnauthorizedProxy.selector);
-        rollups.executeL2Call(alice, "");
+        rollups.executeCrossChainCall(alice, "");
     }
 
-    function test_ExecuteL2Call_ExecutionNotFound() public {
+    function test_ExecuteCrossChainCall_ExecutionNotFound() public {
         uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
         address proxyAddr = rollups.createCrossChainProxy(address(target), rollupId);
 

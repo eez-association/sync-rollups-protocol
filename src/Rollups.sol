@@ -271,7 +271,7 @@ contract Rollups {
     /// @param sourceAddress The original caller address (msg.sender as seen by the proxy)
     /// @param callData The original calldata sent to the proxy
     /// @return result The return data from the execution
-    function executeL2Call(address sourceAddress, bytes calldata callData) external payable returns (bytes memory result) {
+    function executeCrossChainCall(address sourceAddress, bytes calldata callData) external payable returns (bytes memory result) {
         ProxyInfo storage proxyInfo = authorizedProxies[msg.sender];
         if (proxyInfo.originalAddress == address(0)) {
             revert UnauthorizedProxy();

@@ -30,7 +30,7 @@ contract CrossChainProxy {
     /// @dev Uses low-level call to bubble both returns and reverts
     fallback() external payable {
         (bool success, bytes memory result) = MANAGER.call{value: msg.value}(
-            abi.encodeWithSignature("executeL2Call(address,bytes)", msg.sender, msg.data)
+            abi.encodeWithSignature("executeCrossChainCall(address,bytes)", msg.sender, msg.data)
         );
 
         assembly {

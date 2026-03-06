@@ -99,7 +99,7 @@ contract CrossChainManagerL2Test is Test {
     }
 
     function test_LoadExecutionTable_StoresEntries() public {
-        // Load an entry, then consume it via executeL2Call to prove it was stored
+        // Load an entry, then consume it via executeCrossChainCall to prove it was stored
         address proxy = manager.createCrossChainProxy(address(target), TEST_ROLLUP_ID);
         bytes memory callData = abi.encodeCall(L2TestTarget.setValue, (42));
 
@@ -210,15 +210,15 @@ contract CrossChainManagerL2Test is Test {
     }
 
     // ──────────────────────────────────────────────
-    //  executeL2Call
+    //  executeCrossChainCall
     // ──────────────────────────────────────────────
 
-    function test_ExecuteL2Call_RevertsUnauthorizedProxy() public {
+    function test_ExecuteCrossChainCall_RevertsUnauthorizedProxy() public {
         vm.expectRevert(CrossChainManagerL2.UnauthorizedProxy.selector);
-        manager.executeL2Call(address(this), "");
+        manager.executeCrossChainCall(address(this), "");
     }
 
-    function test_ExecuteL2Call_RevertsExecutionNotFound() public {
+    function test_ExecuteCrossChainCall_RevertsExecutionNotFound() public {
         address proxy = manager.createCrossChainProxy(address(target), TEST_ROLLUP_ID);
 
         bytes memory callData = abi.encodeCall(L2TestTarget.setValue, (42));
@@ -463,10 +463,10 @@ contract CrossChainManagerL2Test is Test {
     }
 
     // ──────────────────────────────────────────────
-    //  executeL2Call with nested CALL (scope navigation)
+    //  executeCrossChainCall with nested CALL (scope navigation)
     // ──────────────────────────────────────────────
 
-    function test_ExecuteL2Call_WithNestedCall() public {
+    function test_ExecuteCrossChainCall_WithNestedCall() public {
         address proxy = manager.createCrossChainProxy(address(target), TEST_ROLLUP_ID);
         bytes memory callData = abi.encodeCall(L2TestTarget.setValue, (100));
 
