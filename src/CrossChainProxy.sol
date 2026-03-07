@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import {ICrossChainManager} from "./ICrossChainManager.sol";
+
 /// @title CrossChainProxy
 /// @notice Proxy contract for cross-chain addresses, deployed via CREATE2
 /// @dev Stores manager address, original address, and original rollup ID as immutables
@@ -27,10 +29,10 @@ contract CrossChainProxy {
     }
 
     /// @notice Fallback function that forwards all calls to the manager contract
-    /// @dev Uses low-level call to bubble both returns and reverts
+    /// @dev Uses abi.encodeCall for type-safe encoding, low-level call to preserve raw return/revert data
     fallback() external payable {
         (bool success, bytes memory result) = MANAGER.call{value: msg.value}(
-            abi.encodeWithSignature("executeCrossChainCall(address,bytes)", msg.sender, msg.data)
+            abi.encodeCall(ICrossChainManager.executeCrossChainCall, (msg.sender, msg.data))
         );
 
         assembly {

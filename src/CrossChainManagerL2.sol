@@ -2,18 +2,13 @@
 pragma solidity ^0.8.24;
 
 import {CrossChainProxy} from "./CrossChainProxy.sol";
-import {
-    ActionType,
-    Action,
-    ExecutionEntry,
-    ProxyInfo
-} from "./Rollups.sol";
+import {ICrossChainManager, ActionType, Action, ExecutionEntry, ProxyInfo} from "./ICrossChainManager.sol";
 
 /// @title CrossChainManagerL2
 /// @notice L2-side contract for cross-chain execution via pre-computed execution tables
 /// @dev No rollups, no state deltas, no ZK proofs. System address loads execution tables,
 ///      which are consumed via proxy calls (executeCrossChainCall) or system executeRemoteCall.
-contract CrossChainManagerL2 {
+contract CrossChainManagerL2 is ICrossChainManager {
     /// @notice The rollup ID this L2 belongs to
     uint256 public immutable ROLLUP_ID;
 

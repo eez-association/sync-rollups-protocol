@@ -3,54 +3,7 @@ pragma solidity ^0.8.24;
 
 import {IZKVerifier} from "./IZKVerifier.sol";
 import {CrossChainProxy} from "./CrossChainProxy.sol";
-
-/// @notice Action types used in the cross-chain execution protocol
-enum ActionType {
-    CALL,             // A cross-chain call to execute on the destination rollup
-    RESULT,           // The result of a CALL (success/failure + return data)
-    L2TX,             // A pre-computed L2 transaction (RLP-encoded, permissionless)
-    REVERT,           // Signals a scope revert — triggers state rollback
-    REVERT_CONTINUE   // Continuation action after a REVERT, looked up from the execution table
-}
-
-/// @notice Represents an action in the state transition
-/// @dev For CALL: rollupId, destination, value, data (callData), sourceAddress, sourceRollup, and scope are used
-/// @dev For RESULT: failed and data (returnData) are used
-/// @dev For L2TX: rollupId and data (rlpEncodedTx) are used
-struct Action {
-    ActionType actionType;
-    uint256 rollupId;
-    address destination;
-    uint256 value;
-    bytes data;
-    bool failed;
-    address sourceAddress;
-    uint256 sourceRollup;
-    uint256[] scope;
-}
-
-/// @notice Represents a state delta
-struct StateDelta {
-    uint256 rollupId;
-    bytes32 currentState;
-    bytes32 newState;
-    int256 etherDelta;
-}
-
-/// @notice Represents a state transition entry (immediate or deferred)
-/// @dev If actionHash == bytes32(0): applied immediately (pure state commitment)
-/// @dev If actionHash != bytes32(0): stored in execution table for later consumption
-struct ExecutionEntry {
-    StateDelta[] stateDeltas;
-    bytes32 actionHash;
-    Action nextAction;
-}
-
-/// @notice Stores the identity of an authorized CrossChainProxy
-struct ProxyInfo {
-    address originalAddress;
-    uint64 originalRollupId;
-}
+import {ICrossChainManager, ActionType, Action, StateDelta, ExecutionEntry, ProxyInfo} from "./ICrossChainManager.sol";
 
 /// @notice Rollup configuration
 struct RollupConfig {
@@ -68,7 +21,10 @@ struct RollupConfig {
 ///      CALL action, hashes it, looks up a matching execution (whose state deltas match on-chain state),
 ///      applies the deltas, and returns the pre-computed next action. Nested calls are resolved via
 ///      recursive `newScope()` calls with try/catch for revert handling.
-contract Rollups {
+contract Rollups is ICrossChainManager {
+    /// @notice The rollup ID representing L1 mainnet
+    uint256 public constant MAINNET_ROLLUP_ID = 0;
+
     /// @notice The ZK verifier contract
     IZKVerifier public immutable ZK_VERIFIER;
 
@@ -86,6 +42,12 @@ contract Rollups {
 
     /// @notice Last block number when state was modified
     uint256 public lastStateUpdateBlock;
+
+    // Transient storage
+
+    /// @notice Transient ether delta accumulator for tracking ETH flow during execution
+    /// @dev Positive when contract receives ETH, negative when sending. Must net to zero with state deltas.
+    int256 private transient _etherDelta;
 
     /// @notice Emitted when a new rollup is created
     event RollupCreated(uint256 indexed rollupId, address indexed owner, bytes32 verificationKey, bytes32 initialState);
@@ -134,6 +96,9 @@ contract Rollups {
 
     /// @notice Error when revert data from a child scope is too short to decode
     error InvalidRevertData();
+
+    /// @notice Error when the ether delta from state deltas doesn't match actual ETH flow
+    error EtherDeltaMismatch();
 
     /// @notice Error when a scope reverts, carrying the next action to continue with
     /// @param nextAction The ABI-encoded next action to continue with
@@ -218,7 +183,7 @@ contract Rollups {
                 abi.encodePacked(
                     abi.encode(entries[i].stateDeltas),
                     abi.encode(vks),
-                    entries[i].actionHash,
+                    entries[i].actionHash, // TODO ?¿
                     abi.encode(entries[i].nextAction)
                 )
             );
@@ -249,7 +214,7 @@ contract Rollups {
             if (entries[i].actionHash == bytes32(0)) {
                 // Immediate: apply state deltas now
                 _applyStateDeltas(entries[i].stateDeltas);
-
+                //TODO check state roots are checked evyerhwer, maybe create another struct to sned just l2 txs
                 // Track ether deltas for conservation check
                 for (uint256 j = 0; j < entries[i].stateDeltas.length; j++) {
                     totalEtherDelta += entries[i].stateDeltas[j].etherDelta;
@@ -292,7 +257,10 @@ contract Rollups {
         uint256 proxyRollupId = proxyInfo.originalRollupId;
         address proxyOriginalAddr = proxyInfo.originalAddress;
 
-        // Deposits should be taken in account inside the state transition?
+        // Track ETH received
+        if (msg.value > 0) {
+            _etherDelta += int256(msg.value);
+        }
 
         // Build the CALL action
         Action memory action = Action({
@@ -303,14 +271,14 @@ contract Rollups {
             data: callData,
             failed: false,
             sourceAddress: sourceAddress,
-            sourceRollup: 0, // MAINNET_ROLLUP_ID
+            sourceRollup: MAINNET_ROLLUP_ID,
             scope: new uint256[](0)
         });
 
         bytes32 actionHash = keccak256(abi.encode(action));
         Action memory nextAction = _findAndApplyExecution(actionHash, action);
 
-        return _resolveScopes(nextAction);
+       return _resolveScopes(nextAction);
     }
 
     // ──────────────────────────────────────────────
@@ -327,11 +295,11 @@ contract Rollups {
             actionType: ActionType.L2TX,
             rollupId: rollupId,
             destination: address(0),
-            value: 0,
+            value: 0, // TODO fields not used
             data: rlpEncodedTx,
             failed: false,
             sourceAddress: address(0),
-            sourceRollup: 0,
+            sourceRollup: MAINNET_ROLLUP_ID,
             scope: new uint256[](0)
         });
 
@@ -421,17 +389,15 @@ contract Rollups {
             _createCrossChainProxyInternal(action.sourceAddress, action.sourceRollup);
         }
 
-        if (action.value > 0) {
-            RollupConfig storage config = rollups[action.sourceRollup];
-            if (config.etherBalance < action.value) {
-                revert InsufficientRollupBalance();
-            }
-            config.etherBalance -= action.value;
-        }
 
         (bool success, bytes memory returnData) = address(sourceProxy).call{value: action.value}(
             abi.encodeCall(CrossChainProxy.executeOnBehalf, (action.destination, action.data))
         );
+
+        // Track ETH sent out from this contract (state deltas handle rollup balance changes)
+        if (action.value > 0 && success) {
+            _etherDelta -= int256(action.value);
+        }
 
         // Build RESULT action
         Action memory resultAction = Action({
@@ -451,16 +417,6 @@ contract Rollups {
         nextAction = _findAndApplyExecution(resultHash, resultAction);
 
         return (currentScope, nextAction);
-    }
-
-    // ──────────────────────────────────────────────
-    //  Deposits
-    // ──────────────────────────────────────────────
-
-    /// @notice Deposits ether to a rollup's balance
-    /// @param rollupId The rollup ID to deposit to
-    function depositEther(uint256 rollupId) external payable {
-        rollups[rollupId].etherBalance += msg.value;
     }
 
     // ──────────────────────────────────────────────
@@ -491,6 +447,19 @@ contract Rollups {
             if (allMatch) {
                 // Found matching execution - apply all state deltas and ether deltas
                 _applyStateDeltas(execution.stateDeltas);
+                
+                // TODO this works but might be cleaner so check both action and next action and proess both value deltas
+                // The problem wiht this is that prover should be aware to substract ether in the delta in the result not in the call (which coudl make sense)
+                int256 executionEtherDelta;
+                // Track ether deltas from state transitions
+                for (uint256 j = 0; j < execution.stateDeltas.length; j++) {
+                    executionEtherDelta += execution.stateDeltas[j].etherDelta;
+                }
+                // Verify ether accounting: state delta ether changes must match actual ETH flow
+                if (executionEtherDelta != _etherDelta) {
+                    revert EtherDeltaMismatch();
+                }
+                _etherDelta = 0;
 
                 // Copy nextAction to memory before removing from storage
                 nextAction = execution.nextAction;
