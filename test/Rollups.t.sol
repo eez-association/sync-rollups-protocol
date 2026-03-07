@@ -134,7 +134,7 @@ contract RollupsTest is Test {
             rollupId: rollupId,
             destination: address(0),
             value: 0,
-            data: abi.encode(bytes("")), // ABI-encoded return from executeOnBehalf
+            data: "", // raw return from executeOnBehalf (void = empty)
             failed: false,
             sourceAddress: address(0),
             sourceRollup: 0,
@@ -685,7 +685,7 @@ contract RollupsTest is Test {
 
         // The RESULT that _processCallAtScope will build after calling executeOnBehalf
         // executeOnBehalf calls target.setValue(42) which returns nothing
-        // returnData from .call() = abi.encode(bytes(""))
+        // returnData from .call() = "" (raw empty bytes)
         Action memory expectedResult = _buildResultAction(rollupId);
         bytes32 resultHash = keccak256(abi.encode(expectedResult));
 

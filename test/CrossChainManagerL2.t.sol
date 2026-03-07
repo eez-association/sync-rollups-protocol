@@ -471,7 +471,7 @@ contract CrossChainManagerL2Test is Test {
         uint256 sourceRollup = 1;
         bytes memory callData = abi.encodeCall(L2TestTarget.setValue, (77));
         uint256[] memory scope = new uint256[](0);
-        bytes memory expectedReturnData = abi.encode(bytes(""));
+        bytes memory expectedReturnData = "";
         Action memory resultFromCall = Action({
             actionType: ActionType.RESULT,
             rollupId: TEST_ROLLUP_ID,
@@ -494,7 +494,7 @@ contract CrossChainManagerL2Test is Test {
         uint256 sourceRollup = 1;
         bytes memory callData = abi.encodeCall(L2TestTarget.setValue, (55));
         uint256[] memory scope = new uint256[](0);
-        bytes memory expectedReturnData = abi.encode(bytes(""));
+        bytes memory expectedReturnData = "";
         Action memory resultFromCall = Action({
             actionType: ActionType.RESULT,
             rollupId: TEST_ROLLUP_ID,
@@ -517,7 +517,7 @@ contract CrossChainManagerL2Test is Test {
         uint256 sourceRollup = 7;
         bytes memory callData = abi.encodeCall(L2TestTarget.setValue, (33));
         uint256[] memory scope = new uint256[](0);
-        bytes memory expectedReturnData = abi.encode(bytes(""));
+        bytes memory expectedReturnData = "";
         Action memory resultFromCall = Action({
             actionType: ActionType.RESULT,
             rollupId: TEST_ROLLUP_ID,
@@ -544,7 +544,7 @@ contract CrossChainManagerL2Test is Test {
         uint256 sourceRollup = 1;
         bytes memory callData = abi.encodeCall(L2TestTarget.setValue, (77));
         uint256[] memory scope = new uint256[](0);
-        bytes memory expectedReturnData = abi.encode(bytes(""));
+        bytes memory expectedReturnData = "";
         Action memory resultFromCall = Action({
             actionType: ActionType.RESULT,
             rollupId: TEST_ROLLUP_ID,
@@ -578,7 +578,7 @@ contract CrossChainManagerL2Test is Test {
         uint256 sourceRollup = 1;
         bytes memory callData = abi.encodeCall(L2TestTarget.setValue, (77));
         uint256[] memory scope = new uint256[](0);
-        bytes memory expectedReturnData = abi.encode(bytes(""));
+        bytes memory expectedReturnData = "";
         Action memory resultFromCall = Action({
             actionType: ActionType.RESULT,
             rollupId: TEST_ROLLUP_ID,
@@ -637,7 +637,7 @@ contract CrossChainManagerL2Test is Test {
             sourceRollup: nestedSourceRollup,
             scope: new uint256[](0)
         });
-        bytes memory expectedReturnData = abi.encode(bytes(""));
+        bytes memory expectedReturnData = "";
         Action memory resultFromNestedCall = Action({
             actionType: ActionType.RESULT,
             rollupId: TEST_ROLLUP_ID,
@@ -694,7 +694,7 @@ contract CrossChainManagerL2Test is Test {
         childScope[0] = 0;
         Action memory callAtChildScope =
             _makeCallAction(TEST_ROLLUP_ID, address(target), 0, callData, sourceAddr, sourceRollup, childScope);
-        bytes memory expectedReturnData = abi.encode(bytes(""));
+        bytes memory expectedReturnData = "";
         Action memory resultFromChildCall = Action({
             actionType: ActionType.RESULT,
             rollupId: TEST_ROLLUP_ID,
@@ -807,7 +807,7 @@ contract CrossChainManagerL2Test is Test {
         Action memory callAtChildScope = _makeCallAction(
             TEST_ROLLUP_ID, address(target), 0, nestedCallData, nestedSource, nestedSourceRollup, childScope
         );
-        bytes memory expectedReturnData = abi.encode(bytes(""));
+        bytes memory expectedReturnData = "";
         Action memory resultFromChildCall = Action({
             actionType: ActionType.RESULT,
             rollupId: TEST_ROLLUP_ID,
@@ -873,7 +873,7 @@ contract CrossChainManagerL2Test is Test {
             TEST_ROLLUP_ID, address(target), 0, nestedData, nestedSource, nestedRollup, new uint256[](0)
         );
         // After executing the nested call, the result is consumed.
-        bytes memory expectedReturnData = abi.encode(bytes(""));
+        bytes memory expectedReturnData = "";
         Action memory resultFromNested = Action({
             actionType: ActionType.RESULT,
             rollupId: TEST_ROLLUP_ID,
@@ -937,12 +937,10 @@ contract CrossChainManagerL2Test is Test {
         uint256[] memory scope = new uint256[](0);
         uint256 ethValue = 1 ether;
         vm.deal(address(manager), 10 ether);
-        // executeOnBehalf returns abi.encode(bytes("")) for a call with no return data
-        // But with empty calldata + value, it calls receive() which returns nothing.
-        // The low-level .call returns (true, ""). executeOnBehalf returns bytes("").
-        // Then the outer .call to sourceProxy.call{value}(executeOnBehalf) returns
-        // abi.encode(bytes("")) as returnData.
-        bytes memory expectedReturnData = abi.encode(bytes(""));
+        // executeOnBehalf returns raw bytes from the destination call.
+        // With empty calldata + value, it calls receive() which returns nothing.
+        // The raw return is empty bytes.
+        bytes memory expectedReturnData = "";
         Action memory resultFromCall = Action({
             actionType: ActionType.RESULT,
             rollupId: TEST_ROLLUP_ID,
@@ -968,7 +966,7 @@ contract CrossChainManagerL2Test is Test {
         manager.createCrossChainProxy(sourceAddr, sourceRollup);
         bytes memory callData = abi.encodeCall(L2TestTarget.setValue, (88));
         uint256[] memory scope = new uint256[](0);
-        bytes memory expectedReturnData = abi.encode(bytes(""));
+        bytes memory expectedReturnData = "";
         Action memory resultFromCall = Action({
             actionType: ActionType.RESULT,
             rollupId: TEST_ROLLUP_ID,
@@ -1018,7 +1016,7 @@ contract CrossChainManagerL2Test is Test {
         uint256 sourceRollup = 1;
         bytes memory callData = abi.encodeCall(L2TestTarget.setValue, (77));
         uint256[] memory scope = new uint256[](0);
-        bytes memory expectedReturnData = abi.encode(bytes(""));
+        bytes memory expectedReturnData = "";
         Action memory resultFromCall = Action({
             actionType: ActionType.RESULT,
             rollupId: TEST_ROLLUP_ID,
@@ -1118,7 +1116,7 @@ contract CrossChainManagerL2Test is Test {
         deepScope[1] = 1;
         Action memory callAtDeepScope =
             _makeCallAction(TEST_ROLLUP_ID, address(target), 0, callData, sourceAddr, sourceRollup, deepScope);
-        bytes memory expectedReturnData = abi.encode(bytes(""));
+        bytes memory expectedReturnData = "";
         Action memory resultFromCall = Action({
             actionType: ActionType.RESULT,
             rollupId: TEST_ROLLUP_ID,
@@ -1151,7 +1149,7 @@ contract CrossChainManagerL2Test is Test {
         deepScope[1] = 0;
         Action memory callAtDeepScope =
             _makeCallAction(TEST_ROLLUP_ID, address(target), 0, callData, sourceAddr, sourceRollup, deepScope);
-        bytes memory expectedReturnData = abi.encode(bytes(""));
+        bytes memory expectedReturnData = "";
         Action memory resultFromCall = Action({
             actionType: ActionType.RESULT,
             rollupId: TEST_ROLLUP_ID,
@@ -1185,7 +1183,7 @@ contract CrossChainManagerL2Test is Test {
             _makeCallAction(TEST_ROLLUP_ID, address(target), 0, callData1, sourceAddr1, sourceRollup1, emptyScope);
         Action memory secondCall =
             _makeCallAction(TEST_ROLLUP_ID, address(target), 0, callData2, sourceAddr2, sourceRollup2, emptyScope);
-        bytes memory expectedReturnData = abi.encode(bytes(""));
+        bytes memory expectedReturnData = "";
         Action memory result1 = Action({
             actionType: ActionType.RESULT,
             rollupId: TEST_ROLLUP_ID,
@@ -1223,7 +1221,7 @@ contract CrossChainManagerL2Test is Test {
         bytes memory callData = abi.encodeCall(L2TestTarget.setValue, (44));
         uint256[] memory scope = new uint256[](1);
         scope[0] = 0;
-        bytes memory expectedReturnData = abi.encode(bytes(""));
+        bytes memory expectedReturnData = "";
         Action memory resultFromCall = Action({
             actionType: ActionType.RESULT,
             rollupId: TEST_ROLLUP_ID,
@@ -1251,7 +1249,7 @@ contract CrossChainManagerL2Test is Test {
         childScope[0] = 0;
         Action memory callAtChildScope =
             _makeCallAction(TEST_ROLLUP_ID, address(target), 0, callData, sourceAddr, sourceRollup, childScope);
-        bytes memory expectedReturnData = abi.encode(bytes(""));
+        bytes memory expectedReturnData = "";
         Action memory resultFromCall = Action({
             actionType: ActionType.RESULT,
             rollupId: TEST_ROLLUP_ID,

@@ -46,22 +46,20 @@ contract CrossChainProxy {
     /// @dev Only callable by the manager contract. Reverts bubble up.
     /// @param destination The address to call
     /// @param data The calldata
-    /// @return returnData The return data from the call
     function executeOnBehalf(
         address destination,
         bytes calldata data
-    ) external payable returns (bytes memory returnData) {
+    ) external payable {
         if (msg.sender != MANAGER) {
             revert Unauthorized();
         }
 
-        bool success;
-        (success, returnData) = destination.call{value: msg.value}(data);
+        (bool success, bytes memory result) = destination.call{value: msg.value}(data);
 
-        if (!success) {
-            assembly {
-                revert(add(returnData, 0x20), mload(returnData))
-            }
+        assembly {
+            switch success
+            case 0 { revert(add(result, 0x20), mload(result)) }
+            default { return(add(result, 0x20), mload(result)) }
         }
     }
 }
