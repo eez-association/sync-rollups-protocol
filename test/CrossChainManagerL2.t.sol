@@ -458,12 +458,12 @@ contract CrossChainManagerL2Test is Test {
         s;
     }
 
-    // ── executeRemoteCall ──
+    // ── executeIncomingCrossChainCall ──
 
     function test_ExecuteRemoteCall_RevertsIfNotSystem() public {
         uint256[] memory scope = new uint256[](0);
         vm.expectRevert(CrossChainManagerL2.Unauthorized.selector);
-        manager.executeRemoteCall(address(target), 0, "", address(this), 0, scope);
+        manager.executeIncomingCrossChainCall(address(target), 0, "", address(this), 0, scope);
     }
 
     function test_ExecuteRemoteCall_ExecutesOnChainCall() public {
@@ -485,7 +485,7 @@ contract CrossChainManagerL2Test is Test {
         });
         _loadEntry(keccak256(abi.encode(resultFromCall)), _emptyResult());
         vm.prank(SYSTEM_ADDRESS);
-        manager.executeRemoteCall(address(target), 0, callData, sourceAddr, sourceRollup, scope);
+        manager.executeIncomingCrossChainCall(address(target), 0, callData, sourceAddr, sourceRollup, scope);
         assertEq(target.value(), 77);
     }
 
@@ -508,7 +508,7 @@ contract CrossChainManagerL2Test is Test {
         });
         _loadEntry(keccak256(abi.encode(resultFromCall)), _emptyResult());
         vm.prank(SYSTEM_ADDRESS);
-        manager.executeRemoteCall(address(target), 0, callData, sourceAddr, sourceRollup, scope);
+        manager.executeIncomingCrossChainCall(address(target), 0, callData, sourceAddr, sourceRollup, scope);
         assertEq(target.value(), 55);
     }
 
@@ -534,7 +534,7 @@ contract CrossChainManagerL2Test is Test {
         (address origBefore,) = manager.authorizedProxies(expectedProxy);
         assertEq(origBefore, address(0));
         vm.prank(SYSTEM_ADDRESS);
-        manager.executeRemoteCall(address(target), 0, callData, sourceAddr, sourceRollup, scope);
+        manager.executeIncomingCrossChainCall(address(target), 0, callData, sourceAddr, sourceRollup, scope);
         (address origAfter,) = manager.authorizedProxies(expectedProxy);
         assertEq(origAfter, sourceAddr);
     }
@@ -570,7 +570,7 @@ contract CrossChainManagerL2Test is Test {
         _loadEntry(keccak256(abi.encode(resultFromCall)), failedResult);
         vm.prank(SYSTEM_ADDRESS);
         vm.expectRevert(CrossChainManagerL2.CallExecutionFailed.selector);
-        manager.executeRemoteCall(address(target), 0, callData, sourceAddr, sourceRollup, scope);
+        manager.executeIncomingCrossChainCall(address(target), 0, callData, sourceAddr, sourceRollup, scope);
     }
 
     function test_ExecuteRemoteCall_CallExecutionFailed_NonResultAction() public {
@@ -604,7 +604,7 @@ contract CrossChainManagerL2Test is Test {
         _loadEntry(keccak256(abi.encode(resultFromCall)), l2txAction);
         vm.prank(SYSTEM_ADDRESS);
         vm.expectRevert(CrossChainManagerL2.CallExecutionFailed.selector);
-        manager.executeRemoteCall(address(target), 0, callData, sourceAddr, sourceRollup, scope);
+        manager.executeIncomingCrossChainCall(address(target), 0, callData, sourceAddr, sourceRollup, scope);
     }
 
     // ── executeCrossChainCall with nested CALL ──
@@ -924,7 +924,7 @@ contract CrossChainManagerL2Test is Test {
         uint256[] memory scope = new uint256[](0);
         vm.prank(SYSTEM_ADDRESS);
         vm.expectRevert(CrossChainManagerL2.InvalidRevertData.selector);
-        manager.executeRemoteCall(address(target), 0, callData, sourceAddr, sourceRollup, scope);
+        manager.executeIncomingCrossChainCall(address(target), 0, callData, sourceAddr, sourceRollup, scope);
     }
 
     // ── _processCallAtScope: ETH value ──
@@ -956,7 +956,7 @@ contract CrossChainManagerL2Test is Test {
         });
         _loadEntry(keccak256(abi.encode(resultFromCall)), _emptyResult());
         vm.prank(SYSTEM_ADDRESS);
-        manager.executeRemoteCall(address(target), ethValue, callData, sourceAddr, sourceRollup, scope);
+        manager.executeIncomingCrossChainCall(address(target), ethValue, callData, sourceAddr, sourceRollup, scope);
         assertEq(address(target).balance, ethValue);
     }
 
@@ -982,7 +982,7 @@ contract CrossChainManagerL2Test is Test {
         });
         _loadEntry(keccak256(abi.encode(resultFromCall)), _emptyResult());
         vm.prank(SYSTEM_ADDRESS);
-        manager.executeRemoteCall(address(target), 0, callData, sourceAddr, sourceRollup, scope);
+        manager.executeIncomingCrossChainCall(address(target), 0, callData, sourceAddr, sourceRollup, scope);
         assertEq(target.value(), 88);
     }
 
@@ -1008,10 +1008,10 @@ contract CrossChainManagerL2Test is Test {
         });
         _loadEntry(keccak256(abi.encode(failedResultAction)), _emptyResult());
         vm.prank(SYSTEM_ADDRESS);
-        manager.executeRemoteCall(address(revTarget), 0, callData, sourceAddr, sourceRollup, scope);
+        manager.executeIncomingCrossChainCall(address(revTarget), 0, callData, sourceAddr, sourceRollup, scope);
     }
 
-    // ── executeRemoteCall: catch ScopeReverted ──
+    // ── executeIncomingCrossChainCall: catch ScopeReverted ──
 
     function test_ExecuteRemoteCall_CatchesScopeReverted() public {
         address sourceAddr = address(0xBEEF);
@@ -1045,7 +1045,7 @@ contract CrossChainManagerL2Test is Test {
         vm.prank(SYSTEM_ADDRESS);
         manager.loadExecutionTable(entries);
         vm.prank(SYSTEM_ADDRESS);
-        bytes memory result = manager.executeRemoteCall(address(target), 0, callData, sourceAddr, sourceRollup, scope);
+        bytes memory result = manager.executeIncomingCrossChainCall(address(target), 0, callData, sourceAddr, sourceRollup, scope);
         assertEq(result, abi.encode(uint256(555)));
     }
 
@@ -1215,7 +1215,7 @@ contract CrossChainManagerL2Test is Test {
         assertEq(target.value(), 200);
     }
 
-    // ── executeRemoteCall with non-empty scope ──
+    // ── executeIncomingCrossChainCall with non-empty scope ──
 
     function test_ExecuteRemoteCall_WithNonEmptyScope() public {
         address sourceAddr = address(0xBEEF);
@@ -1237,7 +1237,7 @@ contract CrossChainManagerL2Test is Test {
         });
         _loadEntry(keccak256(abi.encode(resultFromCall)), _emptyResult());
         vm.prank(SYSTEM_ADDRESS);
-        manager.executeRemoteCall(address(target), 0, callData, sourceAddr, sourceRollup, scope);
+        manager.executeIncomingCrossChainCall(address(target), 0, callData, sourceAddr, sourceRollup, scope);
         assertEq(target.value(), 44);
     }
 

@@ -7,7 +7,7 @@ import {ICrossChainManager, ActionType, Action, ExecutionEntry, ProxyInfo} from 
 /// @title CrossChainManagerL2
 /// @notice L2-side contract for cross-chain execution via pre-computed execution tables
 /// @dev No rollups, no state deltas, no ZK proofs. System address loads execution tables,
-///      which are consumed via proxy calls (executeCrossChainCall) or system executeRemoteCall.
+///      which are consumed via proxy calls (executeCrossChainCall) or system executeIncomingCrossChainCall.
 contract CrossChainManagerL2 is ICrossChainManager {
     /// @notice The rollup ID this L2 belongs to
     uint256 public immutable ROLLUP_ID;
@@ -47,7 +47,7 @@ contract CrossChainManagerL2 is ICrossChainManager {
     event CrossChainProxyCreated(address indexed proxy, address indexed originalAddress, uint256 indexed originalRollupId);
 
     /// @param _rollupId The rollup ID this L2 instance belongs to
-    /// @param _systemAddress The privileged address allowed to load execution tables and call executeRemoteCall
+    /// @param _systemAddress The privileged address allowed to load execution tables and call executeIncomingCrossChainCall
     constructor(uint256 _rollupId, address _systemAddress) {
         ROLLUP_ID = _rollupId;
         SYSTEM_ADDRESS = _systemAddress;
@@ -109,7 +109,7 @@ contract CrossChainManagerL2 is ICrossChainManager {
     /// @param sourceRollup The source rollup ID
     /// @param scope The scope for nested call navigation
     /// @return result The return data from the execution
-    function executeRemoteCall( 
+    function executeIncomingCrossChainCall(
         address destination,
         uint256 value,
         bytes calldata data,

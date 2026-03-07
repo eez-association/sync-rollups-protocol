@@ -919,16 +919,17 @@ contract RollupsTest is Test {
 
         ExecutionEntry[] memory entries = new ExecutionEntry[](2);
 
-        // First entry: L2TX lookup. State delta deducts 1 ether from source rollup (0)
-        StateDelta[] memory d1 = new StateDelta[](2);
+        // First entry: L2TX lookup. No ETH has flowed yet, so ether deltas must sum to 0.
+        StateDelta[] memory d1 = new StateDelta[](1);
         d1[0] = StateDelta({rollupId: rollupId, currentState: bytes32(0), newState: state1, etherDelta: 0});
-        d1[1] = StateDelta({rollupId: 0, currentState: bytes32(0), newState: bytes32(0), etherDelta: -1 ether});
         entries[0].stateDeltas = d1;
         entries[0].actionHash = l2txHash;
         entries[0].nextAction = scopedCall;
 
-        StateDelta[] memory d2 = new StateDelta[](1);
+        // Second entry: RESULT after executeOnBehalf sent 1 ether out. _etherDelta = -1 ether.
+        StateDelta[] memory d2 = new StateDelta[](2);
         d2[0] = StateDelta({rollupId: rollupId, currentState: state1, newState: state2, etherDelta: 0});
+        d2[1] = StateDelta({rollupId: 0, currentState: bytes32(0), newState: bytes32(0), etherDelta: -1 ether});
         entries[1].stateDeltas = d2;
         entries[1].actionHash = resultHash;
         entries[1].nextAction = finalResult;
@@ -1889,5 +1890,603 @@ contract RollupsTest is Test {
 
         assertEq(_getRollupState(r1), keccak256("a2"));
         assertEq(_getRollupState(r2), keccak256("b2"));
+    }
+
+    // ──────────────────────────────────────────────
+    //  executeCrossChainCall with msg.value > 0
+    //  Covers: _etherDelta += int256(msg.value) (line 262)
+    // ──────────────────────────────────────────────
+
+    function test_ExecuteCrossChainCall_WithETHValue() public {
+        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        address proxyAddr = rollups.createCrossChainProxy(address(target), rollupId);
+
+        bytes32 state1 = keccak256("ethv1");
+        bytes memory callData = abi.encodeCall(TestTarget.setValue, (55));
+
+        // Build CALL action as executeCrossChainCall builds it (with value)
+        Action memory callAction = Action({
+            actionType: ActionType.CALL,
+            rollupId: rollupId,
+            destination: address(target),
+            value: 1 ether,
+            data: callData,
+            failed: false,
+            sourceAddress: address(this),
+            sourceRollup: 0,
+            scope: new uint256[](0)
+        });
+
+        Action memory resultAction = _emptyAction();
+
+        // State delta must reflect the +1 ether from msg.value
+        StateDelta[] memory deltas = new StateDelta[](1);
+        deltas[0] = StateDelta({rollupId: rollupId, currentState: bytes32(0), newState: state1, etherDelta: 1 ether});
+
+        ExecutionEntry[] memory entries = new ExecutionEntry[](1);
+        entries[0].stateDeltas = deltas;
+        entries[0].actionHash = keccak256(abi.encode(callAction));
+        entries[0].nextAction = resultAction;
+
+        rollups.postBatch(entries, 0, "", "proof");
+
+        // Call the proxy with 1 ether value
+        (bool success,) = proxyAddr.call{value: 1 ether}(callData);
+        assertTrue(success);
+        assertEq(_getRollupState(rollupId), state1);
+    }
+
+    // ──────────────────────────────────────────────
+    //  EtherDeltaMismatch in _findAndApplyExecution (line 459)
+    // ──────────────────────────────────────────────
+
+    function test_FindAndApplyExecution_EtherDeltaMismatch() public {
+        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        address proxyAddr = rollups.createCrossChainProxy(address(target), rollupId);
+
+        bytes32 state1 = keccak256("edm1");
+        bytes memory callData = abi.encodeCall(TestTarget.setValue, (66));
+
+        Action memory callAction = Action({
+            actionType: ActionType.CALL,
+            rollupId: rollupId,
+            destination: address(target),
+            value: 0,
+            data: callData,
+            failed: false,
+            sourceAddress: address(this),
+            sourceRollup: 0,
+            scope: new uint256[](0)
+        });
+
+        // State delta has etherDelta = 1 ether but no ETH flows (_etherDelta = 0)
+        StateDelta[] memory deltas = new StateDelta[](1);
+        deltas[0] = StateDelta({rollupId: rollupId, currentState: bytes32(0), newState: state1, etherDelta: 1 ether});
+
+        ExecutionEntry[] memory entries = new ExecutionEntry[](1);
+        entries[0].stateDeltas = deltas;
+        entries[0].actionHash = keccak256(abi.encode(callAction));
+        entries[0].nextAction = _emptyAction();
+
+        rollups.postBatch(entries, 0, "", "proof");
+
+        vm.expectRevert(Rollups.EtherDeltaMismatch.selector);
+        (bool success,) = proxyAddr.call(callData);
+        success;
+    }
+
+    // ──────────────────────────────────────────────
+    //  InvalidRevertData in _handleScopeRevert (line 529)
+    //  Covers: revertData.length <= 4 when newScope reverts
+    //  with a non-ScopeReverted error
+    // ──────────────────────────────────────────────
+
+    function test_HandleScopeRevert_InvalidRevertData() public {
+        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+
+        rollups.createCrossChainProxy(address(this), 0);
+
+        bytes32 state1 = keccak256("ird1");
+
+        uint256[] memory callScope = new uint256[](1);
+        callScope[0] = 0;
+
+        // CALL at scope [0], after which the RESULT lookup will fail (no entry)
+        // This causes ExecutionNotFound (4 bytes) inside newScope,
+        // caught by _resolveScopes -> _handleScopeRevert -> InvalidRevertData
+        Action memory scopedCall = Action({
+            actionType: ActionType.CALL,
+            rollupId: rollupId,
+            destination: address(target),
+            value: 0,
+            data: abi.encodeCall(TestTarget.setValue, (88)),
+            failed: false,
+            sourceAddress: address(this),
+            sourceRollup: 0,
+            scope: callScope
+        });
+
+        bytes memory rlpTx = hex"0f";
+        Action memory l2tx = Action({
+            actionType: ActionType.L2TX,
+            rollupId: rollupId,
+            destination: address(0),
+            value: 0,
+            data: rlpTx,
+            failed: false,
+            sourceAddress: address(0),
+            sourceRollup: 0,
+            scope: new uint256[](0)
+        });
+        bytes32 l2txHash = keccak256(abi.encode(l2tx));
+
+        // Only load the L2TX entry, NOT the result entry
+        // So the result lookup inside _processCallAtScope will revert with ExecutionNotFound
+        ExecutionEntry[] memory entries = new ExecutionEntry[](1);
+        StateDelta[] memory d = new StateDelta[](1);
+        d[0] = StateDelta({rollupId: rollupId, currentState: bytes32(0), newState: state1, etherDelta: 0});
+        entries[0].stateDeltas = d;
+        entries[0].actionHash = l2txHash;
+        entries[0].nextAction = scopedCall;
+
+        rollups.postBatch(entries, 0, "", "proof");
+
+        vm.expectRevert(Rollups.InvalidRevertData.selector);
+        rollups.executeL2TX(rollupId, rlpTx);
+    }
+
+    // ──────────────────────────────────────────────
+    //  executeCrossChainCall: CALL nextAction triggers _resolveScopes
+    //  with catch path (ScopeReverted caught at root)
+    // ──────────────────────────────────────────────
+
+    function test_ExecuteCrossChainCall_ResolveScopesCatchPath() public {
+        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        address proxyAddr = rollups.createCrossChainProxy(address(target), rollupId);
+        rollups.createCrossChainProxy(address(this), 0);
+
+        bytes32 state1 = keccak256("rsc1");
+        bytes32 state2 = keccak256("rsc2");
+        bytes32 state3 = keccak256("rsc3");
+
+        bytes memory callData = abi.encodeCall(TestTarget.setValue, (42));
+
+        // Initial CALL (from proxy fallback)
+        Action memory initialCall = Action({
+            actionType: ActionType.CALL,
+            rollupId: rollupId,
+            destination: address(target),
+            value: 0,
+            data: callData,
+            failed: false,
+            sourceAddress: address(this),
+            sourceRollup: 0,
+            scope: new uint256[](0)
+        });
+
+        uint256[] memory scope0 = new uint256[](1);
+        scope0[0] = 0;
+
+        // Next action is a scoped CALL
+        Action memory scopedCall = Action({
+            actionType: ActionType.CALL,
+            rollupId: rollupId,
+            destination: address(target),
+            value: 0,
+            data: abi.encodeCall(TestTarget.setValue, (99)),
+            failed: false,
+            sourceAddress: address(this),
+            sourceRollup: 0,
+            scope: scope0
+        });
+
+        Action memory resultFromScoped = _buildResultAction(rollupId);
+        bytes32 resultHash = keccak256(abi.encode(resultFromScoped));
+
+        uint256[] memory emptyScope = new uint256[](0);
+        // REVERT at scope [] after the scoped call
+        Action memory revertAtEmpty = Action({
+            actionType: ActionType.REVERT,
+            rollupId: rollupId,
+            destination: address(0),
+            value: 0,
+            data: "",
+            failed: false,
+            sourceAddress: address(0),
+            sourceRollup: 0,
+            scope: emptyScope
+        });
+
+        Action memory revertCont = _buildRevertContinue(rollupId);
+        bytes32 revertContHash = keccak256(abi.encode(revertCont));
+        Action memory finalResult = _emptyAction();
+
+        ExecutionEntry[] memory entries = new ExecutionEntry[](3);
+
+        // Initial CALL -> scoped CALL
+        StateDelta[] memory d1 = new StateDelta[](1);
+        d1[0] = StateDelta({rollupId: rollupId, currentState: bytes32(0), newState: state1, etherDelta: 0});
+        entries[0].stateDeltas = d1;
+        entries[0].actionHash = keccak256(abi.encode(initialCall));
+        entries[0].nextAction = scopedCall;
+
+        // RESULT from scoped call -> REVERT at []
+        StateDelta[] memory d2 = new StateDelta[](1);
+        d2[0] = StateDelta({rollupId: rollupId, currentState: state1, newState: state2, etherDelta: 0});
+        entries[1].stateDeltas = d2;
+        entries[1].actionHash = resultHash;
+        entries[1].nextAction = revertAtEmpty;
+
+        // REVERT_CONTINUE -> final RESULT
+        StateDelta[] memory d3 = new StateDelta[](1);
+        d3[0] = StateDelta({rollupId: rollupId, currentState: state2, newState: state3, etherDelta: 0});
+        entries[2].stateDeltas = d3;
+        entries[2].actionHash = revertContHash;
+        entries[2].nextAction = finalResult;
+
+        rollups.postBatch(entries, 0, "", "proof");
+
+        (bool success,) = proxyAddr.call(callData);
+        assertTrue(success);
+        // State restored to state2 by _handleScopeRevert
+        assertEq(_getRollupState(rollupId), state2);
+    }
+
+    // ──────────────────────────────────────────────
+    //  Proxy fallback: reverts bubble up through proxy
+    // ──────────────────────────────────────────────
+
+    function test_Proxy_Fallback_BubblesRevert() public {
+        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        address proxyAddr = rollups.createCrossChainProxy(address(target), rollupId);
+
+        // Call proxy with no execution loaded -> ExecutionNotFound bubbles through proxy
+        bytes memory callData = abi.encodeCall(TestTarget.setValue, (1));
+        (bool success, bytes memory retData) = proxyAddr.call(callData);
+        assertFalse(success);
+        // Verify the revert selector is ExecutionNotFound
+        bytes4 selector;
+        assembly {
+            selector := mload(add(retData, 32))
+        }
+        assertEq(selector, Rollups.ExecutionNotFound.selector);
+    }
+
+    // ──────────────────────────────────────────────
+    //  Proxy executeOnBehalf: unauthorized caller
+    // ──────────────────────────────────────────────
+
+    function test_Proxy_ExecuteOnBehalf_Unauthorized() public {
+        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        address proxyAddr = rollups.createCrossChainProxy(address(target), rollupId);
+        CrossChainProxy proxy = CrossChainProxy(payable(proxyAddr));
+
+        vm.prank(alice);
+        vm.expectRevert(CrossChainProxy.Unauthorized.selector);
+        proxy.executeOnBehalf(address(target), abi.encodeCall(TestTarget.setValue, (42)));
+    }
+
+    // ──────────────────────────────────────────────
+    //  newScope: child scope catch path (lines 340-342)
+    //  ScopeReverted from child caught by parent newScope
+    // ──────────────────────────────────────────────
+
+    function test_NewScope_ChildScope_CatchesScopeReverted() public {
+        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+
+        rollups.createCrossChainProxy(address(this), 0);
+
+        bytes32 state1 = keccak256("csc1");
+        bytes32 state2 = keccak256("csc2");
+        bytes32 state3 = keccak256("csc3");
+
+        uint256[] memory scope0 = new uint256[](1);
+        scope0[0] = 0;
+        uint256[] memory scope00 = new uint256[](2);
+        scope00[0] = 0;
+        scope00[1] = 0;
+
+        // CALL at scope [0, 0] (child of [0])
+        Action memory deepCall = Action({
+            actionType: ActionType.CALL,
+            rollupId: rollupId,
+            destination: address(target),
+            value: 0,
+            data: abi.encodeCall(TestTarget.setValue, (10)),
+            failed: false,
+            sourceAddress: address(this),
+            sourceRollup: 0,
+            scope: scope00
+        });
+
+        Action memory resultFromCall = _buildResultAction(rollupId);
+        bytes32 resultHash = keccak256(abi.encode(resultFromCall));
+
+        // REVERT at scope [0, 0]
+        Action memory revertAtDeep = Action({
+            actionType: ActionType.REVERT,
+            rollupId: rollupId,
+            destination: address(0),
+            value: 0,
+            data: "",
+            failed: false,
+            sourceAddress: address(0),
+            sourceRollup: 0,
+            scope: scope00
+        });
+
+        Action memory revertCont = _buildRevertContinue(rollupId);
+        bytes32 revertContHash = keccak256(abi.encode(revertCont));
+        Action memory finalResult = _emptyAction();
+
+        bytes memory rlpTx = hex"11";
+        Action memory l2tx = Action({
+            actionType: ActionType.L2TX,
+            rollupId: rollupId,
+            destination: address(0),
+            value: 0,
+            data: rlpTx,
+            failed: false,
+            sourceAddress: address(0),
+            sourceRollup: 0,
+            scope: new uint256[](0)
+        });
+        bytes32 l2txHash = keccak256(abi.encode(l2tx));
+
+        ExecutionEntry[] memory entries = new ExecutionEntry[](3);
+
+        // L2TX -> CALL at [0, 0]
+        StateDelta[] memory d1 = new StateDelta[](1);
+        d1[0] = StateDelta({rollupId: rollupId, currentState: bytes32(0), newState: state1, etherDelta: 0});
+        entries[0].stateDeltas = d1;
+        entries[0].actionHash = l2txHash;
+        entries[0].nextAction = deepCall;
+
+        // RESULT -> REVERT at [0, 0]
+        StateDelta[] memory d2 = new StateDelta[](1);
+        d2[0] = StateDelta({rollupId: rollupId, currentState: state1, newState: state2, etherDelta: 0});
+        entries[1].stateDeltas = d2;
+        entries[1].actionHash = resultHash;
+        entries[1].nextAction = revertAtDeep;
+
+        // REVERT_CONTINUE -> final RESULT
+        StateDelta[] memory d3 = new StateDelta[](1);
+        d3[0] = StateDelta({rollupId: rollupId, currentState: state2, newState: state3, etherDelta: 0});
+        entries[2].stateDeltas = d3;
+        entries[2].actionHash = revertContHash;
+        entries[2].nextAction = finalResult;
+
+        rollups.postBatch(entries, 0, "", "proof");
+
+        rollups.executeL2TX(rollupId, rlpTx);
+        // ScopeReverted at [0,0] is caught by newScope([0]) (child scope catch path)
+        // Then caught by newScope([]) which calls _handleScopeRevert
+        assertEq(_getRollupState(rollupId), state2);
+    }
+
+    // ──────────────────────────────────────────────
+    //  _findAndApplyExecution: multiple deltas, all must match
+    // ──────────────────────────────────────────────
+
+    function test_FindAndApplyExecution_MultiDeltaAllMatch() public {
+        uint256 r1 = rollups.createRollup(keccak256("x"), DEFAULT_VK, alice);
+        uint256 r2 = rollups.createRollup(keccak256("y"), DEFAULT_VK, bob);
+        address proxyAddr = rollups.createCrossChainProxy(address(target), r1);
+
+        bytes memory callData = abi.encodeCall(TestTarget.setValue, (789));
+        Action memory callAction = Action({
+            actionType: ActionType.CALL,
+            rollupId: r1,
+            destination: address(target),
+            value: 0,
+            data: callData,
+            failed: false,
+            sourceAddress: address(this),
+            sourceRollup: 0,
+            scope: new uint256[](0)
+        });
+        bytes32 actionHash = keccak256(abi.encode(callAction));
+
+        // Both deltas must match current state for execution to be found
+        StateDelta[] memory deltas = new StateDelta[](2);
+        deltas[0] = StateDelta({rollupId: r1, currentState: keccak256("x"), newState: keccak256("x2"), etherDelta: 0});
+        deltas[1] = StateDelta({rollupId: r2, currentState: keccak256("y"), newState: keccak256("y2"), etherDelta: 0});
+
+        ExecutionEntry[] memory entries = new ExecutionEntry[](1);
+        entries[0].stateDeltas = deltas;
+        entries[0].actionHash = actionHash;
+        entries[0].nextAction = _emptyAction();
+
+        rollups.postBatch(entries, 0, "", "proof");
+
+        (bool success,) = proxyAddr.call(callData);
+        assertTrue(success);
+        assertEq(_getRollupState(r1), keccak256("x2"));
+        assertEq(_getRollupState(r2), keccak256("y2"));
+    }
+
+    // ──────────────────────────────────────────────
+    //  _findAndApplyExecution: multi delta partial mismatch
+    // ──────────────────────────────────────────────
+
+    function test_FindAndApplyExecution_MultiDeltaPartialMismatch() public {
+        uint256 r1 = rollups.createRollup(keccak256("a"), DEFAULT_VK, alice);
+        uint256 r2 = rollups.createRollup(keccak256("b"), DEFAULT_VK, bob);
+        address proxyAddr = rollups.createCrossChainProxy(address(target), r1);
+
+        bytes memory callData = abi.encodeCall(TestTarget.setValue, (111));
+        Action memory callAction = Action({
+            actionType: ActionType.CALL,
+            rollupId: r1,
+            destination: address(target),
+            value: 0,
+            data: callData,
+            failed: false,
+            sourceAddress: address(this),
+            sourceRollup: 0,
+            scope: new uint256[](0)
+        });
+        bytes32 actionHash = keccak256(abi.encode(callAction));
+
+        // First delta matches but second doesn't
+        StateDelta[] memory deltas = new StateDelta[](2);
+        deltas[0] = StateDelta({rollupId: r1, currentState: keccak256("a"), newState: keccak256("a2"), etherDelta: 0});
+        deltas[1] =
+            StateDelta({rollupId: r2, currentState: keccak256("wrong"), newState: keccak256("b2"), etherDelta: 0});
+
+        ExecutionEntry[] memory entries = new ExecutionEntry[](1);
+        entries[0].stateDeltas = deltas;
+        entries[0].actionHash = actionHash;
+        entries[0].nextAction = _emptyAction();
+
+        rollups.postBatch(entries, 0, "", "proof");
+
+        vm.expectRevert(Rollups.ExecutionNotFound.selector);
+        (bool success,) = proxyAddr.call(callData);
+        success;
+    }
+
+    // ──────────────────────────────────────────────
+    //  PostBatch: only deferred entries (ether deltas not checked)
+    // ──────────────────────────────────────────────
+
+    function test_PostBatch_OnlyDeferredEntries() public {
+        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+
+        Action memory callAction = Action({
+            actionType: ActionType.CALL,
+            rollupId: rollupId,
+            destination: address(target),
+            value: 0,
+            data: "",
+            failed: false,
+            sourceAddress: address(0),
+            sourceRollup: 0,
+            scope: new uint256[](0)
+        });
+        bytes32 actionHash = keccak256(abi.encode(callAction));
+
+        StateDelta[] memory deltas = new StateDelta[](1);
+        deltas[0] = StateDelta({rollupId: rollupId, currentState: bytes32(0), newState: keccak256("d1"), etherDelta: 0});
+
+        ExecutionEntry[] memory entries = new ExecutionEntry[](1);
+        entries[0].stateDeltas = deltas;
+        entries[0].actionHash = actionHash;
+        entries[0].nextAction = _emptyAction();
+
+        // Deferred entries do NOT have their ether deltas summed
+        // (only immediate entries do), so this should pass
+        rollups.postBatch(entries, 0, "", "proof");
+
+        // State should NOT have changed (deferred entry)
+        assertEq(_getRollupState(rollupId), bytes32(0));
+    }
+
+    // ──────────────────────────────────────────────
+    //  TransferRollupOwnership: non-owner reverts
+    // ──────────────────────────────────────────────
+
+    function test_TransferRollupOwnership_NotOwner() public {
+        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+
+        vm.prank(bob);
+        vm.expectRevert(Rollups.NotRollupOwner.selector);
+        rollups.transferRollupOwnership(rollupId, bob);
+    }
+
+    // ──────────────────────────────────────────────
+    //  _applyStateDeltas: zero etherDelta (no change)
+    // ──────────────────────────────────────────────
+
+    function test_ApplyStateDeltas_ZeroEtherDelta() public {
+        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        _fundRollup(rollupId, 5 ether);
+
+        StateDelta[] memory deltas = new StateDelta[](1);
+        deltas[0] = StateDelta({rollupId: rollupId, currentState: bytes32(0), newState: keccak256("zd"), etherDelta: 0});
+
+        ExecutionEntry[] memory entries = new ExecutionEntry[](1);
+        entries[0].stateDeltas = deltas;
+        entries[0].actionHash = bytes32(0);
+        entries[0].nextAction = _emptyAction();
+
+        rollups.postBatch(entries, 0, "", "proof");
+
+        assertEq(_getRollupEtherBalance(rollupId), 5 ether);
+        assertEq(_getRollupState(rollupId), keccak256("zd"));
+    }
+
+    // ──────────────────────────────────────────────
+    //  Events: verify key events are emitted
+    // ──────────────────────────────────────────────
+
+    // ──────────────────────────────────────────────
+    //  PostBatch with blobCount > 0 (blobhash loop)
+    // ──────────────────────────────────────────────
+
+    function test_PostBatch_WithBlobCount() public {
+        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+
+        // Set blob hashes for the transaction
+        bytes32[] memory blobs = new bytes32[](2);
+        blobs[0] = keccak256("blob0");
+        blobs[1] = keccak256("blob1");
+        vm.blobhashes(blobs);
+
+        ExecutionEntry[] memory entries = new ExecutionEntry[](1);
+        entries[0] = _immediateEntry(rollupId, bytes32(0), keccak256("blobState"));
+
+        // blobCount=2 makes the contract read blobhash(0) and blobhash(1)
+        rollups.postBatch(entries, 2, "", "proof");
+
+        assertEq(_getRollupState(rollupId), keccak256("blobState"));
+    }
+
+    // ──────────────────────────────────────────────
+    //  Events
+    // ──────────────────────────────────────────────
+
+    function test_CreateRollup_EmitsEvent() public {
+        vm.expectEmit(true, true, true, true);
+        emit Rollups.RollupCreated(1, alice, DEFAULT_VK, keccak256("init"));
+        rollups.createRollup(keccak256("init"), DEFAULT_VK, alice);
+    }
+
+    function test_SetStateByOwner_EmitsEvent() public {
+        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        bytes32 newState = keccak256("emitState");
+
+        vm.prank(alice);
+        vm.expectEmit(true, true, true, true);
+        emit Rollups.StateUpdated(rollupId, newState);
+        rollups.setStateByOwner(rollupId, newState);
+    }
+
+    function test_SetVerificationKey_EmitsEvent() public {
+        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        bytes32 newVK = keccak256("newVK");
+
+        vm.prank(alice);
+        vm.expectEmit(true, true, true, true);
+        emit Rollups.VerificationKeyUpdated(rollupId, newVK);
+        rollups.setVerificationKey(rollupId, newVK);
+    }
+
+    function test_TransferOwnership_EmitsEvent() public {
+        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+
+        vm.prank(alice);
+        vm.expectEmit(true, true, true, true);
+        emit Rollups.OwnershipTransferred(rollupId, alice, bob);
+        rollups.transferRollupOwnership(rollupId, bob);
+    }
+
+    function test_CreateCrossChainProxy_EmitsEvent() public {
+        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        address expectedProxy = rollups.computeCrossChainProxyAddress(address(target), rollupId, block.chainid);
+
+        vm.expectEmit(true, true, true, true);
+        emit Rollups.CrossChainProxyCreated(expectedProxy, address(target), rollupId);
+        rollups.createCrossChainProxy(address(target), rollupId);
     }
 }
