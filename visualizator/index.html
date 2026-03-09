@@ -1,0 +1,857 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cross-Chain Integration Test Visualizer</title>
+  <style>
+    :root {
+      --bg: #0a0a0f;
+      --surface: #12121a;
+      --surface2: #1a1a26;
+      --border: #2a2a3a;
+      --text: #e0e0e8;
+      --text-dim: #8888a0;
+      --l1: #3b82f6;
+      --l1-bg: rgba(59, 130, 246, 0.08);
+      --l2: #a855f7;
+      --l2-bg: rgba(168, 85, 247, 0.08);
+      --call: #22d3ee;
+      --result: #34d399;
+      --reentrant: #f59e0b;
+      --accent: #6366f1;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', monospace;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    header {
+      text-align: center;
+      padding: 2rem 1rem 1rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    header h1 {
+      font-size: 1.5rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      margin-bottom: 0.25rem;
+    }
+
+    header p {
+      color: var(--text-dim);
+      font-size: 0.8rem;
+    }
+
+    .scenario-tabs {
+      display: flex;
+      justify-content: center;
+      gap: 0.5rem;
+      padding: 1rem;
+      flex-wrap: wrap;
+    }
+
+    .tab {
+      padding: 0.5rem 1rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--text-dim);
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 0.75rem;
+      transition: all 0.2s;
+    }
+
+    .tab:hover {
+      border-color: var(--accent);
+      color: var(--text);
+    }
+
+    .tab.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    .scenario-header {
+      text-align: center;
+      padding: 1rem;
+    }
+
+    .scenario-header h2 {
+      font-size: 1.1rem;
+      font-weight: 600;
+      margin-bottom: 0.25rem;
+    }
+
+    .scenario-header .flow {
+      font-size: 0.9rem;
+      color: var(--call);
+    }
+
+    .scenario-header .direction {
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      margin-top: 0.25rem;
+    }
+
+    .visualization {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 0 1rem 2rem;
+    }
+
+    .phase {
+      margin-bottom: 2rem;
+    }
+
+    .phase-title {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+      padding-bottom: 0.5rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .phase-title h3 {
+      font-size: 0.9rem;
+      font-weight: 600;
+    }
+
+    .phase-title .chain-badge {
+      font-size: 0.65rem;
+      padding: 0.15rem 0.5rem;
+      border-radius: 4px;
+      font-weight: 600;
+    }
+
+    .chain-badge.l1 {
+      background: var(--l1-bg);
+      color: var(--l1);
+      border: 1px solid rgba(59, 130, 246, 0.3);
+    }
+
+    .chain-badge.l2 {
+      background: var(--l2-bg);
+      color: var(--l2);
+      border: 1px solid rgba(168, 85, 247, 0.3);
+    }
+
+    .lanes {
+      display: grid;
+      grid-template-columns: 1fr 40px 1fr;
+      gap: 0;
+      position: relative;
+    }
+
+    .lane {
+      padding: 1rem;
+      border-radius: 8px;
+      min-height: 120px;
+    }
+
+    .lane.l1 {
+      background: var(--l1-bg);
+      border: 1px solid rgba(59, 130, 246, 0.15);
+    }
+
+    .lane.l2 {
+      background: var(--l2-bg);
+      border: 1px solid rgba(168, 85, 247, 0.15);
+    }
+
+    .lane-label {
+      font-size: 0.65rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: 0.75rem;
+      opacity: 0.6;
+    }
+
+    .lane.l1 .lane-label { color: var(--l1); }
+    .lane.l2 .lane-label { color: var(--l2); }
+
+    .connector {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+    }
+
+    .connector-line {
+      width: 2px;
+      height: 100%;
+      background: var(--border);
+      position: absolute;
+    }
+
+    .contract-box {
+      padding: 0.5rem 0.75rem;
+      border-radius: 6px;
+      margin-bottom: 0.5rem;
+      font-size: 0.75rem;
+      border: 1px solid var(--border);
+      background: var(--surface);
+    }
+
+    .contract-box .name {
+      font-weight: 700;
+      margin-bottom: 0.15rem;
+    }
+
+    .contract-box .detail {
+      color: var(--text-dim);
+      font-size: 0.65rem;
+    }
+
+    .contract-box.proxy {
+      border-style: dashed;
+      background: var(--surface2);
+    }
+
+    .contract-box.highlight {
+      border-color: var(--call);
+      box-shadow: 0 0 12px rgba(34, 211, 238, 0.15);
+    }
+
+    .steps {
+      margin-top: 1.5rem;
+    }
+
+    .step {
+      display: flex;
+      gap: 0.75rem;
+      margin-bottom: 0.75rem;
+      padding: 0.6rem 0.75rem;
+      border-radius: 6px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      font-size: 0.72rem;
+      line-height: 1.5;
+      cursor: pointer;
+      transition: all 0.2s;
+      opacity: 0.5;
+    }
+
+    .step.active {
+      opacity: 1;
+      border-color: var(--accent);
+      background: var(--surface2);
+    }
+
+    .step.played {
+      opacity: 0.85;
+    }
+
+    .step-num {
+      flex-shrink: 0;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.6rem;
+      font-weight: 700;
+      background: var(--border);
+      color: var(--text);
+    }
+
+    .step.active .step-num {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .step-content {
+      flex: 1;
+    }
+
+    .step-action {
+      font-weight: 600;
+      margin-bottom: 0.15rem;
+    }
+
+    .step-detail {
+      color: var(--text-dim);
+      font-size: 0.65rem;
+    }
+
+    .step-tag {
+      display: inline-block;
+      font-size: 0.55rem;
+      padding: 0.1rem 0.35rem;
+      border-radius: 3px;
+      font-weight: 700;
+      margin-right: 0.25rem;
+      vertical-align: middle;
+    }
+
+    .tag-call { background: rgba(34, 211, 238, 0.15); color: var(--call); }
+    .tag-result { background: rgba(52, 211, 153, 0.15); color: var(--result); }
+    .tag-reentrant { background: rgba(245, 158, 11, 0.15); color: var(--reentrant); }
+    .tag-l2tx { background: rgba(99, 102, 241, 0.15); color: var(--accent); }
+    .tag-scope { background: rgba(168, 85, 247, 0.15); color: var(--l2); }
+
+    .playback-controls {
+      display: flex;
+      justify-content: center;
+      gap: 0.5rem;
+      margin: 1rem 0;
+    }
+
+    .play-btn {
+      padding: 0.4rem 1rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--text);
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 0.75rem;
+      transition: all 0.2s;
+    }
+
+    .play-btn:hover {
+      border-color: var(--accent);
+      background: var(--surface2);
+    }
+
+    .play-btn.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    .play-btn.primary:hover {
+      background: #4f46e5;
+    }
+
+    .diagram {
+      margin: 1rem 0;
+      padding: 1.5rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+
+    .diagram svg {
+      display: block;
+      margin: 0 auto;
+    }
+
+    .legend {
+      display: flex;
+      justify-content: center;
+      gap: 1.5rem;
+      padding: 0.75rem;
+      margin-bottom: 1rem;
+      flex-wrap: wrap;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      font-size: 0.65rem;
+      color: var(--text-dim);
+    }
+
+    .legend-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+
+    .legend-line {
+      width: 20px;
+      height: 2px;
+    }
+
+    .assertions {
+      margin-top: 1rem;
+      padding: 0.75rem;
+      background: rgba(52, 211, 153, 0.05);
+      border: 1px solid rgba(52, 211, 153, 0.2);
+      border-radius: 6px;
+    }
+
+    .assertions h4 {
+      font-size: 0.7rem;
+      color: var(--result);
+      margin-bottom: 0.5rem;
+    }
+
+    .assertion {
+      font-size: 0.65rem;
+      color: var(--text-dim);
+      margin-bottom: 0.25rem;
+      padding-left: 1rem;
+      position: relative;
+    }
+
+    .assertion::before {
+      content: "\2713";
+      position: absolute;
+      left: 0;
+      color: var(--result);
+      font-weight: bold;
+    }
+
+    @media (max-width: 640px) {
+      .lanes { grid-template-columns: 1fr; gap: 0.5rem; }
+      .connector { display: none; }
+      .scenario-tabs { gap: 0.25rem; }
+      .tab { padding: 0.4rem 0.6rem; font-size: 0.65rem; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Cross-Chain Integration Test Visualizer</h1>
+    <p>L1/L2 Sync Rollups - Execution Flow Diagrams</p>
+  </header>
+
+  <div class="scenario-tabs" id="tabs"></div>
+  <div id="app"></div>
+
+  <script>
+const scenarios = [
+  {
+    id: 1,
+    title: "Scenario 1: Simple L1 -> L2",
+    flow: "Alice -> A (-> B') -> B",
+    direction: "L1 calls L2",
+    phases: [
+      {
+        title: "Phase 1: L2 Execution",
+        chain: "l2",
+        description: "SYSTEM executes B(Counter) on L2 via executeIncomingCrossChainCall",
+        l1Contracts: [
+          { name: "A", detail: "CounterAndProxy", type: "contract" },
+          { name: "B'", detail: "Proxy for B (Counter on L2)", type: "proxy" }
+        ],
+        l2Contracts: [
+          { name: "B", detail: "Counter", type: "contract", highlight: true },
+          { name: "A'", detail: "Proxy for A (auto-created)", type: "proxy" }
+        ],
+        steps: [
+          { action: "SYSTEM loads execution table", detail: "RESULT hash -> RESULT (terminal)", tags: ["result"] },
+          { action: "executeIncomingCrossChainCall(dest=B, source=A)", detail: "Builds CALL{rollupId=L2, dest=B, source=A, sourceRollup=MAINNET}", tags: ["call"] },
+          { action: "newScope -> _processCallAtScope", detail: "Auto-creates A' proxy on L2 for source=A", tags: ["scope"] },
+          { action: "A'.executeOnBehalf(B, increment)", detail: "B.increment() executes, returns 1", tags: ["call"] },
+          { action: "RESULT{data=abi.encode(1)} consumed", detail: "Hash matches table entry -> terminal", tags: ["result"] }
+        ],
+        assertions: [
+          "counterL2.counter() == 1",
+          "managerL2.pendingEntryCount() == 0"
+        ]
+      },
+      {
+        title: "Phase 2: L1 Resolution",
+        chain: "l1",
+        description: "Alice calls A on L1, resolves from postBatch execution table",
+        l1Contracts: [
+          { name: "A", detail: "CounterAndProxy", type: "contract", highlight: true },
+          { name: "B'", detail: "Proxy for B", type: "proxy" }
+        ],
+        l2Contracts: [
+          { name: "B", detail: "Counter (already executed)", type: "contract" }
+        ],
+        steps: [
+          { action: "postBatch([CALL->RESULT], proof)", detail: "Deferred entry: CALL hash -> RESULT, L2 state S0->S1", tags: ["l2tx"] },
+          { action: "Alice calls A.increment()", detail: "A calls B' (proxy for B on L2)", tags: ["call"] },
+          { action: "B'.fallback -> executeCrossChainCall", detail: "Builds CALL{rollupId=L2, dest=B, source=A}", tags: ["call"] },
+          { action: "_findAndApplyExecution(hash)", detail: "Matches entry, applies L2 state delta S0->S1", tags: ["result"] },
+          { action: "RESULT(1) returned to A", detail: "A sets targetCounter=1, counter=1", tags: ["result"] }
+        ],
+        assertions: [
+          "counterAndProxy.counter() == 1",
+          "counterAndProxy.targetCounter() == 1",
+          "L2 rollup stateRoot updated"
+        ]
+      }
+    ]
+  },
+  {
+    id: 2,
+    title: "Scenario 2: Simple L2 -> L1",
+    flow: "Alice -> D (-> C') -> C",
+    direction: "L2 calls L1",
+    phases: [
+      {
+        title: "Phase 1: L1 Execution via executeL2TX",
+        chain: "l1",
+        description: "executeL2TX triggers C(Counter) on L1 via scope navigation",
+        l1Contracts: [
+          { name: "C", detail: "Counter", type: "contract", highlight: true },
+          { name: "D'", detail: "Proxy for D (auto-created)", type: "proxy" }
+        ],
+        l2Contracts: [
+          { name: "D", detail: "CounterAndProxy", type: "contract" },
+          { name: "C'", detail: "Proxy for C (Counter on L1)", type: "proxy" }
+        ],
+        steps: [
+          { action: "postBatch([L2TX->CALL, RESULT->RESULT], proof)", detail: "2 deferred entries, L2 state S0->S1", tags: ["l2tx"] },
+          { action: "executeL2TX(L2_ROLLUP_ID, rlpData)", detail: "Builds L2TX action, matches entry 1 -> CALL to C", tags: ["l2tx"] },
+          { action: "_resolveScopes(CALL) -> newScope", detail: "CALL at scope=[] -> _processCallAtScope", tags: ["scope"] },
+          { action: "D'.executeOnBehalf(C, increment)", detail: "C.increment() executes, returns 1", tags: ["call"] },
+          { action: "RESULT consumed -> terminal", detail: "RESULT hash matches entry 2", tags: ["result"] }
+        ],
+        assertions: [
+          "counterL1.counter() == 1",
+          "L2 rollup stateRoot updated"
+        ]
+      },
+      {
+        title: "Phase 2: L2 Resolution",
+        chain: "l2",
+        description: "Alice calls D on L2, resolves from execution table",
+        l1Contracts: [
+          { name: "C", detail: "Counter (already executed)", type: "contract" }
+        ],
+        l2Contracts: [
+          { name: "D", detail: "CounterAndProxy", type: "contract", highlight: true },
+          { name: "C'", detail: "Proxy for C", type: "proxy" }
+        ],
+        steps: [
+          { action: "loadExecutionTable([CALL->RESULT])", detail: "CALL hash -> RESULT(1)", tags: ["result"] },
+          { action: "Alice calls D.increment()", detail: "D calls C' (proxy for C on L1)", tags: ["call"] },
+          { action: "C'.fallback -> executeCrossChainCall", detail: "Builds CALL{rollupId=MAINNET, dest=C, source=D}", tags: ["call"] },
+          { action: "_consumeExecution(hash) -> RESULT(1)", detail: "Hash matches -> returns RESULT directly (no scope nav)", tags: ["result"] },
+          { action: "D receives RESULT(1)", detail: "D sets targetCounter=1, counter=1", tags: ["result"] }
+        ],
+        assertions: [
+          "counterAndProxyL2.counter() == 1",
+          "counterAndProxyL2.targetCounter() == 1",
+          "managerL2.pendingEntryCount() == 0"
+        ]
+      }
+    ]
+  },
+  {
+    id: 3,
+    title: "Scenario 3: Nested L2 -> L1 -> L2",
+    flow: "Alice -> A' (-> A -> B') -> B",
+    direction: "L2 entry, nested through L1, back to L2",
+    phases: [
+      {
+        title: "Phase 1: L1 Execution via executeL2TX (with reentrant call)",
+        chain: "l1",
+        description: "executeL2TX runs A on L1. A internally calls B' which triggers a reentrant executeCrossChainCall.",
+        l1Contracts: [
+          { name: "A", detail: "CounterAndProxy", type: "contract", highlight: true },
+          { name: "B'", detail: "Proxy for B (Counter on L2)", type: "proxy" },
+          { name: "Alice proxy", detail: "Auto-created for source=Alice", type: "proxy" }
+        ],
+        l2Contracts: [
+          { name: "B", detail: "Counter", type: "contract" },
+          { name: "A'", detail: "Proxy for A", type: "proxy" }
+        ],
+        steps: [
+          { action: "postBatch(3 entries, proof)", detail: "Entry 1: L2TX->CALL(A) [S0->S1], Entry 2: CALL(B)->RESULT(1) [S1->S2], Entry 3: RESULT(void)->terminal", tags: ["l2tx"] },
+          { action: "executeL2TX(L2_ROLLUP_ID, rlpAliceTx)", detail: "Builds L2TX, matches entry 1 -> CALL to A", tags: ["l2tx"] },
+          { action: "_resolveScopes(CALL) -> _processCallAtScope", detail: "Auto-creates Alice proxy, calls A.increment()", tags: ["scope", "call"] },
+          { action: "A.increment() -> A calls B'", detail: "B'.fallback -> REENTRANT executeCrossChainCall", tags: ["call", "reentrant"] },
+          { action: "Reentrant: CALL to B matched", detail: "Entry 2 consumed [S1->S2], returns RESULT(1)", tags: ["reentrant", "result"] },
+          { action: "A receives RESULT(1)", detail: "targetCounter=1, counter=1. A returns (void)", tags: ["result"] },
+          { action: "RESULT(void) consumed -> terminal", detail: "Entry 3 consumed, no state delta", tags: ["result"] }
+        ],
+        assertions: [
+          "counterAndProxy.counter() == 1",
+          "counterAndProxy.targetCounter() == 1",
+          "L2 state == S2"
+        ]
+      },
+      {
+        title: "Phase 2: L2 Scope Navigation",
+        chain: "l2",
+        description: "Alice calls A' on L2. Scope navigation runs B.increment() on L2. A' is reentrant (fallback then executeOnBehalf).",
+        l1Contracts: [
+          { name: "A", detail: "CounterAndProxy (already ran in Phase 1)", type: "contract" }
+        ],
+        l2Contracts: [
+          { name: "B", detail: "Counter", type: "contract", highlight: true },
+          { name: "A'", detail: "Proxy for A (REENTRANT)", type: "proxy", highlight: true }
+        ],
+        steps: [
+          { action: "loadExecutionTable(2 entries)", detail: "Entry 1: CALL#1(A)->CALL#2(B,scope=[0]), Entry 2: RESULT->terminal", tags: ["l2tx"] },
+          { action: "Alice calls A' (low-level call)", detail: "A'.fallback -> executeCrossChainCall(Alice, increment)", tags: ["call"] },
+          { action: "CALL#1 consumed -> CALL#2", detail: "CALL#2 has scope=[0], triggers scope navigation", tags: ["scope"] },
+          { action: "newScope([], CALL#2) -> child scope", detail: "scope=[0] is child of [] -> newScope([0], CALL#2)", tags: ["scope"] },
+          { action: "_processCallAtScope at scope=[0]", detail: "sourceProxy = A' (reused!), A'.executeOnBehalf(B, increment)", tags: ["scope", "reentrant"] },
+          { action: "B.increment() runs on L2", detail: "counter 0->1, returns 1", tags: ["call"] },
+          { action: "RESULT consumed -> terminal", detail: "Unwinds scope chain, returns to Alice", tags: ["result"] }
+        ],
+        assertions: [
+          "counterL2.counter() == 1",
+          "counterAndProxy.counter() == 1 (unchanged)",
+          "managerL2.pendingEntryCount() == 0"
+        ]
+      }
+    ]
+  },
+  {
+    id: 4,
+    title: "Scenario 4: Nested L1 -> L2 -> L1",
+    flow: "Alice -> D' (-> D -> C') -> C",
+    direction: "L1 entry, nested through L2, back to L1",
+    phases: [
+      {
+        title: "Phase 1: L2 Execution via executeIncomingCrossChainCall (with reentrant call)",
+        chain: "l2",
+        description: "SYSTEM runs D on L2. D internally calls C' which triggers a reentrant executeCrossChainCall.",
+        l1Contracts: [
+          { name: "C", detail: "Counter", type: "contract" },
+          { name: "D'", detail: "Proxy for D", type: "proxy" }
+        ],
+        l2Contracts: [
+          { name: "D", detail: "CounterAndProxy", type: "contract", highlight: true },
+          { name: "C'", detail: "Proxy for C (Counter on L1)", type: "proxy" },
+          { name: "Alice proxy", detail: "Auto-created for source=Alice", type: "proxy" }
+        ],
+        steps: [
+          { action: "loadExecutionTable(2 entries)", detail: "Entry 1: CALL(C)->RESULT(1), Entry 2: RESULT(void)->terminal", tags: ["l2tx"] },
+          { action: "executeIncomingCrossChainCall(dest=D, source=Alice)", detail: "Builds CALL{rollupId=L2, dest=D}, enters newScope", tags: ["call"] },
+          { action: "_processCallAtScope -> Alice proxy", detail: "Auto-creates Alice proxy on L2, calls D.increment()", tags: ["scope", "call"] },
+          { action: "D.increment() -> D calls C'", detail: "C'.fallback -> REENTRANT executeCrossChainCall", tags: ["call", "reentrant"] },
+          { action: "Reentrant: CALL to C matched", detail: "Entry 1 consumed, returns RESULT(1)", tags: ["reentrant", "result"] },
+          { action: "D receives RESULT(1)", detail: "targetCounter=1, counter=1. D returns (void)", tags: ["result"] },
+          { action: "RESULT(void) consumed -> terminal", detail: "Entry 2 consumed, execution complete", tags: ["result"] }
+        ],
+        assertions: [
+          "counterAndProxyL2.counter() == 1",
+          "counterAndProxyL2.targetCounter() == 1",
+          "managerL2.pendingEntryCount() == 0"
+        ]
+      },
+      {
+        title: "Phase 2: L1 Scope Navigation",
+        chain: "l1",
+        description: "Alice calls D' on L1. Scope navigation runs C.increment() on L1. D' is reentrant (fallback then executeOnBehalf).",
+        l1Contracts: [
+          { name: "C", detail: "Counter", type: "contract", highlight: true },
+          { name: "D'", detail: "Proxy for D (REENTRANT)", type: "proxy", highlight: true }
+        ],
+        l2Contracts: [
+          { name: "D", detail: "CounterAndProxy (already ran in Phase 1)", type: "contract" }
+        ],
+        steps: [
+          { action: "postBatch(2 entries, proof)", detail: "Entry 1: CALL#1(D)->CALL#2(C,scope=[0]) [L2 S0->S1], Entry 2: RESULT->terminal", tags: ["l2tx"] },
+          { action: "Alice calls D' (low-level call)", detail: "D'.fallback -> executeCrossChainCall(Alice, increment)", tags: ["call"] },
+          { action: "CALL#1 consumed -> CALL#2", detail: "CALL#2 has scope=[0], triggers scope navigation. L2 state delta applied.", tags: ["scope"] },
+          { action: "newScope([], CALL#2) -> child scope", detail: "scope=[0] is child of [] -> newScope([0], CALL#2)", tags: ["scope"] },
+          { action: "_processCallAtScope at scope=[0]", detail: "sourceProxy = D' (reused!), D'.executeOnBehalf(C, increment)", tags: ["scope", "reentrant"] },
+          { action: "C.increment() runs on L1", detail: "counter 0->1, returns 1", tags: ["call"] },
+          { action: "RESULT consumed -> terminal", detail: "Unwinds scope chain, returns to Alice", tags: ["result"] }
+        ],
+        assertions: [
+          "counterL1.counter() == 1",
+          "counterAndProxyL2.counter() == 1 (unchanged)",
+          "L2 rollup stateRoot updated"
+        ]
+      }
+    ]
+  }
+];
+
+let activeScenario = 0;
+let activeSteps = {};
+let playInterval = null;
+
+function renderTabs() {
+  const tabs = document.getElementById("tabs");
+  tabs.innerHTML = scenarios.map((s, i) =>
+    `<button class="tab ${i === activeScenario ? 'active' : ''}" onclick="selectScenario(${i})">
+      #${s.id}: ${s.direction}
+    </button>`
+  ).join("");
+}
+
+function renderScenario(s) {
+  const app = document.getElementById("app");
+  const key = s.id;
+  if (!activeSteps[key]) {
+    activeSteps[key] = { phase: 0, step: -1 };
+  }
+
+  let html = `
+    <div class="scenario-header">
+      <h2>${s.title}</h2>
+      <div class="flow">${s.flow}</div>
+      <div class="direction">${s.direction}</div>
+    </div>
+    <div class="legend">
+      <div class="legend-item"><span class="legend-dot" style="background:var(--call)"></span>CALL</div>
+      <div class="legend-item"><span class="legend-dot" style="background:var(--result)"></span>RESULT</div>
+      <div class="legend-item"><span class="legend-dot" style="background:var(--reentrant)"></span>REENTRANT</div>
+      <div class="legend-item"><span class="legend-dot" style="background:var(--accent)"></span>L2TX/BATCH</div>
+      <div class="legend-item"><span class="legend-dot" style="background:var(--l2)"></span>SCOPE NAV</div>
+    </div>
+    <div class="playback-controls">
+      <button class="play-btn" onclick="resetSteps()">Reset</button>
+      <button class="play-btn" onclick="prevStep()">&#9664; Prev</button>
+      <button class="play-btn primary" onclick="nextStep()">Next &#9654;</button>
+      <button class="play-btn" onclick="playAll()">&#9654; Play All</button>
+    </div>
+    <div class="visualization">
+  `;
+
+  s.phases.forEach((phase, pi) => {
+    const current = activeSteps[key];
+    const isActivePhase = pi === current.phase;
+
+    html += `
+      <div class="phase">
+        <div class="phase-title">
+          <h3>${phase.title}</h3>
+          <span class="chain-badge ${phase.chain}">${phase.chain.toUpperCase()}</span>
+        </div>
+
+        <div class="lanes">
+          <div class="lane l1">
+            <div class="lane-label">L1 (Mainnet)</div>
+            ${phase.l1Contracts.map(c =>
+              `<div class="contract-box ${c.type === 'proxy' ? 'proxy' : ''} ${c.highlight ? 'highlight' : ''}">
+                <div class="name">${c.name}</div>
+                <div class="detail">${c.detail}</div>
+              </div>`
+            ).join("")}
+          </div>
+          <div class="connector"><div class="connector-line"></div></div>
+          <div class="lane l2">
+            <div class="lane-label">L2 (Rollup)</div>
+            ${phase.l2Contracts.map(c =>
+              `<div class="contract-box ${c.type === 'proxy' ? 'proxy' : ''} ${c.highlight ? 'highlight' : ''}">
+                <div class="name">${c.name}</div>
+                <div class="detail">${c.detail}</div>
+              </div>`
+            ).join("")}
+          </div>
+        </div>
+
+        <div class="steps">
+          ${phase.steps.map((step, si) => {
+            let cls = "";
+            if (isActivePhase && si === current.step) cls = "active";
+            else if (pi < current.phase || (isActivePhase && si < current.step)) cls = "played";
+            return `
+              <div class="step ${cls}" onclick="jumpToStep(${pi}, ${si})">
+                <div class="step-num">${si + 1}</div>
+                <div class="step-content">
+                  <div class="step-action">
+                    ${step.tags.map(t => `<span class="step-tag tag-${t}">${t.toUpperCase()}</span>`).join("")}
+                    ${step.action}
+                  </div>
+                  <div class="step-detail">${step.detail}</div>
+                </div>
+              </div>
+            `;
+          }).join("")}
+        </div>
+
+        ${(pi < current.phase || (isActivePhase && current.step >= phase.steps.length - 1)) ? `
+          <div class="assertions">
+            <h4>Assertions (Phase ${pi + 1})</h4>
+            ${phase.assertions.map(a => `<div class="assertion">${a}</div>`).join("")}
+          </div>
+        ` : ""}
+      </div>
+    `;
+  });
+
+  html += `</div>`;
+  app.innerHTML = html;
+}
+
+function selectScenario(i) {
+  stopPlay();
+  activeScenario = i;
+  renderTabs();
+  renderScenario(scenarios[i]);
+}
+
+function getState() {
+  const s = scenarios[activeScenario];
+  const key = s.id;
+  if (!activeSteps[key]) activeSteps[key] = { phase: 0, step: -1 };
+  return { scenario: s, state: activeSteps[key] };
+}
+
+function nextStep() {
+  const { scenario, state } = getState();
+  const phase = scenario.phases[state.phase];
+
+  if (state.step < phase.steps.length - 1) {
+    state.step++;
+  } else if (state.phase < scenario.phases.length - 1) {
+    state.phase++;
+    state.step = 0;
+  } else {
+    stopPlay();
+    return false;
+  }
+  renderScenario(scenario);
+  return true;
+}
+
+function prevStep() {
+  const { scenario, state } = getState();
+  if (state.step > 0) {
+    state.step--;
+  } else if (state.phase > 0) {
+    state.phase--;
+    state.step = scenario.phases[state.phase].steps.length - 1;
+  } else {
+    state.step = -1;
+  }
+  renderScenario(scenario);
+}
+
+function resetSteps() {
+  stopPlay();
+  const { scenario, state } = getState();
+  state.phase = 0;
+  state.step = -1;
+  renderScenario(scenario);
+}
+
+function jumpToStep(phase, step) {
+  stopPlay();
+  const { scenario, state } = getState();
+  state.phase = phase;
+  state.step = step;
+  renderScenario(scenario);
+}
+
+function playAll() {
+  stopPlay();
+  resetSteps();
+  playInterval = setInterval(() => {
+    if (!nextStep()) stopPlay();
+  }, 1200);
+}
+
+function stopPlay() {
+  if (playInterval) {
+    clearInterval(playInterval);
+    playInterval = null;
+  }
+}
+
+// Init
+renderTabs();
+renderScenario(scenarios[0]);
+  </script>
+</body>
+</html>
