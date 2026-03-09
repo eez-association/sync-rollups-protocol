@@ -5,11 +5,11 @@ import {ICrossChainManager} from "./ICrossChainManager.sol";
 
 /// @title CrossChainProxy
 /// @notice Proxy contract for cross-chain addresses, deployed via CREATE2
-/// @dev Stores manager address, original address, and original rollup ID as immutables
+/// @dev Stores manager address, original address, and original rollup ID as immutables.
+///      Uses the OZ TransparentProxy pattern: the manager (admin) calling executeOnBehalf
+///      gets the direct forwarding behavior; any other caller hitting executeOnBehalf
+///      is routed through the cross-chain execution path via _fallback().
 contract CrossChainProxy {
-    /// @notice Error when caller is not authorized
-    error Unauthorized();
-
     /// @notice The manager contract address
     address public immutable MANAGER;
 
@@ -31,30 +31,35 @@ contract CrossChainProxy {
     /// @notice Fallback function that forwards all calls to the manager contract
     /// @dev Uses abi.encodeCall for type-safe encoding, low-level call to preserve raw return/revert data
     fallback() external payable {
-        (bool success, bytes memory result) = MANAGER.call{value: msg.value}(
-            abi.encodeCall(ICrossChainManager.executeCrossChainCall, (msg.sender, msg.data))
-        );
+        _fallback();
+    }
 
-        assembly {
-            switch success
-            case 0 { revert(add(result, 0x20), mload(result)) }
-            default { return(add(result, 0x20), mload(result)) }
+    /// @notice Executes a call on behalf of this proxy identity
+    /// @dev When called by the manager, forwards the call to the destination.
+    ///      When called by anyone else, routes through _fallback() (cross-chain path),
+    ///      similar to OZ's TransparentProxy admin pattern.
+    /// @param destination The address to call
+    /// @param data The calldata
+    function executeOnBehalf(address destination, bytes calldata data) external payable {
+        if (msg.sender == MANAGER) {
+            (bool success, bytes memory result) = destination.call{value: msg.value}(data);
+
+            assembly {
+                switch success
+                case 0 { revert(add(result, 0x20), mload(result)) }
+                default { return(add(result, 0x20), mload(result)) }
+            }
+        } else {
+            _fallback();
         }
     }
 
-    /// @notice Executes a call on behalf of another authorized proxy
-    /// @dev Only callable by the manager contract. Reverts bubble up.
-    /// @param destination The address to call
-    /// @param data The calldata
-    function executeOnBehalf(
-        address destination,
-        bytes calldata data
-    ) external payable {
-        if (msg.sender != MANAGER) {
-            revert Unauthorized();
-        }
-
-        (bool success, bytes memory result) = destination.call{value: msg.value}(data);
+    /// @dev Internal fallback that forwards the call to the manager as a cross-chain execution.
+    ///      Uses assembly return/revert which terminates the entire call context.
+    function _fallback() internal {
+        (bool success, bytes memory result) = MANAGER.call{value: msg.value}(
+            abi.encodeCall(ICrossChainManager.executeCrossChainCall, (msg.sender, msg.data))
+        );
 
         assembly {
             switch success

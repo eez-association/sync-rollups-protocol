@@ -5,6 +5,7 @@ pragma solidity ^0.8.24;
 enum ActionType {
     CALL, // A cross-chain call to execute on the destination rollup
     RESULT, // The result of a CALL (success/failure + return data)
+    // END, // END Tx, go from result to this
     L2TX, // A pre-computed L2 transaction (RLP-encoded, permissionless)
     REVERT, // Signals a scope revert — triggers state rollback
     REVERT_CONTINUE // Continuation action after a REVERT, looked up from the execution table

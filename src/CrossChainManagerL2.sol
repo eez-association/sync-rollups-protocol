@@ -46,6 +46,18 @@ contract CrossChainManagerL2 is ICrossChainManager {
     /// @notice Emitted when a new CrossChainProxy is deployed and registered
     event CrossChainProxyCreated(address indexed proxy, address indexed originalAddress, uint256 indexed originalRollupId);
 
+    /// @notice Emitted when execution entries are loaded into the execution table
+    event ExecutionTableLoaded(ExecutionEntry[] entries);
+
+    /// @notice Emitted when an execution entry is consumed from the execution table
+    event ExecutionConsumed(bytes32 indexed actionHash, Action action);
+
+    /// @notice Emitted when a cross-chain call is executed via proxy
+    event CrossChainCallExecuted(bytes32 indexed actionHash, address indexed proxy, address sourceAddress, bytes callData, uint256 value);
+
+    /// @notice Emitted when an incoming cross-chain call is executed via system address
+    event IncomingCrossChainCallExecuted(bytes32 indexed actionHash, address destination, uint256 value, bytes data, address sourceAddress, uint256 sourceRollup, uint256[] scope);
+
     /// @param _rollupId The rollup ID this L2 instance belongs to
     /// @param _systemAddress The privileged address allowed to load execution tables and call executeIncomingCrossChainCall
     constructor(uint256 _rollupId, address _systemAddress) {
@@ -69,6 +81,7 @@ contract CrossChainManagerL2 is ICrossChainManager {
             _executions[entries[i].actionHash].push(entries[i]);
         }
         pendingEntryCount += entries.length;
+        emit ExecutionTableLoaded(entries);
     }
 
     // ──────────────────────────────────────────────
@@ -96,7 +109,8 @@ contract CrossChainManagerL2 is ICrossChainManager {
         });
 
         bytes32 actionHash = keccak256(abi.encode(action));
-        Action memory nextAction = _consumeExecution(actionHash);
+        emit CrossChainCallExecuted(actionHash, msg.sender, sourceAddress, callData, msg.value);
+        Action memory nextAction = _consumeExecution(actionHash, action);
         return _resolveScopes(nextAction);
     }
 
@@ -128,6 +142,9 @@ contract CrossChainManagerL2 is ICrossChainManager {
             sourceRollup: sourceRollup,
             scope: scope
         });
+
+        bytes32 actionHash = keccak256(abi.encode(action));
+        emit IncomingCrossChainCallExecuted(actionHash, destination, value, data, sourceAddress, sourceRollup, scope);
 
         uint256[] memory emptyScope = new uint256[](0);
         Action memory nextAction;
@@ -223,7 +240,7 @@ contract CrossChainManagerL2 is ICrossChainManager {
     }
 
     /// @notice Consumes the last execution entry for the given action hash
-    function _consumeExecution(bytes32 actionHash) internal returns (Action memory nextAction) {
+    function _consumeExecution(bytes32 actionHash, Action memory action) internal returns (Action memory nextAction) {
         ExecutionEntry[] storage executions = _executions[actionHash];
         if (executions.length == 0) revert ExecutionNotFound();
 
@@ -234,6 +251,7 @@ contract CrossChainManagerL2 is ICrossChainManager {
         executions.pop();
         pendingEntryCount--;
 
+        emit ExecutionConsumed(actionHash, action);
         return nextAction;
     }
 
@@ -294,7 +312,7 @@ contract CrossChainManagerL2 is ICrossChainManager {
         });
 
         bytes32 resultHash = keccak256(abi.encode(resultAction));
-        nextAction = _consumeExecution(resultHash);
+        nextAction = _consumeExecution(resultHash, resultAction);
 
         return (currentScope, nextAction);
     }
@@ -333,7 +351,7 @@ contract CrossChainManagerL2 is ICrossChainManager {
         });
 
         bytes32 revertHash = keccak256(abi.encode(revertContinueAction));
-        return _consumeExecution(revertHash);
+        return _consumeExecution(revertHash, revertContinueAction);
     }
 
     /// @notice Appends an element to a scope array, creating a new child scope level

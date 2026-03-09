@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Test} from "forge-std/Test.sol";
+import {Test, Vm} from "forge-std/Test.sol";
 import {CrossChainManagerL2} from "../src/CrossChainManagerL2.sol";
 import {CrossChainProxy} from "../src/CrossChainProxy.sol";
 import {Action, ActionType, ExecutionEntry, StateDelta, ProxyInfo} from "../src/ICrossChainManager.sol";
@@ -1292,11 +1292,13 @@ contract CrossChainManagerL2Test is Test {
         assertEq(p.ORIGINAL_ROLLUP_ID(), TEST_ROLLUP_ID);
     }
 
-    function test_Proxy_ExecuteOnBehalf_RevertsIfNotManager() public {
+    function test_Proxy_ExecuteOnBehalf_NonManagerFallsThrough() public {
         address proxy = manager.createCrossChainProxy(address(target), TEST_ROLLUP_ID);
         CrossChainProxy p = CrossChainProxy(payable(proxy));
+        // Non-manager callers are routed through _fallback() (cross-chain path),
+        // which calls executeCrossChainCall and reverts with ExecutionNotFound
         vm.prank(address(0xDEAD));
-        vm.expectRevert(CrossChainProxy.Unauthorized.selector);
+        vm.expectRevert(CrossChainManagerL2.ExecutionNotFound.selector);
         p.executeOnBehalf(address(target), abi.encodeCall(L2TestTarget.setValue, (42)));
     }
 
@@ -1395,5 +1397,254 @@ contract CrossChainManagerL2Test is Test {
         bytes memory decoded = abi.decode(ret, (bytes));
         uint256 val = abi.decode(decoded, (uint256));
         assertEq(val, 99);
+    }
+
+    // ══════════════════════════════════════════════
+    //  Event tests
+    // ══════════════════════════════════════════════
+
+    // ── ExecutionTableLoaded ──
+
+    function _findExecutionTableLoadedLog(Vm.Log[] memory logs) internal view returns (bool found, uint256 idx) {
+        bytes32 sel = CrossChainManagerL2.ExecutionTableLoaded.selector;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics[0] == sel) {
+                return (true, i);
+            }
+        }
+        return (false, 0);
+    }
+
+    function test_ExecutionTableLoaded_EmitsOnLoad() public {
+        bytes32 hash1 = bytes32(uint256(1));
+        bytes32 hash2 = bytes32(uint256(2));
+
+        StateDelta[] memory emptyDeltas = new StateDelta[](0);
+        ExecutionEntry[] memory entries = new ExecutionEntry[](2);
+        entries[0].stateDeltas = emptyDeltas;
+        entries[0].actionHash = hash1;
+        entries[0].nextAction = _emptyResult();
+        entries[1].stateDeltas = emptyDeltas;
+        entries[1].actionHash = hash2;
+        entries[1].nextAction = _emptyResult();
+
+        vm.recordLogs();
+        vm.prank(SYSTEM_ADDRESS);
+        manager.loadExecutionTable(entries);
+
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        (bool found, uint256 idx) = _findExecutionTableLoadedLog(logs);
+        assertTrue(found, "ExecutionTableLoaded event not found");
+
+        (ExecutionEntry[] memory emitted) = abi.decode(logs[idx].data, (ExecutionEntry[]));
+        assertEq(emitted.length, 2);
+        assertEq(emitted[0].actionHash, hash1);
+        assertEq(emitted[1].actionHash, hash2);
+        assertEq(uint8(emitted[0].nextAction.actionType), uint8(ActionType.RESULT));
+    }
+
+    function test_ExecutionTableLoaded_EmptyBatch() public {
+        ExecutionEntry[] memory entries = new ExecutionEntry[](0);
+
+        vm.recordLogs();
+        vm.prank(SYSTEM_ADDRESS);
+        manager.loadExecutionTable(entries);
+
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        (bool found, uint256 idx) = _findExecutionTableLoadedLog(logs);
+        assertTrue(found, "ExecutionTableLoaded event not found for empty batch");
+
+        (ExecutionEntry[] memory emitted) = abi.decode(logs[idx].data, (ExecutionEntry[]));
+        assertEq(emitted.length, 0);
+    }
+
+    // ── ExecutionConsumed ──
+
+    function test_ExecutionConsumed_EmitsOnConsume() public {
+        address proxy = manager.createCrossChainProxy(address(target), TEST_ROLLUP_ID);
+        bytes memory callData = abi.encodeCall(L2TestTarget.setValue, (42));
+        Action memory callAction = Action({
+            actionType: ActionType.CALL,
+            rollupId: TEST_ROLLUP_ID,
+            destination: address(target),
+            value: 0,
+            data: callData,
+            failed: false,
+            sourceAddress: address(this),
+            sourceRollup: TEST_ROLLUP_ID,
+            scope: new uint256[](0)
+        });
+        bytes32 actionHash = keccak256(abi.encode(callAction));
+        _loadEntry(actionHash, _emptyResult());
+
+        vm.recordLogs();
+        (bool success,) = proxy.call(callData);
+        assertTrue(success);
+
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes32 sel = CrossChainManagerL2.ExecutionConsumed.selector;
+        bool found = false;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics[0] == sel) {
+                assertEq(logs[i].topics[1], actionHash);
+                // Decode the Action from event data
+                (Action memory emittedAction) = abi.decode(logs[i].data, (Action));
+                assertEq(uint8(emittedAction.actionType), uint8(ActionType.CALL));
+                assertEq(emittedAction.rollupId, TEST_ROLLUP_ID);
+                assertEq(emittedAction.destination, address(target));
+                assertEq(emittedAction.sourceAddress, address(this));
+                found = true;
+                break;
+            }
+        }
+        assertTrue(found, "ExecutionConsumed event not found");
+    }
+
+    function test_ExecutionConsumed_EmitsForEachConsumption() public {
+        address proxy = manager.createCrossChainProxy(address(target), TEST_ROLLUP_ID);
+        bytes memory callData = abi.encodeCall(L2TestTarget.setValue, (42));
+        Action memory callAction = Action({
+            actionType: ActionType.CALL,
+            rollupId: TEST_ROLLUP_ID,
+            destination: address(target),
+            value: 0,
+            data: callData,
+            failed: false,
+            sourceAddress: address(this),
+            sourceRollup: TEST_ROLLUP_ID,
+            scope: new uint256[](0)
+        });
+        bytes32 actionHash = keccak256(abi.encode(callAction));
+
+        // Load 2 entries with the same action hash
+        StateDelta[] memory emptyDeltas = new StateDelta[](0);
+        ExecutionEntry[] memory entries = new ExecutionEntry[](2);
+        entries[0].stateDeltas = emptyDeltas;
+        entries[0].actionHash = actionHash;
+        entries[0].nextAction = _emptyResult();
+        entries[1].stateDeltas = emptyDeltas;
+        entries[1].actionHash = actionHash;
+        entries[1].nextAction = _emptyResult();
+        vm.prank(SYSTEM_ADDRESS);
+        manager.loadExecutionTable(entries);
+
+        vm.recordLogs();
+        (bool s1,) = proxy.call(callData);
+        assertTrue(s1);
+        (bool s2,) = proxy.call(callData);
+        assertTrue(s2);
+
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes32 sel = CrossChainManagerL2.ExecutionConsumed.selector;
+        uint256 consumedCount = 0;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics[0] == sel) {
+                assertEq(logs[i].topics[1], actionHash);
+                consumedCount++;
+            }
+        }
+        assertEq(consumedCount, 2);
+    }
+
+    // ── CrossChainCallExecuted ──
+
+    function test_CrossChainCallExecuted_EmitsOnProxyCall() public {
+        address proxy = manager.createCrossChainProxy(address(target), TEST_ROLLUP_ID);
+        bytes memory callData = abi.encodeCall(L2TestTarget.setValue, (42));
+        Action memory callAction = Action({
+            actionType: ActionType.CALL,
+            rollupId: TEST_ROLLUP_ID,
+            destination: address(target),
+            value: 0,
+            data: callData,
+            failed: false,
+            sourceAddress: address(this),
+            sourceRollup: TEST_ROLLUP_ID,
+            scope: new uint256[](0)
+        });
+        bytes32 actionHash = keccak256(abi.encode(callAction));
+        _loadEntry(actionHash, _emptyResult());
+
+        vm.recordLogs();
+        (bool success,) = proxy.call(callData);
+        assertTrue(success);
+
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes32 sel = CrossChainManagerL2.CrossChainCallExecuted.selector;
+        bool found = false;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics[0] == sel) {
+                assertEq(logs[i].topics[1], actionHash);
+                assertEq(address(uint160(uint256(logs[i].topics[2]))), proxy);
+                (address src, bytes memory cd, uint256 val) = abi.decode(logs[i].data, (address, bytes, uint256));
+                assertEq(src, address(this));
+                assertEq(cd, callData);
+                assertEq(val, 0);
+                found = true;
+                break;
+            }
+        }
+        assertTrue(found, "CrossChainCallExecuted event not found");
+    }
+
+    // ── IncomingCrossChainCallExecuted ──
+
+    function test_IncomingCrossChainCallExecuted_EmitsOnRemoteCall() public {
+        address sourceAddr = address(0xBEEF);
+        uint256 sourceRollup = 1;
+        bytes memory callData = abi.encodeCall(L2TestTarget.setValue, (77));
+        uint256[] memory scope = new uint256[](0);
+
+        bytes memory expectedReturnData = "";
+        Action memory resultFromCall = Action({
+            actionType: ActionType.RESULT,
+            rollupId: TEST_ROLLUP_ID,
+            destination: address(0),
+            value: 0,
+            data: expectedReturnData,
+            failed: false,
+            sourceAddress: address(0),
+            sourceRollup: 0,
+            scope: new uint256[](0)
+        });
+        _loadEntry(keccak256(abi.encode(resultFromCall)), _emptyResult());
+
+        vm.recordLogs();
+        vm.prank(SYSTEM_ADDRESS);
+        manager.executeIncomingCrossChainCall(address(target), 0, callData, sourceAddr, sourceRollup, scope);
+
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        // Compute expected action hash
+        Action memory expectedAction = Action({
+            actionType: ActionType.CALL,
+            rollupId: TEST_ROLLUP_ID,
+            destination: address(target),
+            value: 0,
+            data: callData,
+            failed: false,
+            sourceAddress: sourceAddr,
+            sourceRollup: sourceRollup,
+            scope: scope
+        });
+        bytes32 expectedHash = keccak256(abi.encode(expectedAction));
+
+        bytes32 sel = CrossChainManagerL2.IncomingCrossChainCallExecuted.selector;
+        bool found = false;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics[0] == sel) {
+                assertEq(logs[i].topics[1], expectedHash);
+                (address dest, uint256 val, bytes memory data, address src, uint256 srcRollup, uint256[] memory sc) =
+                    abi.decode(logs[i].data, (address, uint256, bytes, address, uint256, uint256[]));
+                assertEq(dest, address(target));
+                assertEq(val, 0);
+                assertEq(data, callData);
+                assertEq(src, sourceAddr);
+                assertEq(srcRollup, sourceRollup);
+                assertEq(sc.length, 0);
+                found = true;
+                break;
+            }
+        }
+        assertTrue(found, "IncomingCrossChainCallExecuted event not found");
     }
 }

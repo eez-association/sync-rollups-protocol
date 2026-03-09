@@ -70,6 +70,15 @@ contract Rollups is ICrossChainManager {
     /// @notice Emitted when an execution is found and applied
     event ExecutionConsumed(bytes32 indexed actionHash, Action action);
 
+    /// @notice Emitted when a cross-chain call is executed via proxy
+    event CrossChainCallExecuted(bytes32 indexed actionHash, address indexed proxy, address sourceAddress, bytes callData, uint256 value);
+
+    /// @notice Emitted when a precomputed L2 transaction is executed
+    event L2TXExecuted(bytes32 indexed actionHash, uint256 indexed rollupId, bytes rlpEncodedTx);
+
+    /// @notice Emitted when a batch is posted via postBatch
+    event BatchPosted(ExecutionEntry[] entries, bytes32 publicInputsHash);
+
     /// @notice Error when proof verification fails
     error InvalidProof();
 
@@ -207,7 +216,6 @@ contract Rollups is ICrossChainManager {
         _verifyProof(proof, publicInputsHash);
 
         // --- Process entries ---
-
         for (uint256 i = 0; i < entries.length; i++) {
             if (entries[i].actionHash == bytes32(0)) {
                 // verify state roots match current state, then apply deltas
@@ -224,6 +232,7 @@ contract Rollups is ICrossChainManager {
             }
         }
 
+        emit BatchPosted(entries, publicInputsHash);
         lastStateUpdateBlock = block.number;
     }
 
@@ -271,6 +280,7 @@ contract Rollups is ICrossChainManager {
         });
 
         bytes32 actionHash = keccak256(abi.encode(action));
+        emit CrossChainCallExecuted(actionHash, msg.sender, sourceAddress, callData, msg.value);
         Action memory nextAction = _findAndApplyExecution(actionHash, action);
 
        return _resolveScopes(nextAction);
@@ -299,6 +309,7 @@ contract Rollups is ICrossChainManager {
         });
 
         bytes32 currentActionHash = keccak256(abi.encode(action));
+        emit L2TXExecuted(currentActionHash, rollupId, rlpEncodedTx);
         Action memory nextAction = _findAndApplyExecution(currentActionHash, action);
 
         return _resolveScopes(nextAction);
