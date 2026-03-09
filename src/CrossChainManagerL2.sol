@@ -227,8 +227,10 @@ contract CrossChainManagerL2 is ICrossChainManager {
         ExecutionEntry[] storage executions = _executions[actionHash];
         if (executions.length == 0) revert ExecutionNotFound();
 
-        uint256 lastIndex = executions.length - 1;
-        nextAction = executions[lastIndex].nextAction; // TODO
+        // Save the next action before removing the entry
+        nextAction = executions[0].nextAction;
+        // Swap-and-pop: move the last entry into the consumed slot, then remove the last element
+        executions[0] = executions[executions.length - 1];
         executions.pop();
         pendingEntryCount--;
 

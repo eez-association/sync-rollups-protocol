@@ -528,7 +528,7 @@ contract RollupsTest is Test {
         entries[0].actionHash = bytes32(0);
         entries[0].nextAction = _emptyAction();
 
-        vm.expectRevert(Rollups.EtherIncrementsSumNotZero.selector);
+        vm.expectRevert(Rollups.EtherDeltaMismatch.selector);
         rollups.postBatch(entries, 0, "", "proof");
     }
 

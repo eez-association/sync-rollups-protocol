@@ -85,9 +85,6 @@ contract Rollups is ICrossChainManager {
     /// @notice Error when state was already updated in this block
     error StateAlreadyUpdatedThisBlock();
 
-    /// @notice Error when the sum of ether increments is not zero
-    error EtherIncrementsSumNotZero();
-
     /// @notice Error when a rollup would have negative ether balance
     error InsufficientRollupBalance();
 
@@ -99,6 +96,9 @@ contract Rollups is ICrossChainManager {
 
     /// @notice Error when the ether delta from state deltas doesn't match actual ETH flow
     error EtherDeltaMismatch();
+
+    /// @notice Error when a state delta's currentState doesn't match the rollup's current state root
+    error StateRootMismatch();
 
     /// @notice Error when a scope reverts, carrying the next action to continue with
     /// @param nextAction The ABI-encoded next action to continue with
@@ -184,7 +184,7 @@ contract Rollups is ICrossChainManager {
                     abi.encode(entries[i].stateDeltas),
                     abi.encode(vks),
                     entries[i].actionHash,
-                    abi.encode(entries[i].nextAction)
+                    abi.encode(entries[i].nextAction) // update to flatten actions TODO
                 )
             );
         }
@@ -208,25 +208,20 @@ contract Rollups is ICrossChainManager {
 
         // --- Process entries ---
 
-        int256 totalEtherDelta = 0;
-
         for (uint256 i = 0; i < entries.length; i++) {
             if (entries[i].actionHash == bytes32(0)) {
-                // Immediate: apply state deltas now
-                _applyStateDeltas(entries[i].stateDeltas);
-                //TODO check state roots are checked evyerhwer, maybe create another struct to sned just l2 txs
-                // Track ether deltas for conservation check
+                // verify state roots match current state, then apply deltas
                 for (uint256 j = 0; j < entries[i].stateDeltas.length; j++) {
-                    totalEtherDelta += entries[i].stateDeltas[j].etherDelta;
+                    StateDelta memory delta = entries[i].stateDeltas[j];
+                    if (rollups[delta.rollupId].stateRoot != delta.currentState) {
+                        revert StateRootMismatch();
+                    }
                 }
+                _applyStateDeltas(entries[i].stateDeltas);
             } else {
                 // Deferred: store in execution table
                 _executions[entries[i].actionHash].push(entries[i]);
             }
-        }
-
-        if (totalEtherDelta != 0) {
-            revert EtherIncrementsSumNotZero();
         }
 
         lastStateUpdateBlock = block.number;
@@ -447,20 +442,6 @@ contract Rollups is ICrossChainManager {
             if (allMatch) {
                 // Found matching execution - apply all state deltas and ether deltas
                 _applyStateDeltas(execution.stateDeltas);
-                
-                // TODO this works but might be cleaner so check both action and next action and proess both value deltas
-                // The problem wiht this is that prover should be aware to substract ether in the delta in the result not in the call (which coudl make sense)
-                int256 executionEtherDelta;
-                // Track ether deltas from state transitions
-                for (uint256 j = 0; j < execution.stateDeltas.length; j++) {
-                    executionEtherDelta += execution.stateDeltas[j].etherDelta;
-                }
-                // Verify ether accounting: state delta ether changes must match actual ETH flow
-                if (executionEtherDelta != _etherDelta) {
-                    revert EtherDeltaMismatch();
-                }
-                _etherDelta = 0;
-
                 // Copy nextAction to memory before removing from storage
                 nextAction = execution.nextAction;
 
@@ -479,12 +460,15 @@ contract Rollups is ICrossChainManager {
         revert ExecutionNotFound();
     }
 
-    /// @notice Applies state deltas and ether balance changes (each delta specifies its own rollupId)
+    /// @notice Applies state deltas, ether balance changes, and verifies ether accounting against _etherDelta
     function _applyStateDeltas(StateDelta[] memory deltas) internal {
+        int256 totalEtherDelta;
+
         for (uint256 i = 0; i < deltas.length; i++) {
             StateDelta memory delta = deltas[i];
             RollupConfig storage config = rollups[delta.rollupId];
             config.stateRoot = delta.newState;
+            totalEtherDelta += delta.etherDelta;
 
             if (delta.etherDelta < 0) {
                 uint256 decrement = uint256(-delta.etherDelta);
@@ -498,6 +482,15 @@ contract Rollups is ICrossChainManager {
 
             emit L2ExecutionPerformed(delta.rollupId, delta.currentState, delta.newState);
         }
+
+        // Verify ether accounting: state delta ether changes must match actual ETH flow
+        if (totalEtherDelta != _etherDelta) {
+            revert EtherDeltaMismatch();
+        }
+
+        // reset _etherDelta
+        _etherDelta = 0;
+
     }
 
     /// @notice Handles scope navigation and returns the final RESULT, reverting if execution fails
