@@ -43,6 +43,9 @@ contract CrossChainManagerL2 is ICrossChainManager {
     /// @notice Error when revert data from a child scope is too short to decode
     error InvalidRevertData();
 
+    /// @notice Error when ETH transfer to system address fails
+    error EtherTransferFailed();
+
     /// @notice Emitted when a new CrossChainProxy is deployed and registered
     event CrossChainProxyCreated(address indexed proxy, address indexed originalAddress, uint256 indexed originalRollupId);
 
@@ -107,6 +110,12 @@ contract CrossChainManagerL2 is ICrossChainManager {
             sourceRollup: ROLLUP_ID,
             scope: new uint256[](0)
         });
+        
+        // burn ether — return to system address
+        if (msg.value > 0) {
+            (bool success,) = SYSTEM_ADDRESS.call{value: msg.value}("");
+            if (!success) revert EtherTransferFailed();
+        }
 
         bytes32 actionHash = keccak256(abi.encode(action));
         emit CrossChainCallExecuted(actionHash, msg.sender, sourceAddress, callData, msg.value);
@@ -130,7 +139,7 @@ contract CrossChainManagerL2 is ICrossChainManager {
         address sourceAddress,
         uint256 sourceRollup,
         uint256[] calldata scope
-    ) external onlySystemAddress returns (bytes memory result) {
+    ) external payable onlySystemAddress returns (bytes memory result) {
         Action memory action = Action({
             actionType: ActionType.CALL,
             rollupId: ROLLUP_ID,
