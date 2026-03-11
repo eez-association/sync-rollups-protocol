@@ -33,8 +33,8 @@ export function useEventStream() {
       const tableMutations = processEventForTables(event);
       if (tableMutations.l1Adds.length > 0) addL1Entries(tableMutations.l1Adds);
       if (tableMutations.l2Adds.length > 0) addL2Entries(tableMutations.l2Adds);
-      for (const hash of tableMutations.l1Consumes) consumeL1Entry(truncateHex(hash));
-      for (const hash of tableMutations.l2Consumes) consumeL2Entry(truncateHex(hash));
+      for (const info of tableMutations.l1Consumes) consumeL1Entry(truncateHex(info.actionHash), info.actionDetail);
+      for (const info of tableMutations.l2Consumes) consumeL2Entry(truncateHex(info.actionHash), info.actionDetail);
 
       // Process architecture discovery
       const store = useStore.getState();

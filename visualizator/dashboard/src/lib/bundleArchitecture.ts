@@ -489,13 +489,23 @@ function computeTableStates(events: EventRecord[]): StepTableState[] {
     }
 
     // Mark consumed entries
-    for (const hash of result.l1Consumes) {
-      const entry = l1Entries.find(e => e.fullActionHash === hash && e.stepStatus !== "consumed");
-      if (entry) entry.stepStatus = "jc";
+    for (const info of result.l1Consumes) {
+      const entry = l1Entries.find(e => e.fullActionHash === info.actionHash && e.stepStatus !== "consumed");
+      if (entry) {
+        entry.stepStatus = "jc";
+        if (info.actionDetail && Object.keys(info.actionDetail).length > 0) {
+          entry.actionDetail = info.actionDetail;
+        }
+      }
     }
-    for (const hash of result.l2Consumes) {
-      const entry = l2Entries.find(e => e.fullActionHash === hash && e.stepStatus !== "consumed");
-      if (entry) entry.stepStatus = "jc";
+    for (const info of result.l2Consumes) {
+      const entry = l2Entries.find(e => e.fullActionHash === info.actionHash && e.stepStatus !== "consumed");
+      if (entry) {
+        entry.stepStatus = "jc";
+        if (info.actionDetail && Object.keys(info.actionDetail).length > 0) {
+          entry.actionDetail = info.actionDetail;
+        }
+      }
     }
 
     // Snapshot

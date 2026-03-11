@@ -1284,13 +1284,8 @@ contract CrossChainManagerL2Test is Test {
 
     // ── CrossChainProxy direct tests ──
 
-    function test_Proxy_StoresImmutables() public {
-        address proxy = manager.createCrossChainProxy(address(target), TEST_ROLLUP_ID);
-        CrossChainProxy p = CrossChainProxy(payable(proxy));
-        assertEq(address(p.MANAGER()), address(manager));
-        assertEq(p.ORIGINAL_ADDRESS(), address(target));
-        assertEq(p.ORIGINAL_ROLLUP_ID(), TEST_ROLLUP_ID);
-    }
+    // test_Proxy_StoresImmutables removed — immutables are now internal,
+    // so getter calls hit fallback (transparent proxy behavior).
 
     function test_Proxy_ExecuteOnBehalf_NonManagerFallsThrough() public {
         address proxy = manager.createCrossChainProxy(address(target), TEST_ROLLUP_ID);

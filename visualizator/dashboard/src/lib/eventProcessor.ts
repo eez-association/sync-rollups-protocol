@@ -1,25 +1,39 @@
 import type { EventRecord } from "../types/events";
 import type { TableEntry } from "../types/visualization";
 import { truncateHex } from "./actionFormatter";
-import { computeActionHash, formatActionFields, actionSummary, type ActionFields } from "./actionHashDecoder";
+import { computeActionHash, formatActionFields, actionFromEventArgs, actionSummary, type ActionFields } from "./actionHashDecoder";
 
 /**
  * Processes an event into table entry mutations.
  * Returns { adds, consumes } for the appropriate chain.
  */
+export type ConsumeInfo = {
+  actionHash: string;
+  actionDetail: Record<string, string>;
+};
+
+// Cache: actionHash -> decoded detail from ExecutionConsumed events.
+// Allows entries added *after* their consumption was already seen (e.g. L2
+// consumed before L1 BatchPosted is processed) to show decoded fields immediately.
+const actionDetailCache = new Map<string, Record<string, string>>();
+
+export function getActionDetailCache() {
+  return actionDetailCache;
+}
+
 export function processEventForTables(
   event: EventRecord,
 ): {
   l1Adds: TableEntry[];
   l2Adds: TableEntry[];
-  l1Consumes: string[];
-  l2Consumes: string[];
+  l1Consumes: ConsumeInfo[];
+  l2Consumes: ConsumeInfo[];
 } {
   const result = {
     l1Adds: [] as TableEntry[],
     l2Adds: [] as TableEntry[],
-    l1Consumes: [] as string[],
-    l2Consumes: [] as string[],
+    l1Consumes: [] as ConsumeInfo[],
+    l2Consumes: [] as ConsumeInfo[],
   };
 
   switch (event.eventName) {
@@ -87,10 +101,24 @@ export function processEventForTables(
 
     case "ExecutionConsumed": {
       const actionHash = event.args.actionHash as string;
+      const actionArg = event.args.action as Record<string, unknown> | undefined;
+      let actionDetail: Record<string, string> = {};
+      if (actionArg) {
+        const fields = actionFromEventArgs(actionArg);
+        const computed = computeActionHash(fields);
+        actionDetail = {
+          computedHash: computed,
+          ...formatActionFields(fields),
+        };
+      }
+      if (Object.keys(actionDetail).length > 0) {
+        actionDetailCache.set(actionHash.toLowerCase(), actionDetail);
+      }
+      const info: ConsumeInfo = { actionHash, actionDetail };
       if (event.chain === "l1") {
-        result.l1Consumes.push(actionHash);
+        result.l1Consumes.push(info);
       } else {
-        result.l2Consumes.push(actionHash);
+        result.l2Consumes.push(info);
       }
       break;
     }
@@ -141,9 +169,9 @@ function entryToTableEntry(
   );
   const rollupIds = entry.stateDeltas.map((sd) => sd.rollupId);
 
-  // Build action hash detail: we only have the hash, not the original action fields
-  // The actionHash can be verified when ExecutionConsumed fires (which includes the action)
-  const actionDetail: Record<string, string> = {
+  // Check cache first — the action may have been decoded from an earlier ExecutionConsumed
+  const cached = actionDetailCache.get(entry.actionHash.toLowerCase());
+  const actionDetail: Record<string, string> = cached ?? {
     actionHash: entry.actionHash,
   };
 

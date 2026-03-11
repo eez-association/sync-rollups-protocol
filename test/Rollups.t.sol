@@ -606,18 +606,8 @@ contract RollupsTest is Test {
     }
 
     // ──────────────────────────────────────────────
-    //  Proxy immutables
+    //  Proxy immutables (now internal — all non-manager calls hit fallback)
     // ──────────────────────────────────────────────
-
-    function test_Proxy_StoresImmutables() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
-        address proxyAddr = rollups.createCrossChainProxy(address(target), rollupId);
-        CrossChainProxy proxy = CrossChainProxy(payable(proxyAddr));
-
-        assertEq(address(proxy.MANAGER()), address(rollups));
-        assertEq(proxy.ORIGINAL_ADDRESS(), address(target));
-        assertEq(proxy.ORIGINAL_ROLLUP_ID(), rollupId);
-    }
 
     // ══════════════════════════════════════════════
     //  NEW COVERAGE TESTS

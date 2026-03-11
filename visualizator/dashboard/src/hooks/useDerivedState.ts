@@ -145,15 +145,25 @@ export function useDerivedState() {
       }
 
       // Consume entries
-      for (const hash of mutations.l1Consumes) {
-        const truncated = truncateHex(hash);
+      for (const info of mutations.l1Consumes) {
+        const truncated = truncateHex(info.actionHash);
         const entry = replayL1.find((e) => e.actionHash === truncated);
-        if (entry) entry.status = isCurrent ? "jc" : "consumed";
+        if (entry) {
+          entry.status = isCurrent ? "jc" : "consumed";
+          if (info.actionDetail && Object.keys(info.actionDetail).length > 0) {
+            entry.actionDetail = info.actionDetail;
+          }
+        }
       }
-      for (const hash of mutations.l2Consumes) {
-        const truncated = truncateHex(hash);
+      for (const info of mutations.l2Consumes) {
+        const truncated = truncateHex(info.actionHash);
         const entry = replayL2.find((e) => e.actionHash === truncated);
-        if (entry) entry.status = isCurrent ? "jc" : "consumed";
+        if (entry) {
+          entry.status = isCurrent ? "jc" : "consumed";
+          if (info.actionDetail && Object.keys(info.actionDetail).length > 0) {
+            entry.actionDetail = info.actionDetail;
+          }
+        }
       }
 
       // State updates

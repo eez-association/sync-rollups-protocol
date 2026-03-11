@@ -11,13 +11,13 @@ import {ICrossChainManager} from "./ICrossChainManager.sol";
 ///      is routed through the cross-chain execution path via _fallback().
 contract CrossChainProxy {
     /// @notice The manager contract address
-    address public immutable MANAGER;
+    address internal immutable MANAGER;
 
     /// @notice The original address this proxy represents
-    address public immutable ORIGINAL_ADDRESS;
+    address internal immutable ORIGINAL_ADDRESS;
 
     /// @notice The original rollup ID
-    uint256 public immutable ORIGINAL_ROLLUP_ID;
+    uint256 internal immutable ORIGINAL_ROLLUP_ID;
 
     /// @param _manager The manager contract address (Rollups on L1, CrossChainManagerL2 on L2)
     /// @param _originalAddress The original address this proxy represents

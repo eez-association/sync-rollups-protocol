@@ -4,8 +4,6 @@ import { useStore } from "../store";
 import type { TransactionBundle } from "../types/visualization";
 import { buildBundleSteps, type BundleStep } from "../lib/callFlowBuilder";
 import { ArchitectureDiagram } from "./ArchitectureDiagram";
-import { truncateHex } from "../lib/actionFormatter";
-import { decodeActionHash, actionFromEventArgs, actionSummary } from "../lib/actionHashDecoder";
 import { buildBundleArchitecture, type StepTableState, type StepContractState } from "../lib/bundleArchitecture";
 
 type Props = {
@@ -49,27 +47,6 @@ export const BundleDetail: React.FC<Props> = ({ bundle, onClose }) => {
   // Per-step table + state
   const currentTable: StepTableState | undefined = arch.tableStates[activeStep];
   const currentState: StepContractState | undefined = arch.contractStates[activeStep];
-
-  // Decoded actions for consumed events
-  const decodedActions = useMemo(() => {
-    const map = new Map<string, { summary: string; verified: boolean; fields: Record<string, string> }>();
-    for (const event of bundleEvents) {
-      if (event.eventName !== "ExecutionConsumed") continue;
-      try {
-        const actionArg = event.args.action as Record<string, unknown>;
-        if (!actionArg) continue;
-        const fields = actionFromEventArgs(actionArg);
-        const storedHash = event.args.actionHash as string;
-        const decoded = decodeActionHash(storedHash, fields);
-        map.set(event.id, {
-          summary: actionSummary(fields),
-          verified: decoded.verified,
-          fields: decoded.display,
-        });
-      } catch { /* skip */ }
-    }
-    return map;
-  }, [bundleEvents]);
 
   const currentStep = steps[activeStep];
 
@@ -115,9 +92,10 @@ export const BundleDetail: React.FC<Props> = ({ bundle, onClose }) => {
     >
       <div
         style={{
-          width: "94vw",
-          maxWidth: 1200,
-          maxHeight: "92vh",
+          width: "98vw",
+          maxWidth: "98vw",
+          height: "96vh",
+          maxHeight: "96vh",
           background: COLORS.bg,
           border: `1px solid ${COLORS.brd}`,
           borderRadius: 10,
@@ -199,29 +177,32 @@ export const BundleDetail: React.FC<Props> = ({ bundle, onClose }) => {
                 <div style={{ fontSize: "0.5rem", color: COLORS.dim, marginTop: 4, marginLeft: 28 }}>
                   {currentStep.detail}
                 </div>
-                <div style={{ fontSize: "0.45rem", color: COLORS.dim, marginTop: 2, marginLeft: 28 }}>
-                  tx: {currentStep.txHash}
+                <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 2, marginLeft: 28 }}>
+                  <span style={{ fontSize: "0.45rem", color: COLORS.dim }}>
+                    tx: {currentStep.txHash}
+                  </span>
+                  <CopyButton text={currentStep.txHash} />
                 </div>
               </div>
             )}
 
-            {/* Execution Tables — L1 & L2 side by side */}
-            {currentTable && (currentTable.l1.length > 0 || currentTable.l2.length > 0) && (
-              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                <TablePanel
-                  title="L1 Execution Table"
-                  subtitle="Rollups"
-                  entries={currentTable.l1}
-                  chainColor={COLORS.l1}
-                />
-                <TablePanel
-                  title="L2 Execution Table"
-                  subtitle="ManagerL2"
-                  entries={currentTable.l2}
-                  chainColor={COLORS.l2}
-                />
-              </div>
-            )}
+            {/* Execution Tables — L1 & L2 side by side (always shown) */}
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <TablePanel
+                title="L1 Execution Table"
+                subtitle="Rollups"
+                entries={currentTable?.l1 ?? []}
+                chainColor={COLORS.l1}
+                defaultExpanded
+              />
+              <TablePanel
+                title="L2 Execution Table"
+                subtitle="ManagerL2"
+                entries={currentTable?.l2 ?? []}
+                chainColor={COLORS.l2}
+                defaultExpanded
+              />
+            </div>
 
             {/* Contract State */}
             {currentState && currentState.entries.length > 0 && (
@@ -248,47 +229,6 @@ export const BundleDetail: React.FC<Props> = ({ bundle, onClose }) => {
               </div>
             )}
 
-            {/* Transaction Hashes */}
-            <div
-              style={{
-                marginTop: 8,
-                background: COLORS.s1,
-                border: `1px solid ${COLORS.brd}`,
-                borderRadius: 8,
-                padding: "8px 12px",
-              }}
-            >
-              <SectionHeader>Transaction Hashes</SectionHeader>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {[...bundle.txHashes].map((h) => (
-                  <TxHashChip key={h} hash={h} />
-                ))}
-              </div>
-            </div>
-
-            {/* Action Hash Decoding */}
-            {bundle.actionHashes.length > 0 && (
-              <div
-                style={{
-                  marginTop: 8,
-                  background: COLORS.s1,
-                  border: `1px solid ${COLORS.brd}`,
-                  borderRadius: 8,
-                  padding: "8px 12px",
-                }}
-              >
-                <SectionHeader>Action Hashes (Decoded)</SectionHeader>
-                {bundle.actionHashes.map((hash) => {
-                  const consumed = bundleEvents.find(
-                    (e) =>
-                      e.eventName === "ExecutionConsumed" &&
-                      (e.args.actionHash as string)?.toLowerCase() === hash.toLowerCase(),
-                  );
-                  const decoded = consumed ? (decodedActions.get(consumed.id) ?? null) : null;
-                  return <ActionHashBlock key={hash} hash={hash} decoded={decoded} />;
-                })}
-              </div>
-            )}
           </div>
 
           {/* Step sidebar */}
@@ -355,12 +295,25 @@ export const BundleDetail: React.FC<Props> = ({ bundle, onClose }) => {
 
 // ─── Execution Table Panel ──────────────────────────────
 
+type MiniEntry = {
+  stepStatus: string;
+  actionHash: string;
+  nextActionHash: string;
+  delta: string | null;
+  stateDeltas?: string[];
+  actionDetail?: Record<string, string>;
+  nextActionDetail?: Record<string, string>;
+  fullActionHash?: string;
+  fullNextActionHash?: string;
+};
+
 const TablePanel: React.FC<{
   title: string;
   subtitle: string;
-  entries: { stepStatus: string; actionHash: string; nextActionHash: string; delta: string | null; stateDeltas?: string[] }[];
+  entries: MiniEntry[];
   chainColor: string;
-}> = ({ title, subtitle, entries, chainColor }) => {
+  defaultExpanded?: boolean;
+}> = ({ title, subtitle, entries, chainColor, defaultExpanded }) => {
   const active = entries.filter(e => e.stepStatus !== "consumed");
   return (
     <div
@@ -369,31 +322,33 @@ const TablePanel: React.FC<{
         background: COLORS.s1,
         border: `1px solid ${COLORS.brd}`,
         borderRadius: 8,
-        padding: "8px 10px",
+        padding: "10px 12px",
         minWidth: 0,
       }}
     >
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
-        <div style={{ fontSize: "0.5rem", fontWeight: 700, color: chainColor }}>
+        <div style={{ fontSize: "0.6rem", fontWeight: 700, color: chainColor }}>
           {title} <span style={{ color: COLORS.dim, fontWeight: 400 }}>({subtitle})</span>
         </div>
-        <div style={{ fontSize: "0.45rem", color: COLORS.dim }}>{active.length} entries</div>
+        <div style={{ fontSize: "0.5rem", color: COLORS.dim }}>{active.length} entries</div>
       </div>
       {entries.length === 0 ? (
-        <div style={{ fontSize: "0.48rem", color: COLORS.dim, fontStyle: "italic", textAlign: "center", padding: 8 }}>
+        <div style={{ fontSize: "0.55rem", color: COLORS.dim, fontStyle: "italic", textAlign: "center", padding: 8 }}>
           empty
         </div>
       ) : (
-        entries.map((entry, i) => <TableEntryMini key={i} entry={entry} index={i} />)
+        entries.map((entry, i) => <TableEntryMini key={i} entry={entry} index={i} defaultExpanded={defaultExpanded} />)
       )}
     </div>
   );
 };
 
 const TableEntryMini: React.FC<{
-  entry: { stepStatus: string; actionHash: string; nextActionHash: string; delta: string | null; stateDeltas?: string[] };
+  entry: MiniEntry;
   index: number;
-}> = ({ entry, index }) => {
+  defaultExpanded?: boolean;
+}> = ({ entry, index, defaultExpanded }) => {
+  const [expanded, setExpanded] = useState(defaultExpanded ?? false);
   const isJa = entry.stepStatus === "ja";
   const isJc = entry.stepStatus === "jc";
   const isConsumed = entry.stepStatus === "consumed";
@@ -401,36 +356,98 @@ const TableEntryMini: React.FC<{
   const borderColor = isJa ? COLORS.add : isJc ? COLORS.rm : COLORS.brd;
   const opacity = isConsumed ? 0.3 : 1;
 
+  // Extract decoded fields (skip computedHash/actionHash keys — shown as the header hash)
+  const actionFields = entry.actionDetail
+    ? Object.entries(entry.actionDetail).filter(([k]) => k !== "computedHash" && k !== "actionHash")
+    : [];
+  const nextActionFields = entry.nextActionDetail
+    ? Object.entries(entry.nextActionDetail).filter(([k]) => k !== "computedHash" && k !== "actionHash")
+    : [];
+  const hasDecodedFields = actionFields.length > 0 || nextActionFields.length > 0;
+
   return (
     <div
       style={{
-        padding: "4px 6px",
-        marginBottom: 3,
-        borderRadius: 4,
+        marginBottom: 4,
+        borderRadius: 5,
         background: COLORS.s2,
         border: `1px solid ${borderColor}`,
         opacity,
-        fontSize: "0.48rem",
-        textDecoration: isJc ? "line-through" : undefined,
+        fontSize: "0.58rem",
         transition: "all 0.2s",
+        overflow: "hidden",
       }}
     >
-      <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+      {/* Summary row */}
+      <div
+        onClick={() => hasDecodedFields && setExpanded(!expanded)}
+        style={{
+          display: "flex",
+          gap: 6,
+          alignItems: "center",
+          padding: "5px 8px",
+          cursor: hasDecodedFields ? "pointer" : "default",
+          textDecoration: isJc ? "line-through" : undefined,
+        }}
+      >
         <span style={{ color: COLORS.dim, fontWeight: 700 }}>#{index + 1}</span>
         <span style={{ color: COLORS.add }}>{entry.actionHash}</span>
         <span style={{ color: COLORS.dim }}>→</span>
-        <span style={{ color: COLORS.warn }}>{entry.nextActionHash}</span>
+        <span style={{ color: COLORS.warn, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{entry.nextActionHash}</span>
+        {isJa && (
+          <span style={{ fontSize: "0.48rem", color: COLORS.add, fontWeight: 700, flexShrink: 0 }}>+added</span>
+        )}
+        {isJc && (
+          <span style={{ fontSize: "0.48rem", color: COLORS.rm, fontWeight: 700, flexShrink: 0 }}>consumed</span>
+        )}
+        {hasDecodedFields && (
+          <span style={{ fontSize: "0.48rem", color: COLORS.dim, flexShrink: 0 }}>
+            {expanded ? "\u25B2" : "\u25BC"}
+          </span>
+        )}
       </div>
+
+      {/* State deltas (always visible) */}
       {entry.stateDeltas && entry.stateDeltas.length > 0 && (
-        <div style={{ fontSize: "0.45rem", color: COLORS.ok, marginTop: 2 }}>
+        <div style={{ fontSize: "0.52rem", color: COLORS.ok, padding: "0 8px 4px" }}>
           {entry.stateDeltas.join("; ")}
         </div>
       )}
-      {isJa && (
-        <span style={{ fontSize: "0.4rem", color: COLORS.add, fontWeight: 700, marginLeft: 4 }}>+added</span>
-      )}
-      {isJc && (
-        <span style={{ fontSize: "0.4rem", color: COLORS.rm, fontWeight: 700, marginLeft: 4 }}>consumed</span>
+
+      {/* Expanded decoded fields */}
+      {expanded && hasDecodedFields && (
+        <div style={{ borderTop: `1px solid ${COLORS.brd}`, padding: "6px 8px", background: "rgba(0,0,0,0.2)" }}>
+          {actionFields.length > 0 && (
+            <div style={{ marginBottom: 5 }}>
+              <div style={{ fontSize: "0.48rem", fontWeight: 700, color: COLORS.acc, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 3 }}>
+                Action (hashed as actionHash)
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "85px 1fr", gap: "2px 8px", fontSize: "0.52rem" }}>
+                {actionFields.map(([k, v]) => (
+                  <React.Fragment key={k}>
+                    <span style={{ color: COLORS.dim }}>{k}</span>
+                    <span style={{ color: k === "actionType" || (k === "data" && v !== "0x") ? COLORS.add : COLORS.tx, wordBreak: "break-all" }}>{v}</span>
+                  </React.Fragment>
+                ))}
+              </div>
+            </div>
+          )}
+          {nextActionFields.length > 0 && (
+            <div>
+              <div style={{ fontSize: "0.48rem", fontWeight: 700, color: COLORS.acc, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 3 }}>
+                Next Action (returned on match)
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "85px 1fr", gap: "2px 8px", fontSize: "0.52rem" }}>
+                {nextActionFields.map(([k, v]) => (
+                  <React.Fragment key={k}>
+                    <span style={{ color: COLORS.dim }}>{k}</span>
+                    <span style={{ color: k === "actionType" || (k === "data" && v !== "0x") ? COLORS.add : COLORS.tx, wordBreak: "break-all" }}>{v}</span>
+                  </React.Fragment>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
@@ -528,76 +545,31 @@ const StatusDot: React.FC<{ status: string }> = ({ status }) => (
   />
 );
 
-const TxHashChip: React.FC<{ hash: string }> = ({ hash }) => {
+const CopyButton: React.FC<{ text: string }> = ({ text }) => {
   const [copied, setCopied] = useState(false);
   return (
-    <span
+    <button
       onClick={(e) => {
         e.stopPropagation();
-        navigator.clipboard.writeText(hash);
+        navigator.clipboard.writeText(text);
         setCopied(true);
         setTimeout(() => setCopied(false), 1500);
       }}
       style={{
-        fontSize: "0.48rem",
-        padding: "2px 6px",
-        borderRadius: 4,
-        background: COLORS.s2,
-        border: `1px solid ${COLORS.brd}`,
-        color: copied ? COLORS.ok : COLORS.add,
+        fontSize: "0.4rem",
+        color: copied ? COLORS.ok : COLORS.dim,
+        background: "none",
+        border: "none",
         cursor: "pointer",
         fontFamily: "monospace",
-        transition: "color 0.15s",
+        padding: "0 2px",
       }}
-      title={`Click to copy: ${hash}`}
+      title="Copy to clipboard"
     >
-      {copied ? "copied!" : hash}
-    </span>
+      {copied ? "copied" : "copy"}
+    </button>
   );
 };
-
-const ActionHashBlock: React.FC<{
-  hash: string;
-  decoded: { summary: string; verified: boolean; fields: Record<string, string> } | null;
-}> = ({ hash, decoded }) => (
-  <div
-    style={{
-      marginBottom: 8,
-      padding: "6px 8px",
-      borderRadius: 5,
-      background: COLORS.s2,
-      border: `1px solid ${decoded?.verified ? "rgba(52,211,153,0.2)" : COLORS.brd}`,
-    }}
-  >
-    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-      <span style={{ fontSize: "0.5rem", color: COLORS.add, fontFamily: "monospace" }}>
-        {truncateHex(hash, 16)}
-      </span>
-      {decoded && (
-        <span style={{ fontSize: "0.45rem", color: decoded.verified ? COLORS.ok : COLORS.rm, fontWeight: 700 }}>
-          {decoded.verified ? "verified" : "MISMATCH"}
-        </span>
-      )}
-    </div>
-    {decoded ? (
-      <>
-        <div style={{ fontSize: "0.5rem", color: COLORS.warn, marginBottom: 4 }}>{decoded.summary}</div>
-        <div style={{ display: "grid", gridTemplateColumns: "80px 1fr", gap: "0px 6px", fontSize: "0.48rem" }}>
-          {Object.entries(decoded.fields).map(([k, v]) => (
-            <React.Fragment key={k}>
-              <span style={{ color: COLORS.dim }}>{k}</span>
-              <span style={{ color: COLORS.tx, wordBreak: "break-all" }}>{v}</span>
-            </React.Fragment>
-          ))}
-        </div>
-      </>
-    ) : (
-      <div style={{ fontSize: "0.48rem", color: COLORS.dim, fontStyle: "italic" }}>
-        Not yet consumed — decoded fields available after ExecutionConsumed event
-      </div>
-    )}
-  </div>
-);
 
 const StepItem: React.FC<{
   step: BundleStep;
