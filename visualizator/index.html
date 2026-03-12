@@ -201,7 +201,7 @@ const E = {
     sd: { rollupId:'L2_ROLLUP_ID (1)', currentState:'keccak256("l2-initial-state")', newState:'keccak256("l2-state-after-scenario2")', etherDelta:'0' }
   },
   s2e2: {
-    id:'s2e2', hash:'RESULT{MAIN, data=1}', next:'RESULT{MAIN, data=1}', delta:null,
+    id:'s2e2', hash:'RESULT{MAIN, data=1}', next:'RESULT{MAIN, data=1}', delta:'L2: S1 → S2',
     action: {
       actionType:'RESULT', rollupId:'MAINNET_ROLLUP_ID (0)',
       destination:'address(0)', value:'0',
@@ -214,7 +214,7 @@ const E = {
       data:'abi.encode(uint256(1))', failed:'false',
       sourceAddress:'address(0)', sourceRollup:'0', scope:'[]'
     },
-    sd: null
+    sd: { rollupId:'L2_ROLLUP_ID (1)', currentState:'keccak256("l2-state-before-call")', newState:'keccak256("l2-state-after-scenario2")', etherDelta:'0' }
   },
   s2e3: {
     id:'s2e3', hash:'CALL{MAIN, C, inc(), src=D}', next:'RESULT{MAIN, data=1}', delta:null,
@@ -236,7 +236,7 @@ const E = {
 
   // ── Scenario 3 ──
   s3e1: {
-    id:'s3e1', hash:'L2TX{L2, rlp=0x02}', next:'CALL{MAIN, A, inc(), src=Alice}', delta:'L2: S0 → S1',
+    id:'s3e1', hash:'L2TX{L2, rlp=0x02}', next:'CALL{MAIN, A, incProxy(), src=Alice}', delta:'L2: S0 → S1',
     action: {
       actionType:'L2TX', rollupId:'L2_ROLLUP_ID (1)',
       destination:'address(0)', value:'0',
@@ -246,7 +246,7 @@ const E = {
     nextAct: {
       actionType:'CALL', rollupId:'MAINNET_ROLLUP_ID (0)',
       destination:'counterAndProxy — A (CounterAndProxy on L1)', value:'0',
-      data:'Counter.increment.selector', failed:'false',
+      data:'CounterAndProxy.incrementProxy.selector', failed:'false',
       sourceAddress:'alice', sourceRollup:'L2_ROLLUP_ID (1)', scope:'[]'
     },
     sd: { rollupId:'L2_ROLLUP_ID (1)', currentState:'keccak256("l2-initial-state")', newState:'keccak256("l2-state-s3-step1")', etherDelta:'0' }
@@ -269,11 +269,11 @@ const E = {
     sd: { rollupId:'L2_ROLLUP_ID (1)', currentState:'keccak256("l2-state-s3-step1")', newState:'keccak256("l2-state-s3-step2")', etherDelta:'0' }
   },
   s3e3: {
-    id:'s3e3', hash:'RESULT{MAIN, data=""}', next:'RESULT{MAIN, data=""}', delta:null,
+    id:'s3e3', hash:'RESULT{MAIN, data=""}', next:'RESULT{MAIN, data=""}', delta:'L2: S2 → S3',
     action: {
       actionType:'RESULT', rollupId:'MAINNET_ROLLUP_ID (0)',
       destination:'address(0)', value:'0',
-      data:'"" (void return — A.increment has no return)', failed:'false',
+      data:'"" (void return — A.incrementProxy has no return)', failed:'false',
       sourceAddress:'address(0)', sourceRollup:'0', scope:'[]'
     },
     nextAct: {
@@ -282,14 +282,14 @@ const E = {
       data:'"" (void return)', failed:'false',
       sourceAddress:'address(0)', sourceRollup:'0', scope:'[]'
     },
-    sd: null
+    sd: { rollupId:'L2_ROLLUP_ID (1)', currentState:'keccak256("l2-state-s3-step2")', newState:'keccak256("l2-state-s3-step3")', etherDelta:'0' }
   },
   s3e4: {
-    id:'s3e4', hash:'CALL{MAIN, A, inc(), src=Alice}', next:'CALL{L2, B, inc(), scope=[0]}', delta:null,
+    id:'s3e4', hash:'CALL{MAIN, A, incProxy(), src=Alice}', next:'CALL{L2, B, inc(), scope=[0]}', delta:null,
     action: {
       actionType:'CALL', rollupId:'MAINNET_ROLLUP_ID (0)',
       destination:'counterAndProxy — A (CounterAndProxy on L1)', value:'0',
-      data:'Counter.increment.selector', failed:'false',
+      data:'CounterAndProxy.incrementProxy.selector', failed:'false',
       sourceAddress:'alice', sourceRollup:'L2_ROLLUP_ID (1)', scope:'[]'
     },
     nextAct: {
@@ -320,11 +320,11 @@ const E = {
 
   // ── Scenario 4 ──
   s4e1: {
-    id:'s4e1', hash:'CALL{L2, D, inc(), src=Alice}', next:'CALL{MAIN, C, inc(), scope=[0]}', delta:'L2: S0 → S1',
+    id:'s4e1', hash:'CALL{L2, D, incProxy(), src=Alice}', next:'CALL{MAIN, C, inc(), scope=[0]}', delta:'L2: S0 → S1',
     action: {
       actionType:'CALL', rollupId:'L2_ROLLUP_ID (1)',
       destination:'counterAndProxyL2 — D (CounterAndProxy on L2)', value:'0',
-      data:'Counter.increment.selector', failed:'false',
+      data:'CounterAndProxy.incrementProxy.selector', failed:'false',
       sourceAddress:'alice', sourceRollup:'MAINNET_ROLLUP_ID (0)', scope:'[]'
     },
     nextAct: {
@@ -334,10 +334,10 @@ const E = {
       sourceAddress:'counterAndProxyL2 — D (CounterAndProxy on L2)',
       sourceRollup:'L2_ROLLUP_ID (1)', scope:'[0]'
     },
-    sd: { rollupId:'L2_ROLLUP_ID (1)', currentState:'keccak256("l2-initial-state")', newState:'keccak256("l2-state-after-scenario4")', etherDelta:'0' }
+    sd: { rollupId:'L2_ROLLUP_ID (1)', currentState:'keccak256("l2-initial-state")', newState:'keccak256("l2-state-s4-step1")', etherDelta:'0' }
   },
   s4e2: {
-    id:'s4e2', hash:'RESULT{MAIN, data=1}', next:'RESULT{MAIN, data=1}', delta:null,
+    id:'s4e2', hash:'RESULT{MAIN, data=1}', next:'RESULT{MAIN, data=1}', delta:'L2: S1 → S2',
     action: {
       actionType:'RESULT', rollupId:'MAINNET_ROLLUP_ID (0)',
       destination:'address(0)', value:'0',
@@ -350,7 +350,7 @@ const E = {
       data:'abi.encode(uint256(1))', failed:'false',
       sourceAddress:'address(0)', sourceRollup:'0', scope:'[]'
     },
-    sd: null
+    sd: { rollupId:'L2_ROLLUP_ID (1)', currentState:'keccak256("l2-state-s4-step1")', newState:'keccak256("l2-state-s4-step2")', etherDelta:'0' }
   },
   s4e3: {
     id:'s4e3', hash:'CALL{MAIN, C, inc(), src=D}', next:'RESULT{MAIN, data=1}', delta:null,
@@ -374,7 +374,7 @@ const E = {
     action: {
       actionType:'RESULT', rollupId:'L2_ROLLUP_ID (1)',
       destination:'address(0)', value:'0',
-      data:'"" (void return — D.increment has no return)', failed:'false',
+      data:'"" (void return — D.incrementProxy has no return)', failed:'false',
       sourceAddress:'address(0)', sourceRollup:'0', scope:'[]'
     },
     nextAct: {
@@ -409,7 +409,7 @@ s1: {
   ],
   cols: 5,
   edges: [
-    { from:'Alice',to:'A',       label:'increment()' },
+    { from:'Alice',to:'A',       label:'incrementProxy()' },
     { from:'A',to:'Bprime',      label:'increment()' },
     { from:'Bprime',to:'Rollups',label:'execCC' },
     { from:'ManagerL2',to:'Aprime',label:'execOnBehalf' },
@@ -439,7 +439,7 @@ s2: {
   ],
   cols: 5,
   edges: [
-    { from:'Alice',to:'D',       label:'increment()' },
+    { from:'Alice',to:'D',       label:'incrementProxy()' },
     { from:'D',to:'Cprime',      label:'increment()' },
     { from:'Cprime',to:'ManagerL2',label:'execCC' },
     { from:'Rollups',to:'Dprime', label:'execOnBehalf' },
@@ -470,10 +470,10 @@ s3: {
   ],
   cols: 5,
   edges: [
-    { from:'Alice',to:'Aprime',     label:'inc()' },
+    { from:'Alice',to:'Aprime',     label:'incProxy()' },
     { from:'Aprime',to:'ManagerL2', label:'execCC', alt:true, id:'Aprime-execCC' },
     { from:'Rollups',to:'AliceProxy',label:'execOnBehalf' },
-    { from:'AliceProxy',to:'A',     label:'inc()', alt:true },
+    { from:'AliceProxy',to:'A',     label:'incProxy()', alt:true },
     { from:'A',to:'Bprime',         label:'inc()' },
     { from:'Bprime',to:'Rollups',   label:'execCC' },
     { from:'ManagerL2',to:'Aprime', label:'execOnBehalf' },
@@ -508,10 +508,10 @@ s4: {
   ],
   cols: 5,
   edges: [
-    { from:'Alice',to:'Dprime',    label:'inc()' },
+    { from:'Alice',to:'Dprime',    label:'incProxy()' },
     { from:'Dprime',to:'Rollups',  label:'execCC', alt:true, id:'Dprime-execCC' },
     { from:'ManagerL2',to:'AliceProxy',label:'execOnBehalf', back:true },
-    { from:'AliceProxy',to:'D',    label:'inc()', alt:true },
+    { from:'AliceProxy',to:'D',    label:'incProxy()', alt:true },
     { from:'D',to:'Cprime',        label:'inc()' },
     { from:'Cprime',to:'ManagerL2',label:'execCC' },
     { from:'ManagerL2',to:'Cprime',label:'return(1)', back:true },
@@ -552,11 +552,11 @@ s1: {
       activeNodes:['ManagerL2','System'], activeEdges:['System→ManagerL2'],
       diagram:[ ['SYSTEM','','user',''], 'loadExecTable()', ['ManagerL2','','system','l2'], 'stores', ['L2 Table','','system','l2'] ]
     },
-    { chain:'l1', title:'L1: Alice calls A.increment() → A calls B\'',
+    { chain:'l1', title:'L1: Alice calls A.incrementProxy() → A calls B\'',
       detail:'A(CounterAndProxy) calls B\'(proxy for B on L2). B\'.fallback() → Rollups.executeCrossChainCall. Builds CALL{L2,B,src=A} → matches L1 entry → consumed. L2 state S0→S1 applied.',
       l1Add:[], l1Rm:['s1e1'], l2Add:[], l2Rm:[], state:{'L2 State':'S1'},
       activeNodes:['Alice','A','Bprime','Rollups'], activeEdges:['Alice→A','A→Bprime','Bprime→Rollups'],
-      diagram:[ ['Alice','','user',''], 'increment()', ['A','CounterAndProxy','contract','l1'], 'increment()', ["B'",'Proxy for B','proxy','l1'], 'execCC', ['Rollups','','system','l1'] ]
+      diagram:[ ['Alice','','user',''], 'incrementProxy()', ['A','CounterAndProxy','contract','l1'], 'increment()', ["B'",'Proxy for B','proxy','l1'], 'execCC', ['Rollups','','system','l1'] ]
     },
     { chain:'l2', title:'↗ Cross to L2: B.increment() executes',
       detail:'executeIncomingCrossChainCall(dest=B, src=A) → newScope → A\'.executeOnBehalf(B, inc) → B.counter 0→1, returns 1 → RESULT{1} consumed from L2 table.',
@@ -579,7 +579,7 @@ s2: {
   contracts:{ l1:['C.counter'], l2:['D.counter','D.targetCounter'], extra:['L2 State'] },
   steps:[
     { chain:'l1', title:'Setup L1: rollups.postBatch(2 entries)',
-      detail:'Entry 1: hash(L2TX) → CALL{C}, L2 delta S0→S1. Entry 2: hash(RESULT{1}) → RESULT{1} terminal.',
+      detail:'Entry 1: hash(L2TX) → CALL{C}, L2 delta S0→S1. Entry 2: hash(RESULT{1}) → RESULT{1}, L2 delta S1→S2.',
       l1Add:['s2e1','s2e2'], l1Rm:[], l2Add:[], l2Rm:[], state:{},
       activeNodes:['Rollups','Prover'], activeEdges:['Prover→Rollups'],
       diagram:[ ['Batch+Proof','','user',''], 'postBatch()', ['Rollups','','system','l1'], 'stores 2', ['L1 Table','','system','l1'] ]
@@ -590,15 +590,15 @@ s2: {
       activeNodes:['ManagerL2','System'], activeEdges:['System→ManagerL2'],
       diagram:[ ['SYSTEM','','user',''], 'loadExecTable()', ['ManagerL2','','system','l2'], 'stores', ['L2 Table','','system','l2'] ]
     },
-    { chain:'l2', title:'L2: Alice calls D.increment() → D calls C\'',
+    { chain:'l2', title:'L2: Alice calls D.incrementProxy() → D calls C\'',
       detail:'D(CounterAndProxy) calls C\'(proxy for C on L1). C\'.fallback() → executeCrossChainCall. Builds CALL{MAIN,C,src=D} → matches L2 entry → consumed.',
       l1Add:[], l1Rm:[], l2Add:[], l2Rm:['s2e3'], state:{},
       activeNodes:['Alice','D','Cprime','ManagerL2'], activeEdges:['Alice→D','D→Cprime','Cprime→ManagerL2'],
-      diagram:[ ['Alice','','user',''], 'increment()', ['D','CounterAndProxy','contract','l2'], 'increment()', ["C'",'Proxy for C','proxy','l2'], 'execCC', ['ManagerL2','','system','l2'] ]
+      diagram:[ ['Alice','','user',''], 'incrementProxy()', ['D','CounterAndProxy','contract','l2'], 'increment()', ["C'",'Proxy for C','proxy','l2'], 'execCC', ['ManagerL2','','system','l2'] ]
     },
     { chain:'l1', title:'↗ Cross to L1: executeL2TX → C.increment() executes',
-      detail:'executeL2TX(L2_ROLLUP_ID, 0x01) → L2TX consumed → CALL{C} → scope nav → D\'.executeOnBehalf(C, inc) → C.counter 0→1 → RESULT{1} consumed. Both L1 entries consumed.',
-      l1Add:[], l1Rm:['s2e1','s2e2'], l2Add:[], l2Rm:[], state:{'C.counter':1,'L2 State':'S1'},
+      detail:'executeL2TX(L2_ROLLUP_ID, 0x01) → L2TX consumed [S0→S1] → CALL{C} → scope nav → D\'.executeOnBehalf(C, inc) → C.counter 0→1 → RESULT{1} consumed [S1→S2]. Both L1 entries consumed.',
+      l1Add:[], l1Rm:['s2e1','s2e2'], l2Add:[], l2Rm:[], state:{'C.counter':1,'L2 State':'S2'},
       activeNodes:['Rollups','Dprime','C'], activeEdges:['Rollups→Dprime','Dprime→C','C→Dprime','Dprime→Rollups'],
       diagram:[ ['Rollups','executeL2TX','system','l1'], 'execOnBehalf', ["D'",'Proxy for D','proxy','l1'], 'inc()', ['C','counter: 0→1','contract','l1'] ]
     },
@@ -617,7 +617,7 @@ s3: {
   contracts:{ l1:['A.counter','A.targetCounter'], l2:['B.counter'], extra:['L2 State'] },
   steps:[
     { chain:'l1', title:'Setup L1: rollups.postBatch(3 entries)',
-      detail:'E1: L2TX→CALL(A) [S0→S1]. E2: CALL(B)→RESULT(1) [S1→S2]. E3: RESULT(void)→RESULT(void).',
+      detail:'E1: L2TX→CALL(A) [S0→S1]. E2: CALL(B)→RESULT(1) [S1→S2]. E3: RESULT(void)→RESULT(void) [S2→S3].',
       l1Add:['s3e1','s3e2','s3e3'], l1Rm:[], l2Add:[], l2Rm:[], state:{},
       activeNodes:['Rollups','Prover'], activeEdges:['Prover→Rollups'],
       diagram:[ ['Batch+Proof','','user',''], 'postBatch()', ['Rollups','','system','l1'], 'stores 3', ['L1 Table','','system','l1'] ]
@@ -629,19 +629,19 @@ s3: {
       diagram:[ ['SYSTEM','','user',''], 'loadExecTable()', ['ManagerL2','','system','l2'], 'stores 2', ['L2 Table','','system','l2'] ]
     },
     { chain:'l2', title:'L2: Alice calls A\' (proxy for A on L1)',
-      detail:'A\'.fallback() → executeCrossChainCall(src=Alice) → builds CALL#1{MAIN,A,src=Alice} → matches L2 entry → consumed → returns CALL#2{L2,B,scope=[0]}.',
+      detail:'A\'.fallback() → executeCrossChainCall(src=Alice) → builds CALL#1{MAIN,A,incProxy,src=Alice} → matches L2 entry → consumed → returns CALL#2{L2,B,scope=[0]}.',
       l1Add:[], l1Rm:[], l2Add:[], l2Rm:['s3e4'], state:{},
       activeNodes:['Alice','Aprime','ManagerL2'], activeEdges:['Alice→Aprime','Aprime-execCC'],
-      diagram:[ ['Alice','','user',''], 'inc()', ["A'",'Proxy for A','proxy','l2'], 'execCC', ['ManagerL2','','system','l2'] ]
+      diagram:[ ['Alice','','user',''], 'incProxy()', ["A'",'Proxy for A','proxy','l2'], 'execCC', ['ManagerL2','','system','l2'] ]
     },
-    { chain:'l1', title:'↗ Cross to L1: executeL2TX → A.increment() runs',
-      detail:'executeL2TX → L2TX consumed [S0→S1] → CALL{A} → scope nav → AliceProxy.executeOnBehalf(A, inc) → A.increment() starts.',
+    { chain:'l1', title:'↗ Cross to L1: executeL2TX → A.incrementProxy() runs',
+      detail:'executeL2TX → L2TX consumed [S0→S1] → CALL{A,incProxy} → scope nav → AliceProxy.executeOnBehalf(A, incProxy) → A.incrementProxy() starts.',
       l1Add:[], l1Rm:['s3e1'], l2Add:[], l2Rm:[], state:{'L2 State':'S1'},
       activeNodes:['Rollups','AliceProxy','A'], activeEdges:['Rollups→AliceProxy','AliceProxy→A'],
       diagram:[ ['Rollups','executeL2TX','system','l1'], 'scopeNav', ['Alice Proxy','','proxy','l1'], 'execOnBehalf', ['A','CounterAndProxy','contract','l1'] ]
     },
     { chain:'l1', title:'L1: A calls B\' → REENTRANT cross-chain call',
-      detail:'Inside A.increment(): A calls B\'(proxy for B) → REENTRANT executeCrossChainCall → CALL{L2,B,src=A} consumed [S1→S2] → RESULT{1} returned to A. A: targetCounter=1, counter=1.',
+      detail:'Inside A.incrementProxy(): A calls B\'(proxy for B) → REENTRANT executeCrossChainCall → CALL{L2,B,src=A} consumed [S1→S2] → RESULT{1} returned to A. A: targetCounter=1, counter=1.',
       l1Add:[], l1Rm:['s3e2'], l2Add:[], l2Rm:[], state:{'A.counter':1,'A.targetCounter':1,'L2 State':'S2'},
       activeNodes:['A','Bprime','Rollups'], activeEdges:['A→Bprime','Bprime→Rollups','Rollups→Bprime','Bprime→A'],
       diagram:[ ['A','calls B\'','contract','l1'], 'inc()', ["B'",'Proxy for B','proxy','l1'], 'REENTRANT', ['Rollups','consumes CALL(B)','system','l1'] ],
@@ -655,8 +655,8 @@ s3: {
       diagram:[ ['ManagerL2','scope=[0]','system','l2'], 'execOnBehalf', ["A'",'REENTRANT','proxy','l2'], 'inc()', ['B','counter: 0→1','contract','l2'] ]
     },
     { chain:'l1', title:'↙ Back to L1: A returns → RESULT(void) consumed',
-      detail:'A.increment() returns (void). Builds RESULT{MAIN,data=""} → matches L1 entry 3 → consumed → terminal.',
-      l1Add:[], l1Rm:['s3e3'], l2Add:[], l2Rm:[], state:{},
+      detail:'A.incrementProxy() returns (void). Builds RESULT{MAIN,data=""} → matches L1 entry 3 → consumed [S2→S3] → terminal.',
+      l1Add:[], l1Rm:['s3e3'], l2Add:[], l2Rm:[], state:{'L2 State':'S3'},
       activeNodes:['A','Bprime','Rollups'], activeEdges:['A-return-Bprime','Bprime-return-Rollups'],
       diagram:[ ['A','returns void','contract','l1'], 'RESULT{""}', ['Rollups','terminal','system','l1'] ]
     },
@@ -675,7 +675,7 @@ s4: {
   contracts:{ l1:['C.counter'], l2:['D.counter','D.targetCounter'], extra:['L2 State'] },
   steps:[
     { chain:'l1', title:'Setup L1: rollups.postBatch(2 entries)',
-      detail:'E1: CALL#1(D)→CALL#2(C,scope=[0]), L2 delta S0→S1. E2: RESULT(1)→RESULT(1) terminal.',
+      detail:'E1: CALL#1(D,incProxy)→CALL#2(C,scope=[0]), L2 delta S0→S1. E2: RESULT(1)→RESULT(1), L2 delta S1→S2.',
       l1Add:['s4e1','s4e2'], l1Rm:[], l2Add:[], l2Rm:[], state:{},
       activeNodes:['Rollups','Prover'], activeEdges:['Prover→Rollups'],
       diagram:[ ['Batch+Proof','','user',''], 'postBatch()', ['Rollups','','system','l1'], 'stores 2', ['L1 Table','','system','l1'] ]
@@ -687,19 +687,19 @@ s4: {
       diagram:[ ['SYSTEM','','user',''], 'loadExecTable()', ['ManagerL2','','system','l2'], 'stores 2', ['L2 Table','','system','l2'] ]
     },
     { chain:'l1', title:'L1: Alice calls D\' (proxy for D on L2)',
-      detail:'D\'.fallback() → executeCrossChainCall(src=Alice) → builds CALL#1{L2,D,src=Alice} → matches L1 entry → consumed [S0→S1]. Returns CALL#2{MAIN,C,scope=[0]}.',
+      detail:'D\'.fallback() → executeCrossChainCall(src=Alice) → builds CALL#1{L2,D,incProxy,src=Alice} → matches L1 entry → consumed [S0→S1]. Returns CALL#2{MAIN,C,scope=[0]}.',
       l1Add:[], l1Rm:['s4e1'], l2Add:[], l2Rm:[], state:{'L2 State':'S1'},
       activeNodes:['Alice','Dprime','Rollups'], activeEdges:['Alice→Dprime','Dprime-execCC'],
       diagram:[ ['Alice','','user',''], 'inc()', ["D'",'Proxy for D','proxy','l1'], 'execCC', ['Rollups','','system','l1'] ]
     },
-    { chain:'l2', title:'↗ Cross to L2: executeIncomingCrossChainCall → D.increment() runs',
-      detail:'SYSTEM calls executeIncomingCrossChainCall(D, src=Alice) → newScope → AliceProxy.executeOnBehalf(D, inc) → D.increment() starts.',
+    { chain:'l2', title:'↗ Cross to L2: executeIncomingCrossChainCall → D.incrementProxy() runs',
+      detail:'SYSTEM calls executeIncomingCrossChainCall(D, incProxy, src=Alice) → newScope → AliceProxy.executeOnBehalf(D, incProxy) → D.incrementProxy() starts.',
       l1Add:[], l1Rm:[], l2Add:[], l2Rm:[], state:{},
       activeNodes:['ManagerL2','AliceProxy','D'], activeEdges:['ManagerL2→AliceProxy','AliceProxy→D'],
       diagram:[ ['SYSTEM','','user',''], 'execIncoming', ['ManagerL2','','system','l2'], 'execOnBehalf', ['Alice Proxy','','proxy','l2'], 'inc()', ['D','CounterAndProxy','contract','l2'] ]
     },
     { chain:'l2', title:'L2: D calls C\' → REENTRANT cross-chain call',
-      detail:'Inside D.increment(): D calls C\'(proxy for C) → REENTRANT executeCrossChainCall → CALL{MAIN,C,src=D} consumed → RESULT{1} returned to D. D: targetCounter=1, counter=1.',
+      detail:'Inside D.incrementProxy(): D calls C\'(proxy for C) → REENTRANT executeCrossChainCall → CALL{MAIN,C,src=D} consumed → RESULT{1} returned to D. D: targetCounter=1, counter=1.',
       l1Add:[], l1Rm:[], l2Add:[], l2Rm:['s4e3'], state:{'D.counter':1,'D.targetCounter':1},
       activeNodes:['D','Cprime','ManagerL2'], activeEdges:['D→Cprime','Cprime→ManagerL2','ManagerL2→Cprime','Cprime→D'],
       diagram:[ ['D','calls C\'','contract','l2'], 'inc()', ["C'",'Proxy for C','proxy','l2'], 'REENTRANT', ['ManagerL2','consumes CALL(C)','system','l2'] ],
@@ -707,13 +707,13 @@ s4: {
       d2label:'Returns:'
     },
     { chain:'l1', title:'↗ Cross to L1: C.increment() via scope navigation',
-      detail:'_resolveScopes(CALL#2) → newScope([0]) → D\'.executeOnBehalf(C, inc) [D\' REENTRANT: fallback then execOnBehalf]. C.counter 0→1 → RESULT consumed from L1 table.',
-      l1Add:[], l1Rm:['s4e2'], l2Add:[], l2Rm:[], state:{'C.counter':1},
+      detail:'_resolveScopes(CALL#2) → newScope([0]) → D\'.executeOnBehalf(C, inc) [D\' REENTRANT: fallback then execOnBehalf]. C.counter 0→1 → RESULT consumed [S1→S2] from L1 table.',
+      l1Add:[], l1Rm:['s4e2'], l2Add:[], l2Rm:[], state:{'C.counter':1,'L2 State':'S2'},
       activeNodes:['Rollups','Dprime','C'], activeEdges:['Rollups→Dprime','Dprime→C','C→Dprime','Dprime-RESULT'],
       diagram:[ ['Rollups','scope=[0]','system','l1'], 'execOnBehalf', ["D'",'REENTRANT','proxy','l1'], 'inc()', ['C','counter: 0→1','contract','l1'] ]
     },
     { chain:'l2', title:'↙ Back to L2: D returns → RESULT(void) consumed',
-      detail:'D.increment() returns (void). Builds RESULT{L2,data=""} → matches L2 entry 2 → consumed → terminal.',
+      detail:'D.incrementProxy() returns (void). Builds RESULT{L2,data=""} → matches L2 entry 2 → consumed → terminal.',
       l1Add:[], l1Rm:[], l2Add:[], l2Rm:['s4e4'], state:{},
       activeNodes:['D','Cprime','ManagerL2'], activeEdges:['D-return-Cprime','Cprime-return-ManagerL2'],
       diagram:[ ['D','returns void','contract','l2'], 'RESULT{""}', ['ManagerL2','terminal','system','l2'] ]

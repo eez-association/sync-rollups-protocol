@@ -19,7 +19,7 @@ contract CounterAndProxy {
         target = _target;
     }
 
-    function increment() external {
+    function incrementProxy() external {
         targetCounter = target.increment();
         counter++;
     }
