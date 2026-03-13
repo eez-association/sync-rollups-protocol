@@ -31,7 +31,7 @@ contract BridgeTokensScript is Script {
         vm.startBroadcast();
 
         IERC20(token).approve(bridge, amount);
-        Bridge(bridge).bridgeTokens(token, amount, rollupId);
+        Bridge(bridge).bridgeTokens(token, amount, rollupId, msg.sender);
         console.log("Bridged %s tokens to rollup %s", amount, rollupId);
 
         vm.stopBroadcast();

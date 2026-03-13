@@ -146,7 +146,8 @@ contract Bridge {
     /// @param token The ERC20 token to bridge (native or wrapped)
     /// @param amount The amount to bridge
     /// @param _rollupId The destination rollup ID
-    function bridgeTokens(address token, uint256 amount, uint256 _rollupId) external {
+    /// @param destinationAddress The recipient address on the destination rollup
+    function bridgeTokens(address token, uint256 amount, uint256 _rollupId, address destinationAddress) external {
         if (amount == 0) revert ZeroAmount();
         if (token == address(0)) revert ZeroAddress();
 
@@ -180,7 +181,7 @@ contract Bridge {
         (bool success, bytes memory reason) = bridgeProxy.call(
             abi.encodeCall(
                 this.receiveTokens,
-                (originalToken, originalRollupId, msg.sender, amount, name, symbol, tokenDecimals, rollupId)
+                (originalToken, originalRollupId, destinationAddress, amount, name, symbol, tokenDecimals, rollupId)
             )
         );
         if (!success) revert ProxyCallFailed(reason);

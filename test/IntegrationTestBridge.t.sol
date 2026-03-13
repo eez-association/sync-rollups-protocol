@@ -308,7 +308,7 @@ contract IntegrationTestBridge is Test {
         token.approve(address(bridgeL1), 100e18);
 
         vm.prank(alice);
-        bridgeL1.bridgeTokens(address(token), 100e18, L2_ROLLUP_ID);
+        bridgeL1.bridgeTokens(address(token), 100e18, L2_ROLLUP_ID, alice);
 
         assertEq(token.balanceOf(address(bridgeL1)), 100e18, "Bridge should hold 100e18 locked tokens");
         assertEq(token.balanceOf(alice), 900e18, "Alice should have 900e18 tokens remaining");
@@ -437,7 +437,7 @@ contract IntegrationTestBridge is Test {
         token.approve(address(bridgeL1), 100e18);
 
         vm.prank(alice);
-        bridgeL1.bridgeTokens(address(token), 100e18, L2_ROLLUP_ID);
+        bridgeL1.bridgeTokens(address(token), 100e18, L2_ROLLUP_ID, alice);
 
         assertEq(token.balanceOf(address(bridgeL1)), 100e18, "Phase 1: bridgeL1 should hold locked tokens");
         assertEq(token.balanceOf(alice), 900e18, "Phase 1: alice should have 900e18 tokens");
@@ -526,7 +526,7 @@ contract IntegrationTestBridge is Test {
         }
 
         vm.prank(alice);
-        bridgeL2.bridgeTokens(wrappedAddr, 100e18, MAINNET_ROLLUP_ID);
+        bridgeL2.bridgeTokens(wrappedAddr, 100e18, MAINNET_ROLLUP_ID, alice);
 
         assertEq(WrappedToken(wrappedAddr).balanceOf(alice), 0, "Phase 3: alice wrapped balance should be 0");
         assertEq(managerL2.pendingEntryCount(), 0, "Phase 3: all L2 entries consumed");

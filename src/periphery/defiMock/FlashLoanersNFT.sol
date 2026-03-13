@@ -4,7 +4,7 @@ pragma solidity ^0.8.28;
 import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-contract FreeNFT is ERC721 {
+contract FlashLoanersNFT is ERC721 {
 
     IERC20 public immutable token;
     uint256 public nextTokenId;
@@ -12,7 +12,7 @@ contract FreeNFT is ERC721 {
 
     mapping(address => bool) public hasClaimed;
 
-    constructor(address _token) ERC721("FreeNFT", "FNFT") {
+    constructor(address _token) ERC721("FlashLoanersNFT", "FLNFT") {
         token = IERC20(_token);
     }
 
