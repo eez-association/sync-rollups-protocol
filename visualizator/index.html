@@ -384,6 +384,109 @@ const E = {
       sourceAddress:'address(0)', sourceRollup:'0', scope:'[]'
     },
     sd: null
+  },
+
+  // ── Scenario 5 (Flash Loan) ──
+  s5e1: {
+    id:'s5e1', hash:'CALL{L2, Bridge_L2, recvTokens, src=Bridge_L1}', next:'RESULT{L2, void}', delta:'L2: S0 → S1',
+    action: {
+      actionType:'CALL', rollupId:'L2_ROLLUP_ID (1)',
+      destination:'Bridge_L2 (Bridge on L2)', value:'0',
+      data:'Bridge.receiveTokens(token, MAINNET, executorL2, 10k, ...)', failed:'false',
+      sourceAddress:'Bridge_L1 (Bridge on L1)',
+      sourceRollup:'MAINNET_ROLLUP_ID (0)', scope:'[]'
+    },
+    nextAct: {
+      actionType:'RESULT', rollupId:'L2_ROLLUP_ID (1)',
+      destination:'address(0)', value:'0',
+      data:'"" (void)', failed:'false',
+      sourceAddress:'address(0)', sourceRollup:'0', scope:'[]'
+    },
+    sd: { rollupId:'L2_ROLLUP_ID (1)', currentState:'keccak256("l2-initial-state")', newState:'keccak256("l2-tokens-bridged-to-executor")', etherDelta:'0' }
+  },
+  s5e2: {
+    id:'s5e2', hash:'CALL{L2, ExecL2, claimBack, src=Executor}', next:'CALL{MAIN, Bridge_L1, recvTokens, scope=[0]}', delta:'L2: S1 → S2',
+    action: {
+      actionType:'CALL', rollupId:'L2_ROLLUP_ID (1)',
+      destination:'ExecutorL2 (FlashLoanBridgeExecutor on L2)', value:'0',
+      data:'FlashLoanBridgeExecutor.claimAndBridgeBack(...)', failed:'false',
+      sourceAddress:'Executor (FlashLoanBridgeExecutor on L1)',
+      sourceRollup:'MAINNET_ROLLUP_ID (0)', scope:'[]'
+    },
+    nextAct: {
+      actionType:'CALL', rollupId:'MAINNET_ROLLUP_ID (0)',
+      destination:'Bridge_L1 (Bridge on L1)', value:'0',
+      data:'Bridge.receiveTokens(token, MAINNET, executor, 10k, ...)', failed:'false',
+      sourceAddress:'Bridge_L2 (Bridge on L2)',
+      sourceRollup:'L2_ROLLUP_ID (1)', scope:'[0]'
+    },
+    sd: { rollupId:'L2_ROLLUP_ID (1)', currentState:'keccak256("l2-tokens-bridged-to-executor")', newState:'keccak256("l2-nft-claimed-tokens-bridged-back")', etherDelta:'0' }
+  },
+  s5e3: {
+    id:'s5e3', hash:'RESULT{MAIN, void}', next:'RESULT{L2, void}', delta:'L2: S2 → S3',
+    action: {
+      actionType:'RESULT', rollupId:'MAINNET_ROLLUP_ID (0)',
+      destination:'address(0)', value:'0',
+      data:'"" (void)', failed:'false',
+      sourceAddress:'address(0)', sourceRollup:'0', scope:'[]'
+    },
+    nextAct: {
+      actionType:'RESULT', rollupId:'L2_ROLLUP_ID (1)',
+      destination:'address(0)', value:'0',
+      data:'"" (void)', failed:'false',
+      sourceAddress:'address(0)', sourceRollup:'0', scope:'[]'
+    },
+    sd: { rollupId:'L2_ROLLUP_ID (1)', currentState:'keccak256("l2-nft-claimed-tokens-bridged-back")', newState:'keccak256("l2-bridge-return-executed")', etherDelta:'0' }
+  },
+  s5e4: {
+    id:'s5e4', hash:'RESULT{L2, void}', next:'CALL{L2, ExecL2, claimBack, src=Executor}', delta:null,
+    action: {
+      actionType:'RESULT', rollupId:'L2_ROLLUP_ID (1)',
+      destination:'address(0)', value:'0',
+      data:'"" (void)', failed:'false',
+      sourceAddress:'address(0)', sourceRollup:'0', scope:'[]'
+    },
+    nextAct: {
+      actionType:'CALL', rollupId:'L2_ROLLUP_ID (1)',
+      destination:'ExecutorL2 (FlashLoanBridgeExecutor on L2)', value:'0',
+      data:'FlashLoanBridgeExecutor.claimAndBridgeBack(...)', failed:'false',
+      sourceAddress:'Executor (FlashLoanBridgeExecutor on L1)',
+      sourceRollup:'MAINNET_ROLLUP_ID (0)', scope:'[]'
+    },
+    sd: null
+  },
+  s5e5: {
+    id:'s5e5', hash:'CALL{MAIN, Bridge_L1, recvTokens, src=Bridge_L2}', next:'RESULT{MAIN, void}', delta:null,
+    action: {
+      actionType:'CALL', rollupId:'MAINNET_ROLLUP_ID (0)',
+      destination:'Bridge_L1 (Bridge on L1)', value:'0',
+      data:'Bridge.receiveTokens(token, MAINNET, executor, 10k, ...)', failed:'false',
+      sourceAddress:'Bridge_L2 (Bridge on L2)',
+      sourceRollup:'L2_ROLLUP_ID (1)', scope:'[]'
+    },
+    nextAct: {
+      actionType:'RESULT', rollupId:'MAINNET_ROLLUP_ID (0)',
+      destination:'address(0)', value:'0',
+      data:'"" (void)', failed:'false',
+      sourceAddress:'address(0)', sourceRollup:'0', scope:'[]'
+    },
+    sd: null
+  },
+  s5e6: {
+    id:'s5e6', hash:'RESULT{L2, void}', next:'RESULT{L2, void}', delta:null,
+    action: {
+      actionType:'RESULT', rollupId:'L2_ROLLUP_ID (1)',
+      destination:'address(0)', value:'0',
+      data:'"" (void)', failed:'false',
+      sourceAddress:'address(0)', sourceRollup:'0', scope:'[]'
+    },
+    nextAct: {
+      actionType:'RESULT', rollupId:'L2_ROLLUP_ID (1)',
+      destination:'address(0)', value:'0',
+      data:'"" (void)', failed:'false',
+      sourceAddress:'address(0)', sourceRollup:'0', scope:'[]'
+    },
+    sd: null
   }
 };
 
@@ -526,6 +629,49 @@ s4: {
     { from:'Dprime',to:'Alice',    label:'return', back:true },
     { from:'Prover',to:'Rollups',   label:'postBatch' },
     { from:'System',to:'ManagerL2', label:'loadExecTable' },
+  ],
+},
+s5: {
+  l1: [
+    { id:'Alice',      label:'Alice',      sub:'EOA',                  type:'user',     col:0 },
+    { id:'Executor',   label:'Executor',   sub:'FlashLoanBridgeExec',  type:'contract', col:1 },
+    { id:'FlashLoan',  label:'FlashLoan',  sub:'Pool (10k TT)',        type:'contract', col:2 },
+    { id:'BridgeL1',   label:'Bridge_L1',  sub:'Bridge',               type:'contract', col:3 },
+    { id:'ExecL2Proxy',label:"ExecL2'",    sub:'Proxy for ExecL2',     type:'proxy',    col:4 },
+    { id:'Rollups',    label:'Rollups',    sub:'Manager',              type:'system',   col:5 },
+    { id:'Prover',     label:'Prover',     sub:'ZK Proof',             type:'ghost',    col:6 },
+  ],
+  l2: [
+    { id:'ExecutorL2', label:'ExecutorL2', sub:'FlashLoanBridgeExec',  type:'contract', col:1 },
+    { id:'NFT',        label:'NFT',        sub:'FlashLoanersNFT',      type:'contract', col:2 },
+    { id:'BridgeL2',   label:'Bridge_L2',  sub:'Bridge',               type:'contract', col:3 },
+    { id:'BridgeL1Proxy',label:"BridgeL1'",sub:'Proxy for BridgeL1',  type:'proxy',    col:4 },
+    { id:'ManagerL2',  label:'ManagerL2',  sub:'Manager',              type:'system',   col:5 },
+    { id:'System',     label:'SYSTEM',     sub:'sysAddr',              type:'ghost',    col:6 },
+  ],
+  cols: 7,
+  edges: [
+    // L1 Phase 2 flow
+    { from:'Alice',to:'Executor',       label:'execute()' },
+    { from:'Executor',to:'FlashLoan',   label:'flashLoan()' },
+    { from:'FlashLoan',to:'Executor',   label:'onFlashLoan', back:true },
+    { from:'Executor',to:'BridgeL1',    label:'bridgeTokens' },
+    { from:'BridgeL1',to:'Rollups',     label:'execCC' },
+    { from:'Executor',to:'ExecL2Proxy', label:'claimBack', id:'Exec-ExecL2Proxy' },
+    { from:'ExecL2Proxy',to:'Rollups',  label:'execCC', id:'ExecL2Proxy-Rollups' },
+    { from:'Rollups',to:'BridgeL1',     label:'recvTokens', back:true, id:'Rollups-BridgeL1-recv' },
+    { from:'Rollups',to:'ExecL2Proxy',  label:'return', back:true, id:'Rollups-ExecL2Proxy-return' },
+    { from:'ExecL2Proxy',to:'Executor', label:'return', back:true, id:'ExecL2Proxy-Executor-return' },
+    { from:'Executor',to:'FlashLoan',   label:'repay', id:'Executor-FlashLoan-repay' },
+    { from:'Prover',to:'Rollups',       label:'postBatch' },
+    // L2 Phase 1 flow
+    { from:'System',to:'ManagerL2',          label:'loadExecTable' },
+    { from:'ManagerL2',to:'BridgeL1Proxy',   label:'execOnBehalf', id:'MgrL2-BridgeL1Proxy' },
+    { from:'BridgeL1Proxy',to:'BridgeL2',    label:'recvTokens', id:'BridgeL1Proxy-BridgeL2' },
+    { from:'ManagerL2',to:'ExecutorL2',      label:'claimBack', id:'MgrL2-ExecL2' },
+    { from:'ExecutorL2',to:'NFT',            label:'claim()', id:'ExecL2-NFT' },
+    { from:'ExecutorL2',to:'BridgeL2',       label:'bridgeTokens', id:'ExecL2-BridgeL2' },
+    { from:'BridgeL2',to:'ManagerL2',        label:'execCC', back:true, id:'BridgeL2-MgrL2' },
   ],
 }
 };
@@ -723,6 +869,64 @@ s4: {
       l1Add:[], l1Rm:[], l2Add:[], l2Rm:[], state:{},
       activeNodes:['Rollups','Dprime','Alice'], activeEdges:['Rollups-return-Dprime','Dprime→Alice'],
       diagram:[ ['Rollups','RESULT','system','l1'], 'returns', ["D'",'','proxy','l1'], 'returns', ['Alice','done','user',''] ]
+    }
+  ]
+},
+
+s5: {
+  title:'Scenario 5: Cross-Chain Flash Loan', flow:'Alice → Executor → FlashLoan → Bridge ↔ L2 → NFT',
+  dir:'Flash loan on L1, bridge tokens to L2, claim token-gated NFT, bridge back, repay',
+  contracts:{ l1:['FlashLoan.tokens','Bridge_L1.locked','Executor.tokens'], l2:['ExecL2.wrapped','NFT.claimed'], extra:['L2 State'] },
+  steps:[
+    { chain:'l1', title:'Setup L1: rollups.postBatch(3 entries)',
+      detail:'3 deferred entries: E1: CALL(bridge forward)→RESULT terminal [S0→S1]. E2: CALL(claimBack)→CALL(bridge return, scope=[0]) [S1→S2]. E3: RESULT(void)→RESULT terminal [S2→S3].',
+      l1Add:['s5e1','s5e2','s5e3'], l1Rm:[], l2Add:[], l2Rm:[], state:{},
+      activeNodes:['Rollups','Prover'], activeEdges:['Prover→Rollups'],
+      diagram:[ ['Batch+Proof','','user',''], 'postBatch()', ['Rollups','','system','l1'], 'stores 3', ['L1 Table','','system','l1'] ]
+    },
+    { chain:'l2', title:'Setup L2: loadExecutionTable(3 entries)',
+      detail:'E1: RESULT(void)→CALL(claimBack) continuation. E2: CALL(bridge return)→RESULT(void). E3: RESULT(void)→RESULT(void) terminal.',
+      l1Add:[], l1Rm:[], l2Add:['s5e4','s5e5','s5e6'], l2Rm:[], state:{},
+      activeNodes:['ManagerL2','System'], activeEdges:['System→ManagerL2'],
+      diagram:[ ['SYSTEM','','user',''], 'loadExecTable()', ['ManagerL2','','system','l2'], 'stores 3', ['L2 Table','','system','l2'] ]
+    },
+    { chain:'l1', title:'L1: Alice → executor.execute() → FlashLoan → bridgeTokens',
+      detail:'Alice triggers the flow. executor.execute() → FlashLoan.flashLoan(token, 10k) → onFlashLoan: bridgeL1.bridgeTokens → proxy → executeCrossChainCall → CALL(forward) consumed [S0→S1] → RESULT terminal. Tokens locked in Bridge_L1.',
+      l1Add:[], l1Rm:['s5e1'], l2Add:[], l2Rm:[], state:{'FlashLoan.tokens':'0 (loaned)','Bridge_L1.locked':'10k','L2 State':'S1'},
+      activeNodes:['Alice','Executor','FlashLoan','BridgeL1','Rollups'], activeEdges:['Alice→Executor','Executor→FlashLoan','FlashLoan→Executor','Executor→BridgeL1','BridgeL1→Rollups'],
+      diagram:[ ['Alice','','user',''], 'execute()', ['Executor','','contract','l1'], 'flashLoan', ['FlashLoan','→ onFlashLoan','contract','l1'], 'bridgeTokens', ['Bridge_L1','locks 10k','contract','l1'], 'execCC', ['Rollups','consumed','system','l1'] ]
+    },
+    { chain:'l2', title:'↗ Cross to L2: Bridge_L2.receiveTokens (mints wrapped)',
+      detail:'executeIncomingCrossChainCall(Bridge_L2, receiveTokens, src=BridgeL1) → BridgeL1\'.executeOnBehalf(Bridge_L2, receiveTokens) → deploys WrappedToken, mints 10k to ExecutorL2. RESULT consumed → returns CALL B (continuation).',
+      l1Add:[], l1Rm:[], l2Add:[], l2Rm:['s5e4'], state:{'ExecL2.wrapped':'10k'},
+      activeNodes:['ManagerL2','BridgeL1Proxy','BridgeL2','ExecutorL2'], activeEdges:['MgrL2-BridgeL1Proxy','BridgeL1Proxy-BridgeL2'],
+      diagram:[ ['SYSTEM','','user',''], 'execIncoming', ['ManagerL2','','system','l2'], 'execOnBehalf', ["BridgeL1'",'Proxy','proxy','l2'], 'recvTokens', ['Bridge_L2','mints 10k','contract','l2'] ]
+    },
+    { chain:'l1', title:'↙ Back to L1: executor → ExecL2\' (claimBack)',
+      detail:'executor calls ExecL2\'(proxy for ExecutorL2) → execCC → builds CALL{L2, ExecL2, claimBack, src=Executor} → matches L1 entry → consumed [S1→S2]. Returns CALL(bridge return, scope=[0]).',
+      l1Add:[], l1Rm:['s5e2'], l2Add:[], l2Rm:[], state:{'L2 State':'S2'},
+      activeNodes:['Executor','ExecL2Proxy','Rollups'], activeEdges:['Exec-ExecL2Proxy','ExecL2Proxy-Rollups'],
+      diagram:[ ['Executor','','contract','l1'], 'claimBack', ["ExecL2'",'Proxy','proxy','l1'], 'execCC', ['Rollups','consumed','system','l1'] ]
+    },
+    { chain:'l2', title:'↗ Cross to L2: ExecutorL2.claimAndBridgeBack',
+      detail:'Continuation CALL B: ExecutorL2.claimAndBridgeBack → claims NFT (balance check passes), burns wrapped via Bridge_L2.bridgeTokens → REENTRANT execCC → CALL(bridge return) consumed. RESULT consumed → terminal. All L2 entries consumed.',
+      l1Add:[], l1Rm:[], l2Add:[], l2Rm:['s5e5','s5e6'], state:{'ExecL2.wrapped':'0','NFT.claimed':'yes'},
+      activeNodes:['ManagerL2','ExecutorL2','NFT','BridgeL2'], activeEdges:['MgrL2-ExecL2','ExecL2-NFT','ExecL2-BridgeL2','BridgeL2-MgrL2'],
+      diagram:[ ['ManagerL2','continuation','system','l2'], 'execOnBehalf', ['ExecutorL2','','contract','l2'], 'claim()', ['NFT','claimed!','contract','l2'] ],
+      diagram2:[ ['ExecutorL2','burns wrapped','contract','l2'], 'bridgeTokens', ['Bridge_L2','','contract','l2'], 'REENTRANT', ['ManagerL2','execCC','system','l2'] ],
+      d2label:'Reentrant bridge back:'
+    },
+    { chain:'l1', title:'↙ Back to L1: scope nav → Bridge_L1.receiveTokens',
+      detail:'newScope([0]) → proxy.executeOnBehalf → Bridge_L1.receiveTokens → releases 10k to executor. RESULT consumed [S2→S3] → terminal. All entries consumed.',
+      l1Add:[], l1Rm:['s5e3'], l2Add:[], l2Rm:[], state:{'Bridge_L1.locked':'0','Executor.tokens':'10k','L2 State':'S3'},
+      activeNodes:['Rollups','BridgeL1','Executor'], activeEdges:['Rollups-BridgeL1-recv'],
+      diagram:[ ['Rollups','scope=[0]','system','l1'], 'recvTokens', ['Bridge_L1','releases 10k','contract','l1'], '→', ['Executor','has 10k','contract','l1'] ]
+    },
+    { chain:'l1', title:'L1: Flash loan repaid',
+      detail:'executor transfers 10k tokens back to FlashLoan inside onFlashLoan callback. Flash loan balance restored. All L1 and L2 entries consumed. L2 state = S3.',
+      l1Add:[], l1Rm:[], l2Add:[], l2Rm:[], state:{'FlashLoan.tokens':'10k (repaid)','Executor.tokens':'0'},
+      activeNodes:['Rollups','ExecL2Proxy','Executor','FlashLoan'], activeEdges:['Rollups-ExecL2Proxy-return','ExecL2Proxy-Executor-return','Executor-FlashLoan-repay'],
+      diagram:[ ['Rollups','RESULT','system','l1'], 'returns to', ['Executor','repays','contract','l1'], 'transfer 10k', ['FlashLoan','10k restored','contract','l1'], 'returns to', ['Alice','done','user',''] ]
     }
   ]
 }
