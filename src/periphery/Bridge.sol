@@ -25,7 +25,6 @@ contract Bridge {
     // ──────────────────────────────────────────────
     //  Types
     // ──────────────────────────────────────────────
-
     struct TokenInfo {
         address originalToken;
         uint64 originalRollupId;
@@ -129,16 +128,16 @@ contract Bridge {
     //  OUTBOUND — user-facing bridge operations
     // ══════════════════════════════════════════════
 
-    /// @notice Bridge ETH to msg.sender on the destination rollup
+    /// @notice Bridge ETH to destinationAddress on the destination rollup
     /// @param _rollupId The destination rollup ID
-    function bridgeEther(uint256 _rollupId) external payable {
+    function bridgeEther(uint256 _rollupId, address destinationAddress) external payable {
         if (msg.value == 0) revert ZeroAmount();
 
-        address proxy = _getOrDeployProxy(msg.sender, _rollupId);
+        address proxy = _getOrDeployProxy(destinationAddress, _rollupId);
         (bool success, bytes memory reason) = proxy.call{value: msg.value}("");
         if (!success) revert ProxyCallFailed(reason);
 
-        emit EtherBridged(msg.sender, _rollupId, msg.value);
+        emit EtherBridged(destinationAddress, _rollupId, msg.value);
     }
 
     /// @notice Bridge an ERC20 token (native or wrapped) to the destination rollup
