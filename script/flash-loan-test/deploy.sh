@@ -100,11 +100,11 @@ echo "BRIDGE_L2=$BRIDGE_L2"
 echo ""
 echo "====== Step 3: Set canonical bridge addresses ======"
 cast send --rpc-url "$L1_RPC" --private-key "$PK" \
-    "$BRIDGE_L1" "setCanonicalBridgeAddress(address)" "$BRIDGE_L2"
+    "$BRIDGE_L1" "setCanonicalBridgeAddress(address)" "$BRIDGE_L2" > /dev/null
 echo "L1 Bridge → canonical = $BRIDGE_L2"
 
 cast send --rpc-url "$L2_RPC" --private-key "$PK" \
-    "$BRIDGE_L2" "setCanonicalBridgeAddress(address)" "$BRIDGE_L1"
+    "$BRIDGE_L2" "setCanonicalBridgeAddress(address)" "$BRIDGE_L1" > /dev/null
 echo "L2 Bridge → canonical = $BRIDGE_L1"
 
 # ══════════════════════════════════════════════
