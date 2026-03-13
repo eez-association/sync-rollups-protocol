@@ -76,6 +76,7 @@ contract DecodeExecutions is Script {
         address ccProxy;
         address ccSource;
         bytes memory ccCallData;
+        uint256 ccValue;
         bytes32 ccActionHash;
 
         for (uint256 i = 0; i < logs.length; i++) {
@@ -96,13 +97,13 @@ contract DecodeExecutions is Script {
                 hasCCCall = true;
                 ccActionHash = logs[i].topics[1];
                 ccProxy = address(uint160(uint256(logs[i].topics[2])));
-                (ccSource, ccCallData,) = abi.decode(logs[i].data, (address, bytes, uint256));
+                (ccSource, ccCallData, ccValue) = abi.decode(logs[i].data, (address, bytes, uint256));
             }
         }
 
         // Print full detail
         _printFullDetail(batchEntries, consumed, consumedHashes, consumedCount, hasL2TX, l2txRollupId, l2txRlpData,
-            l2txActionHash, hasCCCall, ccProxy, ccSource, ccCallData, ccActionHash);
+            l2txActionHash, hasCCCall, ccProxy, ccSource, ccCallData, ccValue, ccActionHash);
 
         // Print flow
         _printFlow(batchEntries, consumed, consumedHashes, consumedCount, hasL2TX, l2txRollupId, l2txRlpData,
@@ -167,6 +168,7 @@ contract DecodeExecutions is Script {
         address ccProxy;
         address ccSource;
         bytes memory ccCallData;
+        uint256 ccValue;
         bytes32 ccActionHash;
 
         for (uint256 i = from; i < to; i++) {
@@ -186,7 +188,7 @@ contract DecodeExecutions is Script {
                 hasCCCall = true;
                 ccActionHash = logs[i].topics[1];
                 ccProxy = address(uint160(uint256(logs[i].topics[2])));
-                (ccSource, ccCallData,) = abi.decode(logs[i].data, (address, bytes, uint256));
+                (ccSource, ccCallData, ccValue) = abi.decode(logs[i].data, (address, bytes, uint256));
             }
         }
 
@@ -197,7 +199,7 @@ contract DecodeExecutions is Script {
 
         // Full detail uses local batch entries (what was posted in THIS tx)
         _printFullDetail(localBatchEntries, consumed, consumedHashes, consumedCount, hasL2TX, l2txRollupId, l2txRlpData,
-            l2txActionHash, hasCCCall, ccProxy, ccSource, ccCallData, ccActionHash);
+            l2txActionHash, hasCCCall, ccProxy, ccSource, ccCallData, ccValue, ccActionHash);
 
         // Flow/summary uses ALL batch entries from the block (cross-tx lookup)
         _printFlow(allBatchEntries, consumed, consumedHashes, consumedCount, hasL2TX, l2txRollupId, l2txRlpData,
@@ -219,6 +221,7 @@ contract DecodeExecutions is Script {
         address ccProxy,
         address ccSource,
         bytes memory ccCallData,
+        uint256 ccValue,
         bytes32 ccActionHash
     ) internal pure {
         // ── Batch entries ──
@@ -244,6 +247,7 @@ contract DecodeExecutions is Script {
             console.log("    actionHash:    %s", vm.toString(ccActionHash));
             console.log("    proxy:         %s", vm.toString(ccProxy));
             console.log("    sourceAddress: %s", vm.toString(ccSource));
+            console.log("    value:         %s", ccValue);
             console.log("    callData:      %s", vm.toString(ccCallData));
             _logSelector(ccCallData, "    ");
         }
@@ -326,12 +330,13 @@ contract DecodeExecutions is Script {
         string memory typeName = _actionTypeName(a.actionType);
 
         if (a.actionType == ActionType.CALL) {
+            string memory valStr = a.value > 0 ? string.concat(", val=", vm.toString(a.value)) : "";
             return string.concat(
                 typeName, "(rollup ", vm.toString(a.rollupId),
                 ", ", _shortAddr(a.destination),
                 ".", _selectorName(a.data),
                 ", from ", _shortAddr(a.sourceAddress),
-                ")"
+                valStr, ")"
             );
         } else if (a.actionType == ActionType.RESULT) {
             return string.concat(
@@ -414,7 +419,8 @@ contract DecodeExecutions is Script {
 
     function _tinyAction(Action memory a) internal pure returns (string memory) {
         if (a.actionType == ActionType.CALL) {
-            return string.concat("CALL(", _shortAddr(a.destination), ".", _selectorName(a.data), ")");
+            string memory valStr = a.value > 0 ? string.concat(",val=", vm.toString(a.value)) : "";
+            return string.concat("CALL(", _shortAddr(a.destination), ".", _selectorName(a.data), valStr, ")");
         } else if (a.actionType == ActionType.RESULT) {
             return string.concat("RESULT(", a.failed ? "fail" : "ok", ",", _shortBytes(a.data), ")");
         } else if (a.actionType == ActionType.L2TX) {

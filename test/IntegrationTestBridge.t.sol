@@ -39,6 +39,7 @@ contract TestToken is ERC20 {
 /// ├────┼───────────────────────────────────────┼──────────┼──────────────────┤
 /// │  1 │ Alice bridges 1 ETH to herself        │ L1 → L2  │ Ether            │
 /// │  2 │ Alice bridges 100 tokens to herself   │ L1 → L2  │ ERC20            │
+/// │  3 │ Alice bridges tokens then back again  │ L1→L2→L1 │ ERC20 roundtrip  │
 /// └────┴───────────────────────────────────────┴──────────┴──────────────────┘
 contract IntegrationTestBridge is Test {
     // ── L1 contracts ──
@@ -354,5 +355,240 @@ contract IntegrationTestBridge is Test {
         assertTrue(wrappedAddr != address(0), "Wrapped token should be deployed on L2");
         assertEq(WrappedToken(wrappedAddr).balanceOf(alice), 100e18, "Alice should have 100e18 wrapped tokens");
         assertEq(managerL2.pendingEntryCount(), 0, "All L2 execution entries consumed");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  Test 3: Alice bridges 100 tokens L1→L2, then bridges them back L2→L1
+    //
+    //  Round-trip: lock on L1 → mint wrapped on L2 → burn wrapped on L2 → release on L1
+    //
+    //  In test (single EVM), bridgeL1 and bridgeL2 have different addresses.
+    //  For the return trip to pass onlyBridgeProxy checks in both directions,
+    //  we set canonicalBridgeAddress on BOTH bridges (cross-referencing each other).
+    //  In production (CREATE2), both would share the same address.
+    //
+    //  Forward:  bridgeL1._bridgeAddress() = bridgeL2  →  proxy for (bridgeL2, L2) on L1
+    //  Return:   bridgeL2._bridgeAddress() = bridgeL1  →  proxy for (bridgeL1, MAINNET) on L2
+    //  onlyBridgeProxy on L1 expects proxy for (bridgeL2, L2) — matches source proxy  ✓
+    //  onlyBridgeProxy on L2 expects proxy for (bridgeL1, MAINNET) — matches source proxy  ✓
+    // ═══════════════════════════════════════════════════════════════════════
+
+    function test_BridgeTokens_Roundtrip() public {
+        // Cross-reference canonical addresses so onlyBridgeProxy works in both directions
+        bridgeL1.setCanonicalBridgeAddress(address(bridgeL2));
+        // bridgeL2 already has bridgeL1 set as canonical from setUp
+
+        // ════════════════════════════════════════════
+        //  Phase 1: L1 — Lock tokens
+        // ════════════════════════════════════════════
+        //
+        //  With bridgeL1._bridgeAddress() = bridgeL2:
+        //    Bridge creates proxy for (bridgeL2, L2_ROLLUP_ID) via rollups
+        //    proxy.call(receiveTokensCalldata) → executeCrossChainCall
+        //    CALL{L2, bridgeL2, 0, calldata, bridgeL1, MAINNET} matched → RESULT
+
+        // Forward calldata: bridgeL1 sends to bridgeL2 on L2
+        bytes memory fwdCalldata = abi.encodeCall(
+            Bridge.receiveTokens,
+            (address(token), MAINNET_ROLLUP_ID, alice, 100e18, "Test Token", "TT", 18, MAINNET_ROLLUP_ID)
+        );
+
+        // Forward CALL: proxy for (bridgeL2, L2) on L1 → dest=bridgeL2, source=bridgeL1
+        Action memory fwdCall = Action({
+            actionType: ActionType.CALL,
+            rollupId: L2_ROLLUP_ID,
+            destination: address(bridgeL2),
+            value: 0,
+            data: fwdCalldata,
+            failed: false,
+            sourceAddress: address(bridgeL1),
+            sourceRollup: MAINNET_ROLLUP_ID,
+            scope: new uint256[](0)
+        });
+
+        Action memory fwdResult = Action({
+            actionType: ActionType.RESULT,
+            rollupId: L2_ROLLUP_ID,
+            destination: address(0),
+            value: 0,
+            data: "",
+            failed: false,
+            sourceAddress: address(0),
+            sourceRollup: 0,
+            scope: new uint256[](0)
+        });
+
+        bytes32 s0 = keccak256("l2-initial-state");
+        bytes32 s1 = keccak256("l2-state-after-roundtrip-fwd");
+
+        {
+            StateDelta[] memory stateDeltas = new StateDelta[](1);
+            stateDeltas[0] = StateDelta({ rollupId: L2_ROLLUP_ID, currentState: s0, newState: s1, etherDelta: 0 });
+
+            ExecutionEntry[] memory entries = new ExecutionEntry[](1);
+            entries[0].stateDeltas = stateDeltas;
+            entries[0].actionHash = keccak256(abi.encode(fwdCall));
+            entries[0].nextAction = fwdResult;
+
+            rollups.postBatch(entries, 0, "", "proof");
+        }
+
+        vm.prank(alice);
+        token.approve(address(bridgeL1), 100e18);
+
+        vm.prank(alice);
+        bridgeL1.bridgeTokens(address(token), 100e18, L2_ROLLUP_ID);
+
+        assertEq(token.balanceOf(address(bridgeL1)), 100e18, "Phase 1: bridgeL1 should hold locked tokens");
+        assertEq(token.balanceOf(alice), 900e18, "Phase 1: alice should have 900e18 tokens");
+        assertEq(_getRollupState(L2_ROLLUP_ID), s1, "Phase 1: L2 state should be S1");
+
+        // ════════════════════════════════════════════
+        //  Phase 2: L2 — Mint wrapped tokens
+        // ════════════════════════════════════════════
+        //
+        //  SYSTEM delivers receiveTokens to bridgeL2:
+        //    auto-creates proxy for (bridgeL1, MAINNET) on L2
+        //    proxy.executeOnBehalf(bridgeL2, fwdCalldata) → bridgeL2.receiveTokens
+        //    onlyBridgeProxy(MAINNET): proxy for (bridgeL1, MAINNET) ✓
+        //    foreign token → deploys WrappedToken, mints to alice
+
+        {
+            ExecutionEntry[] memory entries = new ExecutionEntry[](1);
+            entries[0].stateDeltas = new StateDelta[](0);
+            entries[0].actionHash = keccak256(abi.encode(fwdResult));
+            entries[0].nextAction = fwdResult;
+
+            vm.prank(SYSTEM_ADDRESS);
+            managerL2.loadExecutionTable(entries);
+        }
+
+        vm.prank(SYSTEM_ADDRESS);
+        managerL2.executeIncomingCrossChainCall(
+            address(bridgeL2), 0, fwdCalldata, address(bridgeL1), MAINNET_ROLLUP_ID, new uint256[](0)
+        );
+
+        address wrappedAddr = bridgeL2.getWrappedToken(address(token), MAINNET_ROLLUP_ID);
+        assertTrue(wrappedAddr != address(0), "Phase 2: wrapped token should be deployed");
+        assertEq(WrappedToken(wrappedAddr).balanceOf(alice), 100e18, "Phase 2: alice should have 100e18 wrapped");
+        assertEq(managerL2.pendingEntryCount(), 0, "Phase 2: all L2 entries consumed");
+
+        // ════════════════════════════════════════════
+        //  Phase 3: L2 — Burn wrapped tokens (resolution from table)
+        // ════════════════════════════════════════════
+        //
+        //  Alice calls bridgeL2.bridgeTokens(wrappedToken, 100e18, MAINNET_ROLLUP_ID):
+        //    Burns wrapped tokens (bridge has burn authority)
+        //    proxy for (bridgeL1, MAINNET) on L2 (already exists)
+        //    executeCrossChainCall → CALL{MAINNET, bridgeL1, 0, retCalldata, bridgeL2, L2} matched → RESULT
+
+        // Return calldata: bridgeL2 sends back to bridgeL1 on L1
+        // originalToken = token, originalRollupId = MAINNET (traced from wrappedTokenInfo)
+        // sourceRollupId (last param) = bridgeL2.rollupId = L2_ROLLUP_ID
+        bytes memory retCalldata = abi.encodeCall(
+            Bridge.receiveTokens,
+            (address(token), MAINNET_ROLLUP_ID, alice, 100e18, "Test Token", "TT", 18, L2_ROLLUP_ID)
+        );
+
+        // Return CALL: proxy for (bridgeL1, MAINNET) on L2 → dest=bridgeL1, source=bridgeL2
+        Action memory retCall = Action({
+            actionType: ActionType.CALL,
+            rollupId: MAINNET_ROLLUP_ID,
+            destination: address(bridgeL1),
+            value: 0,
+            data: retCalldata,
+            failed: false,
+            sourceAddress: address(bridgeL2),
+            sourceRollup: L2_ROLLUP_ID,
+            scope: new uint256[](0)
+        });
+
+        Action memory retResult = Action({
+            actionType: ActionType.RESULT,
+            rollupId: MAINNET_ROLLUP_ID,
+            destination: address(0),
+            value: 0,
+            data: "",
+            failed: false,
+            sourceAddress: address(0),
+            sourceRollup: 0,
+            scope: new uint256[](0)
+        });
+
+        {
+            ExecutionEntry[] memory entries = new ExecutionEntry[](1);
+            entries[0].stateDeltas = new StateDelta[](0);
+            entries[0].actionHash = keccak256(abi.encode(retCall));
+            entries[0].nextAction = retResult;
+
+            vm.prank(SYSTEM_ADDRESS);
+            managerL2.loadExecutionTable(entries);
+        }
+
+        vm.prank(alice);
+        bridgeL2.bridgeTokens(wrappedAddr, 100e18, MAINNET_ROLLUP_ID);
+
+        assertEq(WrappedToken(wrappedAddr).balanceOf(alice), 0, "Phase 3: alice wrapped balance should be 0");
+        assertEq(managerL2.pendingEntryCount(), 0, "Phase 3: all L2 entries consumed");
+
+        // ════════════════════════════════════════════
+        //  Phase 4: L1 — Release tokens via executeL2TX
+        // ════════════════════════════════════════════
+        //
+        //  executeL2TX → L2TX matched → CALL{MAINNET, bridgeL1, retCalldata, bridgeL2, L2}
+        //    _processCallAtScope: proxy for (bridgeL2, L2) on L1
+        //    proxy.executeOnBehalf(bridgeL1, retCalldata) → bridgeL1.receiveTokens
+        //    onlyBridgeProxy(L2): expects proxy for (_bridgeAddress()=bridgeL2, L2) ✓
+        //    originalRollupId(MAINNET) == rollupId(MAINNET) → native → release tokens to alice
+
+        // Need new block for postBatch (StateAlreadyUpdatedThisBlock)
+        vm.roll(block.number + 1);
+
+        bytes memory rlpData = hex"03";
+
+        Action memory l2txAction = Action({
+            actionType: ActionType.L2TX,
+            rollupId: L2_ROLLUP_ID,
+            destination: address(0),
+            value: 0,
+            data: rlpData,
+            failed: false,
+            sourceAddress: address(0),
+            sourceRollup: MAINNET_ROLLUP_ID,
+            scope: new uint256[](0)
+        });
+
+        bytes32 s2 = keccak256("l2-state-after-roundtrip-ret1");
+        bytes32 s3 = keccak256("l2-state-after-roundtrip-ret2");
+
+        {
+            StateDelta[] memory deltas1 = new StateDelta[](1);
+            deltas1[0] = StateDelta({ rollupId: L2_ROLLUP_ID, currentState: s1, newState: s2, etherDelta: 0 });
+
+            StateDelta[] memory deltas2 = new StateDelta[](1);
+            deltas2[0] = StateDelta({ rollupId: L2_ROLLUP_ID, currentState: s2, newState: s3, etherDelta: 0 });
+
+            ExecutionEntry[] memory entries = new ExecutionEntry[](2);
+
+            // Entry 1: L2TX → CALL to bridgeL1.receiveTokens
+            entries[0].stateDeltas = deltas1;
+            entries[0].actionHash = keccak256(abi.encode(l2txAction));
+            entries[0].nextAction = retCall;
+
+            // Entry 2: RESULT → RESULT (terminal)
+            entries[1].stateDeltas = deltas2;
+            entries[1].actionHash = keccak256(abi.encode(retResult));
+            entries[1].nextAction = retResult;
+
+            rollups.postBatch(entries, 0, "", "proof");
+        }
+
+        rollups.executeL2TX(L2_ROLLUP_ID, rlpData);
+
+        // ── Final assertions ──
+        assertEq(token.balanceOf(alice), 1000e18, "Roundtrip: alice should have all 1000e18 tokens back");
+        assertEq(token.balanceOf(address(bridgeL1)), 0, "Roundtrip: bridgeL1 should have 0 locked tokens");
+        assertEq(WrappedToken(wrappedAddr).balanceOf(alice), 0, "Roundtrip: alice wrapped balance should be 0");
+        assertEq(_getRollupState(L2_ROLLUP_ID), s3, "Roundtrip: L2 state should be S3");
     }
 }
