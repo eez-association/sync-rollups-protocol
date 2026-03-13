@@ -6,6 +6,7 @@ import {Rollups} from "../../src/Rollups.sol";
 import {Action, ActionType, ExecutionEntry, StateDelta} from "../../src/ICrossChainManager.sol";
 import {IZKVerifier} from "../../src/IZKVerifier.sol";
 import {Bridge} from "../../src/periphery/Bridge.sol";
+import {_deployBridge} from "../DeployBridge.s.sol";
 
 contract MockZKVerifier is IZKVerifier {
     function verify(bytes calldata, bytes32) external pure override returns (bool) {
@@ -37,7 +38,9 @@ contract E2EBridgeDeploy is Script {
         Rollups rollups = new Rollups(address(verifier), 1);
         rollups.createRollup(keccak256("l2-initial-state"), keccak256("verificationKey"), msg.sender);
 
-        Bridge bridge = new Bridge();
+        bytes32 salt = keccak256("sync-rollups-bridge-v1");
+        address bridgeAddr = _deployBridge(salt);
+        Bridge bridge = Bridge(bridgeAddr);
         bridge.initialize(address(rollups), 0, msg.sender);
 
         console.log("ROLLUPS=%s", address(rollups));
