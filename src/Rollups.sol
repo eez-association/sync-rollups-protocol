@@ -3,7 +3,7 @@ pragma solidity ^0.8.24;
 
 import {IZKVerifier} from "./IZKVerifier.sol";
 import {CrossChainProxy} from "./CrossChainProxy.sol";
-import {ICrossChainManager, ActionType, Action, StateDelta, ExecutionEntry, ProxyInfo} from "./ICrossChainManager.sol";
+import {ICrossChainManager, ActionType, Action, StateDelta, SubCall, ExecutionEntry, ProxyInfo} from "./ICrossChainManager.sol";
 
 /// @notice Rollup configuration
 struct RollupConfig {
@@ -16,11 +16,8 @@ struct RollupConfig {
 /// @title Rollups
 /// @notice L1 contract managing rollup state roots, ZK-proven batch posting, and cross-chain call execution
 /// @dev Execution entries are posted via `postBatch()` with a ZK proof. Immediate entries (actionHash == 0)
-///      update state on the spot. Deferred entries are stored in a flat execution table.
-///      When a CrossChainProxy forwards a call to `executeCrossChainCall()`, the contract reconstructs the
-///      CALL action, hashes it, looks up a matching execution (whose state deltas match on-chain state),
-///      applies the deltas, and returns the pre-computed next action. Nested calls are resolved via
-///      recursive `newScope()` calls with try/catch for revert handling.
+///      update state on the spot. Deferred entries are stored in a flat execution table and consumed
+///      sequentially. Each entry contains pre-computed calls and a return hash for verification.
 contract Rollups is ICrossChainManager {
     /// @notice The rollup ID representing L1 mainnet
     uint256 public constant MAINNET_ROLLUP_ID = 0;
@@ -37,17 +34,14 @@ contract Rollups is ICrossChainManager {
     /// @notice Array of pre-computed executions
     ExecutionEntry[] public executions;
 
+    /// @notice Index of the next execution entry to consume
+    uint256 public executionIndex;
+
     /// @notice Mapping of authorized CrossChainProxy contracts to their identity
     mapping(address proxy => ProxyInfo info) public authorizedProxies;
 
     /// @notice Last block number when state was modified
     uint256 public lastStateUpdateBlock;
-
-    // Transient storage
-
-    /// @notice Transient ether delta accumulator for tracking ETH flow during execution
-    /// @dev Positive when contract receives ETH, negative when sending. Must net to zero with state deltas.
-    int256 private transient _etherDelta;
 
     /// @notice Emitted when a new rollup is created
     event RollupCreated(uint256 indexed rollupId, address indexed owner, bytes32 verificationKey, bytes32 initialState);
@@ -65,10 +59,10 @@ contract Rollups is ICrossChainManager {
     event CrossChainProxyCreated(address indexed proxy, address indexed originalAddress, uint256 indexed originalRollupId);
 
     /// @notice Emitted when an L2 execution is performed
-    event L2ExecutionPerformed(uint256 indexed rollupId, bytes32 currentState, bytes32 newState);
+    event L2ExecutionPerformed(uint256 indexed rollupId, bytes32 newState);
 
-    /// @notice Emitted when an execution is found and applied
-    event ExecutionConsumed(bytes32 indexed actionHash, Action action);
+    /// @notice Emitted when an execution entry is consumed
+    event ExecutionConsumed(bytes32 indexed actionHash, uint256 indexed entryIndex);
 
     /// @notice Emitted when a cross-chain call is executed via proxy
     event CrossChainCallExecuted(bytes32 indexed actionHash, address indexed proxy, address sourceAddress, bytes callData, uint256 value);
@@ -85,7 +79,7 @@ contract Rollups is ICrossChainManager {
     /// @notice Error when caller is not an authorized proxy
     error UnauthorizedProxy();
 
-    /// @notice Error when execution is not found
+    /// @notice Error when execution is not found or actionHash doesn't match next entry
     error ExecutionNotFound();
 
     /// @notice Error when caller is not the rollup owner
@@ -97,26 +91,23 @@ contract Rollups is ICrossChainManager {
     /// @notice Error when a rollup would have negative ether balance
     error InsufficientRollupBalance();
 
-    /// @notice Error when a call execution fails
-    error CallExecutionFailed();
-
-    /// @notice Error when revert data from a child scope is too short to decode
-    error InvalidRevertData();
-
     /// @notice Error when the ether delta from state deltas doesn't match actual ETH flow
     error EtherDeltaMismatch();
 
-    /// @notice Error when a state delta's currentState doesn't match the rollup's current state root
-    error StateRootMismatch();
 
     /// @notice Error when execution is attempted in a different block than the last state update
     error ExecutionNotInCurrentBlock();
 
-    /// @notice Error when a scope reverts, carrying the next action to continue with
-    /// @param nextAction The ABI-encoded next action to continue with
-    /// @param stateRoot The state root to restore when catching the revert
-    /// @param rollupId The rollup ID whose state to restore
-    error ScopeReverted(bytes nextAction, bytes32 stateRoot, uint256 rollupId);
+    /// @notice Error when the computed return hash doesn't match the entry's returnHash
+    error ReturnHashMismatch();
+
+    /// @notice Carries execution results out of a reverted context
+    /// @param computedHash The chained hash of all call results within the context
+    /// @param etherOut The total ETH sent in successful calls (before revert)
+    /// @param returnData The return data from the first (main) call
+    /// @param actuallyFailed Whether the first call actually failed
+    /// @param consumedCount Number of subcalls consumed in the context
+    error ContextResult(bytes32 computedHash, int256 etherOut, bytes returnData, bool actuallyFailed, uint256 consumedCount);
 
     /// @param _zkVerifier The ZK verifier contract address
     /// @param startingRollupId The starting ID for rollup numbering
@@ -128,7 +119,6 @@ contract Rollups is ICrossChainManager {
     // ──────────────────────────────────────────────
     //  Modifiers
     // ──────────────────────────────────────────────
-
     modifier onlyRollupOwner(uint256 rollupId) {
         if (rollups[rollupId].owner != msg.sender) {
             revert NotRollupOwner();
@@ -194,8 +184,8 @@ contract Rollups is ICrossChainManager {
                 abi.encodePacked(
                     abi.encode(entries[i].stateDeltas),
                     abi.encode(vks),
-                    entries[i].actionHash,
-                    abi.encode(entries[i].nextAction) // update to flatten actions TODO
+                    abi.encode(entries[i].action),
+                    entries[i].returnHash
                 )
             );
         }
@@ -208,7 +198,7 @@ contract Rollups is ICrossChainManager {
         bytes32 publicInputsHash = keccak256(
             abi.encodePacked(
                 blockhash(block.number - 1),
-                block.number,
+                block.timestamp,
                 abi.encode(entryHashes),
                 abi.encode(blobHashes),
                 keccak256(callData)
@@ -217,20 +207,16 @@ contract Rollups is ICrossChainManager {
 
         _verifyProof(proof, publicInputsHash);
 
-        // Delete previous execution table
+        // Delete previous execution table and reset index
         delete executions;
+        executionIndex = 0;
 
         // --- Process entries ---
         for (uint256 i = 0; i < entries.length; i++) {
-            if (entries[i].actionHash == bytes32(0)) {
-                // verify state roots match current state, then apply deltas
-                for (uint256 j = 0; j < entries[i].stateDeltas.length; j++) {
-                    StateDelta memory delta = entries[i].stateDeltas[j];
-                    if (rollups[delta.rollupId].stateRoot != delta.currentState) {
-                        revert StateRootMismatch();
-                    }
-                }
-                _applyStateDeltas(entries[i].stateDeltas);
+            if (_isZeroAction(entries[i].action)) {
+                // Immediate: apply deltas (ether must net to zero)
+                int256 totalEtherDelta = _applyStateDeltas(entries[i].stateDeltas);
+                if (totalEtherDelta != 0) revert EtherDeltaMismatch();
             } else {
                 // Deferred: store in execution table
                 executions.push(entries[i]);
@@ -268,32 +254,20 @@ contract Rollups is ICrossChainManager {
             revert ExecutionNotInCurrentBlock();
         }
 
-        uint256 proxyRollupId = proxyInfo.originalRollupId;
-        address proxyOriginalAddr = proxyInfo.originalAddress;
+        // Build the action input hash for matching
+        bytes32 actionHash = _computeActionInputHash(
+            ActionType.CALL,
+            proxyInfo.originalRollupId,
+            proxyInfo.originalAddress,
+            msg.value,
+            callData,
+            sourceAddress,
+            MAINNET_ROLLUP_ID
+        );
 
-        // Track ETH received
-        if (msg.value > 0) {
-            _etherDelta += int256(msg.value);
-        }
-
-        // Build the CALL action
-        Action memory action = Action({
-            actionType: ActionType.CALL,
-            rollupId: proxyRollupId,
-            destination: proxyOriginalAddr,
-            value: msg.value,
-            data: callData,
-            failed: false,
-            sourceAddress: sourceAddress,
-            sourceRollup: MAINNET_ROLLUP_ID,
-            scope: new uint256[](0)
-        });
-
-        bytes32 actionHash = keccak256(abi.encode(action));
         emit CrossChainCallExecuted(actionHash, msg.sender, sourceAddress, callData, msg.value);
-        Action memory nextAction = _findAndApplyExecution(actionHash, action);
 
-       return _resolveScopes(nextAction);
+        return _consumeAndExecute(actionHash, int256(msg.value));
     }
 
     // ──────────────────────────────────────────────
@@ -310,186 +284,174 @@ contract Rollups is ICrossChainManager {
             revert ExecutionNotInCurrentBlock();
         }
 
-        // Build the L2TX action
-        Action memory action = Action({
-            actionType: ActionType.L2TX,
-            rollupId: rollupId,
-            destination: address(0),
-            value: 0, // TODO fields not used
-            data: rlpEncodedTx,
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: MAINNET_ROLLUP_ID,
-            scope: new uint256[](0)
-        });
+        // Build the action input hash for matching
+        bytes32 actionHash = _computeActionInputHash(
+            ActionType.L2TX,
+            rollupId,
+            address(0),
+            0,
+            rlpEncodedTx,
+            address(0),
+            MAINNET_ROLLUP_ID
+        );
 
-        bytes32 currentActionHash = keccak256(abi.encode(action));
-        emit L2TXExecuted(currentActionHash, rollupId, rlpEncodedTx);
-        Action memory nextAction = _findAndApplyExecution(currentActionHash, action);
+        emit L2TXExecuted(actionHash, rollupId, rlpEncodedTx);
 
-        return _resolveScopes(nextAction);
+        return _consumeAndExecute(actionHash, 0);
     }
 
     // ──────────────────────────────────────────────
-    //  Scope navigation
+    //  Internal execution
     // ──────────────────────────────────────────────
 
-    /// @notice Processes a scoped CALL action by navigating to the correct scope level
-    /// @param scope The current scope level we are at
-    /// @param action The CALL action to process (action.scope contains target scope)
-    /// @return nextAction The next action to process
-    function newScope(
-        uint256[] memory scope,
-        Action memory action
-    ) external returns (Action memory nextAction) {
-        // Only Rollups contract (self) or authorized proxies can call
-        if (msg.sender != address(this)) {
-            revert UnauthorizedProxy();
+    /// @notice Consumes the next execution entry, applies state deltas, executes calls, and verifies return hash
+    /// @param actionHash The expected action input hash for the next entry
+    /// @param etherIn The ETH value received (msg.value) for ether accounting
+    /// @return result The pre-computed return data from the action
+    function _consumeAndExecute(bytes32 actionHash, int256 etherIn) internal returns (bytes memory result) {
+        uint256 idx = executionIndex;
+        if (idx >= executions.length) revert ExecutionNotFound();
+        ExecutionEntry storage entry = executions[idx];
+        if (_computeActionInputHash(entry.action.actionType, entry.action.rollupId, entry.action.destination, entry.action.value, entry.action.data, entry.action.sourceAddress, entry.action.sourceRollup) != actionHash) revert ExecutionNotFound();
+
+        // Apply state deltas and get calls directly from entry
+        int256 totalEtherDelta = _applyStateDeltas(entry.stateDeltas);
+        SubCall[] memory calls = entry.calls;
+
+        bytes32 expectedReturnHash = entry.returnHash;
+        bool failed = entry.failed;
+        bytes memory returnData = entry.returnData;
+        executionIndex = idx + 1;
+
+        emit ExecutionConsumed(actionHash, idx);
+
+        // Execute all calls and verify return hash
+        int256 etherOut = _executeCallsAndVerify(calls, expectedReturnHash);
+
+        // Verify ether accounting: state deltas must balance actual ETH flow
+        if (totalEtherDelta != etherIn - etherOut) revert EtherDeltaMismatch();
+
+        // If the action failed, revert with the return data
+        if (failed) {
+            assembly {
+                revert(add(returnData, 0x20), mload(returnData))
+            }
         }
 
-        nextAction = action;
+        return returnData;
+    }
 
-        while (true) {
-            if (nextAction.actionType == ActionType.CALL) {
-                if (_isChildScope(scope, nextAction.scope)) {
-                    // Target is deeper - navigate by appending next element
-                    uint256[] memory newScopeArr = _appendToScope(scope, nextAction.scope[scope.length]);
+    /// @notice Executes sub-calls in an isolated context that always reverts (for failed subcalls)
+    /// @dev Can only be called by this contract. Results are encoded in the ContextResult revert.
+    /// @param calls The sub-calls to execute in the isolated context
+    function executeInContext(SubCall[] calldata calls) external {
+        if (msg.sender != address(this)) revert UnauthorizedProxy();
+        (bytes32 computedHash, int256 etherOut, bytes memory returnData, bool actuallyFailed, uint256 consumed) =
+            _processSubCalls(calls);
+        revert ContextResult(computedHash, etherOut, returnData, actuallyFailed, consumed);
+    }
 
-                    // Use try/catch for recursive call to handle reverts from child scopes
-                    try this.newScope(newScopeArr, nextAction) returns (Action memory retAction) {
-                        nextAction = retAction;
-                    } catch (bytes memory revertData) {
-                        nextAction = _handleScopeRevert(revertData);
+    /// @notice Processes sub-calls, opening new contexts for failed subcalls
+    /// @param calls The sub-calls to process
+    /// @return computedHash The chained hash of all results
+    /// @return etherOut Total ETH sent in successful (non-reverted) calls
+    /// @return returnData Return data from the first call
+    /// @return actuallyFailed Whether the first call actually failed
+    /// @return consumed Number of subcalls consumed
+    function _processSubCalls(SubCall[] memory calls) internal returns (
+        bytes32 computedHash,
+        int256 etherOut,
+        bytes memory returnData,
+        bool actuallyFailed,
+        uint256 consumed
+    ) {
+        uint256 i = 0;
+        while (i < calls.length) {
+            SubCall memory sub = calls[i];
+
+            if (sub.failed) {
+                // Collect all subsequent calls with contextDepth > sub.contextDepth
+                uint256 endIdx = i + 1;
+                while (endIdx < calls.length && calls[endIdx].contextDepth > sub.contextDepth) {
+                    endIdx++;
+                }
+
+                // Build the slice of calls to execute in an isolated context
+                SubCall[] memory contextCalls = new SubCall[](endIdx - i);
+                for (uint256 j = i; j < endIdx; j++) {
+                    contextCalls[j - i] = calls[j];
+                }
+
+                // Execute in isolated context (always reverts via ContextResult)
+                try this.executeInContext(contextCalls) {
+                    // unreachable — executeInContext always reverts
+                } catch (bytes memory revertData) {
+                    (bytes32 ctxHash,, bytes memory ctxReturnData, bool ctxFailed,) =
+                        _decodeContextResult(revertData);
+                    computedHash = keccak256(abi.encodePacked(computedHash, ctxHash));
+                    // Context reverted — no ETH was actually sent
+                    if (i == 0) {
+                        returnData = ctxReturnData;
+                        actuallyFailed = ctxFailed;
                     }
-                } else if (_scopesMatch(scope, nextAction.scope)) {
-                    // At target scope - execute the call
-                    (, nextAction) = _processCallAtScope(scope, nextAction);
-                } else {
-                    // Action is at a parent/sibling scope - return to caller
-                    break;
                 }
-            } else if (nextAction.actionType == ActionType.REVERT) {
-                if (_scopesMatch(scope, nextAction.scope)) {
-                    // This is the target revert scope - capture state and revert
-                    uint256 rollupId = nextAction.rollupId;
-                    bytes32 stateRoot = rollups[rollupId].stateRoot;
-                    Action memory continuation = _getRevertContinuation(rollupId);
-                    revert ScopeReverted(abi.encode(continuation), stateRoot, rollupId);
-                } else {
-                    // Revert is for parent/sibling scope - return to caller
-                    break;
-                }
+
+                i = endIdx;
             } else {
-                // RESULT or other action type - return to caller
-                break;
-            }
-        }
-
-        return nextAction;
-    }
-
-    // ──────────────────────────────────────────────
-    //  Internal helpers
-    // ──────────────────────────────────────────────
-
-    /// @notice Executes a single CALL at the current scope and returns the next action
-    /// @dev Does NOT loop - returns immediately after getting nextAction
-    /// @dev Looping for same-scope calls is handled by newScope
-    /// @param currentScope The current scope level
-    /// @param action The CALL action to execute
-    /// @return scope The scope after processing (always currentScope)
-    /// @return nextAction The next action (RESULT or CALL at any scope)
-    function _processCallAtScope(
-        uint256[] memory currentScope,
-        Action memory action
-    ) internal returns (uint256[] memory scope, Action memory nextAction) {
-        // Execute the CALL through source proxy
-        address sourceProxy = computeCrossChainProxyAddress(
-            action.sourceAddress,
-            action.sourceRollup,
-            block.chainid
-        );
-
-        if (authorizedProxies[sourceProxy].originalAddress == address(0)) {
-            _createCrossChainProxyInternal(action.sourceAddress, action.sourceRollup);
-        }
-
-
-        (bool success, bytes memory returnData) = address(sourceProxy).call{value: action.value}(
-            abi.encodeCall(CrossChainProxy.executeOnBehalf, (action.destination, action.data))
-        );
-
-        // Track ETH sent out from this contract (state deltas handle rollup balance changes)
-        if (action.value > 0 && success) {
-            _etherDelta -= int256(action.value);
-        }
-
-        // Build RESULT action
-        Action memory resultAction = Action({
-            actionType: ActionType.RESULT,
-            rollupId: action.rollupId,
-            destination: address(0),
-            value: 0,
-            data: returnData,
-            failed: !success,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-
-        // Get next action from execution lookup
-        bytes32 resultHash = keccak256(abi.encode(resultAction));
-        nextAction = _findAndApplyExecution(resultHash, resultAction);
-
-        return (currentScope, nextAction);
-    }
-
-    /// @notice Finds a matching execution for the given action hash, applies state deltas, and returns the next action
-    /// @dev Matches by checking that all deltas' currentState match their rollup's on-chain stateRoot
-    /// @param actionHash The action hash to look up
-    /// @return nextAction The next action to perform
-    function _findAndApplyExecution(bytes32 actionHash, Action memory action) internal returns (Action memory nextAction) {
-        // Search the flat executions array for a matching entry
-        for (uint256 i = 0; i < executions.length; i++) {
-            ExecutionEntry storage execution = executions[i];
-
-            if (execution.actionHash != actionHash) continue;
-
-            // Check if all state deltas match current rollup states
-            bool allMatch = true;
-            for (uint256 j = 0; j < execution.stateDeltas.length; j++) {
-                StateDelta storage delta = execution.stateDeltas[j];
-                if (rollups[delta.rollupId].stateRoot != delta.currentState) {
-                    allMatch = false;
-                    break;
+                // Normal execution
+                address sourceProxy = computeCrossChainProxyAddress(sub.sourceAddress, sub.sourceRollup);
+                if (authorizedProxies[sourceProxy].originalAddress == address(0)) {
+                    _createCrossChainProxyInternal(sub.sourceAddress, sub.sourceRollup);
                 }
-            }
 
-            if (allMatch) {
-                // Found matching execution - apply all state deltas and ether deltas
-                _applyStateDeltas(execution.stateDeltas);
-                // Copy nextAction to memory before removing from storage
-                nextAction = execution.nextAction;
+                (bool success, bytes memory retData) = sourceProxy.call{value: sub.value}(
+                    abi.encodeCall(CrossChainProxy.executeOnBehalf, (sub.destination, sub.data))
+                );
 
-                // Remove the execution from storage (swap-and-pop) TODO check optimal way to do this
-                uint256 lastIndex = executions.length - 1;
-                if (i != lastIndex) {
-                    executions[i] = executions[lastIndex];
+                if (sub.value > 0 && success) {
+                    etherOut += int256(sub.value);
                 }
-                executions.pop();
 
-                emit ExecutionConsumed(actionHash, action);
-                return nextAction;
+                computedHash = keccak256(abi.encodePacked(computedHash, success, retData));
+
+                if (i == 0) {
+                    returnData = retData;
+                    actuallyFailed = !success;
+                }
+
+                i++;
             }
         }
-
-        revert ExecutionNotFound();
+        consumed = calls.length;
     }
 
-    /// @notice Applies state deltas, ether balance changes, and verifies ether accounting against _etherDelta
-    function _applyStateDeltas(StateDelta[] memory deltas) internal {
-        int256 totalEtherDelta;
+    /// @notice Decodes a ContextResult revert payload
+    function _decodeContextResult(bytes memory revertData) internal pure returns (
+        bytes32 computedHash, int256 etherOut, bytes memory returnData, bool actuallyFailed, uint256 consumedCount
+    ) {
+        // Strip 4-byte selector
+        assembly {
+            let len := mload(revertData)
+            revertData := add(revertData, 4)
+            mstore(revertData, sub(len, 4))
+        }
+        return abi.decode(revertData, (bytes32, int256, bytes, bool, uint256));
+    }
 
+    /// @notice Executes all sub-calls and verifies the return hash
+    /// @param calls The sub-calls to execute
+    /// @param expectedReturnHash The expected hash of all call results
+    /// @return totalEtherOut The total ETH value sent in successful calls
+    function _executeCallsAndVerify(SubCall[] memory calls, bytes32 expectedReturnHash) internal returns (int256 totalEtherOut) {
+        bytes32 computedHash;
+        (computedHash, totalEtherOut,,,) = _processSubCalls(calls);
+        if (computedHash != expectedReturnHash) revert ReturnHashMismatch();
+    }
+
+    /// @notice Applies state deltas and rollup balance changes
+    /// @param deltas The state deltas to apply
+    /// @return totalEtherDelta The sum of ether deltas across all rollups
+    function _applyStateDeltas(StateDelta[] memory deltas) internal returns (int256 totalEtherDelta) {
         for (uint256 i = 0; i < deltas.length; i++) {
             StateDelta memory delta = deltas[i];
             RollupConfig storage config = rollups[delta.rollupId];
@@ -506,116 +468,8 @@ contract Rollups is ICrossChainManager {
                 config.etherBalance += uint256(delta.etherDelta);
             }
 
-            emit L2ExecutionPerformed(delta.rollupId, delta.currentState, delta.newState);
+            emit L2ExecutionPerformed(delta.rollupId, delta.newState);
         }
-
-        // Verify ether accounting: state delta ether changes must match actual ETH flow
-        if (totalEtherDelta != _etherDelta) {
-            revert EtherDeltaMismatch();
-        }
-
-        // reset _etherDelta
-        _etherDelta = 0;
-
-    }
-
-    /// @notice Handles scope navigation and returns the final RESULT, reverting if execution fails
-    /// @param nextAction The action to resolve (CALL triggers scope navigation, RESULT returns directly)
-    /// @return result The return data from the resolved execution
-    function _resolveScopes(Action memory nextAction) internal returns (bytes memory result) {
-        if (nextAction.actionType == ActionType.CALL) {
-            // Start with empty scope, action.scope contains target
-            uint256[] memory emptyScope = new uint256[](0);
-            try this.newScope(emptyScope, nextAction) returns (Action memory retAction) {
-                nextAction = retAction;
-            } catch (bytes memory revertData) {
-                // Root scope caught a revert - decode and continue
-                nextAction = _handleScopeRevert(revertData);
-            }
-        }
-
-        // At this point nextAction should be a successful RESULT
-        if (nextAction.actionType != ActionType.RESULT || nextAction.failed) {
-            revert CallExecutionFailed();
-        }
-        return nextAction.data;
-    }
-
-    /// @notice Handles a ScopeReverted exception by decoding the action and restoring rollup state
-    /// @param revertData The raw revert data (includes 4-byte selector)
-    /// @return nextAction The decoded continuation action
-    function _handleScopeRevert(bytes memory revertData) internal returns (Action memory nextAction) {
-        if (revertData.length <= 4) revert InvalidRevertData();
-
-        // Strip 4-byte selector by advancing the memory pointer
-        assembly {
-            let len := mload(revertData)
-            revertData := add(revertData, 4)
-            mstore(revertData, sub(len, 4))
-        }
-
-        (bytes memory actionBytes, bytes32 stateRoot, uint256 rollupId) = abi.decode(revertData, (bytes, bytes32, uint256));
-        rollups[rollupId].stateRoot = stateRoot;
-        return abi.decode(actionBytes, (Action));
-    }
-
-    /// @notice Gets the continuation action after a revert at the current scope
-    /// @param rollupId The rollup ID for the REVERT_CONTINUE action
-    /// @return nextAction The next action from REVERT_CONTINUE lookup
-    function _getRevertContinuation(uint256 rollupId) internal returns (Action memory nextAction) {
-        // Build REVERT_CONTINUE action (empty data)
-        Action memory revertContinueAction = Action({
-            actionType: ActionType.REVERT_CONTINUE,
-            rollupId: rollupId,
-            destination: address(0),
-            value: 0,
-            data: "",
-            failed: true,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-
-        // Get next action from execution lookup
-        bytes32 revertHash = keccak256(abi.encode(revertContinueAction));
-        return _findAndApplyExecution(revertHash, revertContinueAction);
-    }
-
-    /// @notice Appends an element to a scope array
-    /// @param scope The original scope array
-    /// @param element The element to append
-    /// @return The new scope array with the element appended
-    function _appendToScope(uint256[] memory scope, uint256 element) internal pure returns (uint256[] memory) {
-        uint256[] memory result = new uint256[](scope.length + 1);
-        for (uint256 i = 0; i < scope.length; i++) {
-            result[i] = scope[i];
-        }
-        result[scope.length] = element;
-        return result;
-    }
-
-    /// @notice Checks if two scopes match exactly
-    /// @param a First scope array
-    /// @param b Second scope array
-    /// @return True if scopes match exactly
-    function _scopesMatch(uint256[] memory a, uint256[] memory b) internal pure returns (bool) {
-        if (a.length != b.length) return false;
-        for (uint256 i = 0; i < a.length; i++) {
-            if (a[i] != b[i]) return false;
-        }
-        return true;
-    }
-
-    /// @notice Checks if targetScope is a child of currentScope (starts with currentScope prefix and is longer)
-    /// @param currentScope The current scope to check against
-    /// @param targetScope The target scope to check
-    /// @return True if targetScope is a child of currentScope
-    function _isChildScope(uint256[] memory currentScope, uint256[] memory targetScope) internal pure returns (bool) {
-        if (targetScope.length <= currentScope.length) return false;
-        for (uint256 i = 0; i < currentScope.length; i++) {
-            if (currentScope[i] != targetScope[i]) return false;
-        }
-        return true;
     }
 
     // ──────────────────────────────────────────────
@@ -632,7 +486,7 @@ contract Rollups is ICrossChainManager {
 
     /// @notice Deploys a CrossChainProxy via CREATE2 and registers it as authorized
     function _createCrossChainProxyInternal(address originalAddress, uint256 originalRollupId) internal returns (address proxy) {
-        bytes32 salt = keccak256(abi.encodePacked(block.chainid, originalRollupId, originalAddress));
+        bytes32 salt = keccak256(abi.encodePacked(originalRollupId, originalAddress));
 
         proxy = address(new CrossChainProxy{salt: salt}(address(this), originalAddress, originalRollupId));
 
@@ -665,16 +519,43 @@ contract Rollups is ICrossChainManager {
     }
 
     // ──────────────────────────────────────────────
+    //  Action hash helpers
+    // ──────────────────────────────────────────────
+
+    /// @notice Checks if an action is the zero/default action (all fields are zero/empty), used for immediate entries
+    function _isZeroAction(Action calldata action) internal pure returns (bool) {
+        return action.actionType == ActionType(0)
+            && action.rollupId == 0
+            && action.destination == address(0)
+            && action.value == 0
+            && action.data.length == 0
+            && action.sourceAddress == address(0)
+            && action.sourceRollup == 0;
+    }
+
+    /// @notice Computes the action input hash from individual fields
+    function _computeActionInputHash(
+        ActionType actionType,
+        uint256 rollupId,
+        address destination,
+        uint256 value,
+        bytes memory data,
+        address sourceAddress,
+        uint256 sourceRollup
+    ) internal pure returns (bytes32) {
+        return keccak256(abi.encode(actionType, rollupId, destination, value, data, sourceAddress, sourceRollup));
+    }
+
+    // ──────────────────────────────────────────────
     //  Views
     // ──────────────────────────────────────────────
 
     /// @notice Computes the deterministic CREATE2 address for a CrossChainProxy
     /// @param originalAddress The original address this proxy represents
     /// @param originalRollupId The original rollup ID
-    /// @param domain The domain (chain ID) for the address computation
     /// @return The computed proxy address
-    function computeCrossChainProxyAddress(address originalAddress, uint256 originalRollupId, uint256 domain) public view returns (address) {
-        bytes32 salt = keccak256(abi.encodePacked(domain, originalRollupId, originalAddress));
+    function computeCrossChainProxyAddress(address originalAddress, uint256 originalRollupId) public view returns (address) {
+        bytes32 salt = keccak256(abi.encodePacked(originalRollupId, originalAddress));
         bytes32 bytecodeHash = keccak256(
             abi.encodePacked(
                 type(CrossChainProxy).creationCode,
