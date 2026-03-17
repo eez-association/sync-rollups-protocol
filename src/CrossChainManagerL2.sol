@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.28;
 
 import {CrossChainProxy} from "./CrossChainProxy.sol";
-import {ICrossChainManager, ActionType, Action, StateDelta, SubCall, ExecutionEntry, ProxyInfo} from "./ICrossChainManager.sol";
+import {ICrossChainManager, ActionType, SubCall, ExecutionEntry, ProxyInfo} from "./ICrossChainManager.sol";
 
 /// @title CrossChainManagerL2
 /// @notice L2-side contract for cross-chain execution via pre-computed execution tables
@@ -43,10 +43,16 @@ contract CrossChainManagerL2 is ICrossChainManager {
     error ReturnHashMismatch();
 
     /// @notice Carries execution results out of a reverted context
-    error ContextResult(bytes32 computedHash, bytes returnData, bool actuallyFailed, uint256 consumedCount);
+    error ContextResult(bytes32 computedHash);
+
+    /// @notice Error when executeInContext is called by an external address
+    error NotSelf();
 
     /// @notice Error when ETH transfer to system address fails
     error EtherTransferFailed();
+
+    /// @notice Error when executeInContext reverts with an unexpected error
+    error UnexpectedContextRevert(bytes revertData);
 
     /// @notice Emitted when a new CrossChainProxy is deployed and registered
     event CrossChainProxyCreated(address indexed proxy, address indexed originalAddress, uint256 indexed originalRollupId);
@@ -157,7 +163,7 @@ contract CrossChainManagerL2 is ICrossChainManager {
         uint256 idx = executionIndex;
         if (idx >= executions.length) revert ExecutionNotFound();
         ExecutionEntry storage entry = executions[idx];
-        if (_computeActionInputHash(entry.action.actionType, entry.action.rollupId, entry.action.destination, entry.action.value, entry.action.data, entry.action.sourceAddress, entry.action.sourceRollup) != actionHash) revert ExecutionNotFound();
+        if (entry.actionHash != actionHash) revert ExecutionNotFound();
 
         // Copy entry data before advancing index
         SubCall[] memory calls = entry.calls;
@@ -169,7 +175,8 @@ contract CrossChainManagerL2 is ICrossChainManager {
         emit ExecutionConsumed(actionHash, idx);
 
         // Execute all calls and verify return hash
-        _executeCallsAndVerify(calls, expectedReturnHash);
+        (bytes32 computedHash) = _processSubCalls(bytes32(0), calls);
+        if (computedHash != expectedReturnHash) revert ReturnHashMismatch();
 
         // If the action failed, revert with the return data
         if (failed) {
@@ -183,87 +190,61 @@ contract CrossChainManagerL2 is ICrossChainManager {
 
     /// @notice Executes sub-calls in an isolated context that always reverts (for failed subcalls)
     /// @dev Can only be called by this contract. Results are encoded in the ContextResult revert.
-    function executeInContext(SubCall[] calldata calls) external {
-        if (msg.sender != address(this)) revert UnauthorizedProxy();
-        (bytes32 computedHash, bytes memory returnData, bool actuallyFailed, uint256 consumed) =
-            _processSubCalls(calls);
-        revert ContextResult(computedHash, returnData, actuallyFailed, consumed);
+    function executeInContext(bytes32 runningHash, SubCall[] calldata calls) external {
+        if (msg.sender != address(this)) revert NotSelf();
+        (bytes32 computedHash) = _processSubCalls(runningHash, calls);
+        revert ContextResult(computedHash);
     }
 
-    /// @notice Processes sub-calls, opening new contexts for failed subcalls
-    function _processSubCalls(SubCall[] memory calls) internal returns (
-        bytes32 computedHash,
-        bytes memory returnData,
-        bool actuallyFailed,
-        uint256 consumed
+    /// @notice Processes sub-calls, opening new contexts for revertSpan subcalls
+    function _processSubCalls(bytes32 runningHash, SubCall[] memory calls) internal returns (
+        bytes32 computedHash
     ) {
+        computedHash = runningHash;
         uint256 i = 0;
         while (i < calls.length) {
-            SubCall memory sub = calls[i];
+            SubCall memory subCall = calls[i];
 
-            if (sub.failed) {
-                uint256 endIdx = i + 1;
-                while (endIdx < calls.length && calls[endIdx].contextDepth > sub.contextDepth) {
-                    endIdx++;
+            if (subCall.revertSpan > 0) {
+                SubCall[] memory contextCalls = new SubCall[](subCall.revertSpan);
+                for (uint256 j = 0; j < subCall.revertSpan; j++) {
+                    contextCalls[j] = calls[i + j];
                 }
+                // Clear revertSpan on the first call so it executes normally inside the context
+                contextCalls[0].revertSpan = 0;
 
-                SubCall[] memory contextCalls = new SubCall[](endIdx - i);
-                for (uint256 j = i; j < endIdx; j++) {
-                    contextCalls[j - i] = calls[j];
-                }
-
-                try this.executeInContext(contextCalls) {
+                try this.executeInContext(computedHash, contextCalls) {
                     // unreachable
                 } catch (bytes memory revertData) {
-                    (bytes32 ctxHash, bytes memory ctxReturnData, bool ctxFailed,) =
-                        _decodeContextResult(revertData);
-                    computedHash = keccak256(abi.encodePacked(computedHash, ctxHash));
-                    if (i == 0) {
-                        returnData = ctxReturnData;
-                        actuallyFailed = ctxFailed;
-                    }
+                    computedHash = _decodeContextResult(revertData);
                 }
 
-                i = endIdx;
+                i += subCall.revertSpan;
             } else {
-                address sourceProxy = computeCrossChainProxyAddress(sub.sourceAddress, sub.sourceRollup);
+                address sourceProxy = computeCrossChainProxyAddress(subCall.sourceAddress, subCall.sourceRollup);
                 if (authorizedProxies[sourceProxy].originalAddress == address(0)) {
-                    _createProxyInternal(sub.sourceAddress, sub.sourceRollup);
+                    _createProxyInternal(subCall.sourceAddress, subCall.sourceRollup);
                 }
 
-                (bool success, bytes memory retData) = sourceProxy.call{value: sub.value}(
-                    abi.encodeCall(CrossChainProxy.executeOnBehalf, (sub.destination, sub.data))
+                (bool success, bytes memory retData) = sourceProxy.call{value: subCall.value}(
+                    abi.encodeCall(CrossChainProxy.executeOnBehalf, (subCall.destination, subCall.data))
                 );
 
                 computedHash = keccak256(abi.encodePacked(computedHash, success, retData));
 
-                if (i == 0) {
-                    returnData = retData;
-                    actuallyFailed = !success;
-                }
-
                 i++;
             }
         }
-        consumed = calls.length;
     }
 
-    /// @notice Decodes a ContextResult revert payload
-    function _decodeContextResult(bytes memory revertData) internal pure returns (
-        bytes32 computedHash, bytes memory returnData, bool actuallyFailed, uint256 consumedCount
-    ) {
-        assembly {
-            let len := mload(revertData)
-            revertData := add(revertData, 4)
-            mstore(revertData, sub(len, 4))
+    /// @notice Decodes a ContextResult revert payload, reverting if selector doesn't match
+    function _decodeContextResult(bytes memory revertData) internal pure returns (bytes32 computedHash) {
+        if (bytes4(revertData) != ContextResult.selector) {
+            revert UnexpectedContextRevert(revertData);
         }
-        return abi.decode(revertData, (bytes32, bytes, bool, uint256));
-    }
-
-    /// @notice Executes all sub-calls and verifies the return hash
-    function _executeCallsAndVerify(SubCall[] memory calls, bytes32 expectedReturnHash) internal {
-        (bytes32 computedHash,,,) = _processSubCalls(calls);
-        if (computedHash != expectedReturnHash) revert ReturnHashMismatch();
+        assembly {
+            computedHash := mload(add(revertData, 36)) // skip length(32) + selector(4)
+        }
     }
 
     // ──────────────────────────────────────────────

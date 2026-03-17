@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.28;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
@@ -71,7 +71,7 @@ contract Bridge {
 
     /// @dev Validates that msg.sender is the CrossChainProxy representing this bridge from `sourceRollupId`.
     modifier onlyBridgeProxy(uint256 sourceRollupId) {
-        address expectedProxy = manager.computeCrossChainProxyAddress(_bridgeAddress(), sourceRollupId, block.chainid);
+        address expectedProxy = manager.computeCrossChainProxyAddress(_bridgeAddress(), sourceRollupId);
         if (msg.sender != expectedProxy) revert UnauthorizedCaller();
         _;
     }
@@ -283,7 +283,7 @@ contract Bridge {
 
     /// @dev Ensures a CrossChainProxy exists for (addr, rollupId), creating it if needed.
     function _getOrDeployProxy(address originalAddress, uint256 _rollupId) internal returns (address proxy) {
-        proxy = manager.computeCrossChainProxyAddress(originalAddress, _rollupId, block.chainid);
+        proxy = manager.computeCrossChainProxyAddress(originalAddress, _rollupId);
         if (proxy.code.length == 0) {
             manager.createCrossChainProxy(originalAddress, _rollupId);
         }
