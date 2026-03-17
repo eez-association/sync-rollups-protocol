@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.28;
 
 /// @notice Action types used to identify execution entry entrypoints
 enum ActionType {
@@ -16,8 +16,6 @@ struct Action {
     bytes data;
     address sourceAddress;
     uint256 sourceRollup;
-    bool failed;
-    bytes returnData;
 }
 
 /// @notice Represents a state delta
@@ -28,20 +26,20 @@ struct StateDelta {
 }
 
 /// @notice Represents a cross-chain call within an execution entry
+/// @dev revertSpan > 0 opens an isolated revert context spanning the next revertSpan calls (including this one)
 struct SubCall {
     address destination;
     uint256 value;
     bytes data;
     address sourceAddress;
     uint256 sourceRollup;
-    bool failed;
-    uint256 contextDepth;
+    uint256 revertSpan;
 }
 
 /// @notice Represents an execution entry with pre-computed calls and return hash verification
 struct ExecutionEntry {
     StateDelta[] stateDeltas;
-    Action action;
+    bytes32 actionHash;
     SubCall[] calls;
     bytes returnData;
     bool failed;
