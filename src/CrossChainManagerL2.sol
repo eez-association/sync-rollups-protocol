@@ -39,6 +39,12 @@ contract CrossChainManagerL2 is ICrossChainManager {
     /// @notice Whether we're currently inside a cross-chain call execution
     bool transient _insideExecution;
 
+    /// @notice The index of the call currently being processed in _processCrossChainCalls
+    uint256 transient _currentCallIndex;
+
+    /// @notice The nested action context: type(uint64).max for entry-level, otherwise the nested action index
+    uint64 transient _nestedActionContext;
+
     /// @notice Error when caller is not the system address
     error Unauthorized();
 
@@ -195,8 +201,10 @@ contract CrossChainManagerL2 is ICrossChainManager {
         NestedAction storage nested = entry.nestedActions[idx];
         if (nested.actionHash != actionHash) revert ExecutionNotFound();
 
-        // Execute the nested action's cross-chain calls
+        uint64 savedContext = _nestedActionContext;
+        _nestedActionContext = uint64(idx);
         _processCrossChainCalls(bytes32(0), nested.calls);
+        _nestedActionContext = savedContext;
 
         return nested.returnData;
     }
@@ -218,9 +226,14 @@ contract CrossChainManagerL2 is ICrossChainManager {
         _nestedActionIndex = 0;
         _insideExecution = true;
 
-        // Execute all calls and verify rolling hash
+        // Sentinel value: type(uint64).max means "entry-level" (not inside any nested action).
+        // Valid nested action indices are 0, 1, 2... so max avoids collision with index 0.
+        // This context is read by staticCallLookup and _consumeNestedAction to disambiguate
+        // identical actionHashes occurring at different depths in the execution tree.
+        _nestedActionContext = type(uint64).max;
         (bytes32 computedHash) = _processCrossChainCalls(bytes32(0), entry.calls);
         if (computedHash != entry.rollingHash) revert RollingHashMismatch();
+        _nestedActionContext = 0;
 
         // Verify all nested actions were consumed
         if (_nestedActionIndex != entry.nestedActions.length) revert UnconsumedNestedActions();
@@ -239,7 +252,6 @@ contract CrossChainManagerL2 is ICrossChainManager {
     }
 
     /// @notice Executes cross-chain calls in an isolated context that always reverts
-    /// @dev Can only be called by this contract. Results are encoded in the ContextResult revert.
     function executeInContext(bytes32 runningHash, CrossChainCall[] calldata calls) external {
         if (msg.sender != address(this)) revert NotSelf();
         (bytes32 computedHash) = _processCrossChainCalls(runningHash, calls);
@@ -257,7 +269,26 @@ contract CrossChainManagerL2 is ICrossChainManager {
         while (i < calls.length) {
             CrossChainCall memory cc = calls[i];
 
-            if (cc.revertSpan > 0) {
+            if (cc.revertSpan == 0) {
+                // Normal call path: route through the source proxy so msg.sender on the
+                // destination is the deterministic proxy address (not the manager).
+                address sourceProxy = computeCrossChainProxyAddress(cc.sourceAddress, cc.sourceRollup);
+                if (authorizedProxies[sourceProxy].originalAddress == address(0)) {
+                    _createProxyInternal(cc.sourceAddress, cc.sourceRollup);
+                }
+
+                // Set call context for staticCallLookup (tload works in static context)
+                _currentCallIndex = i;
+
+                (bool success, bytes memory retData) = sourceProxy.call{value: cc.value}(
+                    abi.encodeCall(CrossChainProxy.executeOnBehalf, (cc.destination, cc.data))
+                );
+
+                // Chain (success, retData) into the rolling hash for end-to-end verification
+                // against entry.rollingHash after all calls are processed.
+                computedHash = keccak256(abi.encodePacked(computedHash, success, retData));
+                i++;
+            } else {
                 // revertSpan opens an isolated revert context spanning the next N calls (including this one).
                 // All state changes are rolled back, but the rolling hash is preserved via ContextResult.
                 CrossChainCall[] memory contextCalls = new CrossChainCall[](cc.revertSpan);
@@ -269,33 +300,15 @@ contract CrossChainManagerL2 is ICrossChainManager {
 
                 // Self-call that always reverts: isolates state changes while preserving the
                 // accumulated rolling hash via ContextResult. Hash is assigned directly (not re-hashed).
-                try this.executeInContext(computedHash, contextCalls) {
-                    // unreachable — executeInContext always reverts with ContextResult
-                } catch (bytes memory revertData) {
+                try this.executeInContext(computedHash, contextCalls) {} catch (bytes memory revertData) {
                     computedHash = _decodeContextResult(revertData);
                 }
 
                 // Skip past all calls covered by this revert context
                 i += cc.revertSpan;
-            } else {
-                // Normal call path: route through the source proxy so msg.sender on the
-                // destination is the deterministic proxy address (not the manager).
-                address sourceProxy = computeCrossChainProxyAddress(cc.sourceAddress, cc.sourceRollup);
-                if (authorizedProxies[sourceProxy].originalAddress == address(0)) {
-                    _createProxyInternal(cc.sourceAddress, cc.sourceRollup);
-                }
-
-                (bool success, bytes memory retData) = sourceProxy.call{value: cc.value}(
-                    abi.encodeCall(CrossChainProxy.executeOnBehalf, (cc.destination, cc.data))
-                );
-
-                // Chain (success, retData) into the rolling hash for end-to-end verification
-                // against entry.rollingHash after all calls are processed.
-                computedHash = keccak256(abi.encodePacked(computedHash, success, retData));
-
-                i++;
             }
         }
+        _currentCallIndex = 0;
     }
 
     /// @notice Decodes a ContextResult revert payload, reverting if selector doesn't match
@@ -306,6 +319,49 @@ contract CrossChainManagerL2 is ICrossChainManager {
         assembly {
             computedHash := mload(add(revertData, 36)) // skip length(32) + selector(4)
         }
+    }
+
+    // ──────────────────────────────────────────────
+    //  Static call lookup
+    // ──────────────────────────────────────────────
+
+    /// @notice Looks up a pre-computed static call result from the staticCalls table
+    /// @dev Called by proxies that detect they are inside a STATICCALL context (tstore fails).
+    ///      Matches by actionHash + current execution context (_currentCallIndex, _nestedActionContext).
+    ///      tload works in static context, so transient tracking variables are readable.
+    /// @param sourceAddress The original caller address (msg.sender as seen by the proxy)
+    /// @param callData The original calldata sent to the proxy
+    /// @return The pre-computed return data
+    function staticCallLookup(address sourceAddress, bytes calldata callData) external view returns (bytes memory) {
+        ProxyInfo storage proxyInfo = authorizedProxies[msg.sender];
+        if (proxyInfo.originalAddress == address(0)) revert UnauthorizedProxy();
+
+        bytes32 actionHash = _computeActionInputHash(
+            proxyInfo.originalRollupId,
+            proxyInfo.originalAddress,
+            0, // value is always 0 in static context
+            callData,
+            sourceAddress,
+            ROLLUP_ID
+        );
+
+        uint64 callIdx = uint64(_currentCallIndex);
+        uint64 nestedCtx = _nestedActionContext;
+
+        for (uint256 i = 0; i < staticCalls.length; i++) {
+            StaticCall storage sc = staticCalls[i];
+            if (sc.actionHash == actionHash && sc.crossChainCall == callIdx && sc.nestedAction == nestedCtx) {
+                if (sc.failed) {
+                    bytes memory returnData = sc.returnData;
+                    assembly {
+                        revert(add(returnData, 0x20), mload(returnData))
+                    }
+                }
+                return sc.returnData;
+            }
+        }
+
+        revert ExecutionNotFound();
     }
 
     // ──────────────────────────────────────────────
