@@ -48,7 +48,7 @@ struct StaticCall {
     bool failed;
     bytes32 stateRoot;
     uint64 crossChainCall;
-    uint64 nestedAction;
+    uint64 nestedAction; // type(uint64).max = entry-level calls; otherwise = index into entry's nestedActions[]
     CrossChainCall[] calls;
 }
 
@@ -75,6 +75,10 @@ interface ICrossChainManager {
     function executeCrossChainCall(address sourceAddress, bytes calldata callData)
         external
         payable
+        returns (bytes memory result);
+    function staticCallLookup(address sourceAddress, bytes calldata callData)
+        external
+        view
         returns (bytes memory result);
     function createCrossChainProxy(address originalAddress, uint256 originalRollupId) external returns (address proxy);
     function computeCrossChainProxyAddress(address originalAddress, uint256 originalRollupId)
