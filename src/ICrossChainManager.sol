@@ -33,10 +33,24 @@ struct CrossChainCall {
 /// @dev Consumed sequentially from the entry's nestedActions array. If a nested action itself
 ///      triggers a reentrant call, it consumes the next element in the same flat array.
 /// @dev All nested actions must succeed. Failed calls should use StaticCall instead.
+/// @dev Position in the execution tree (crossChainCall index, nested action index, parent context)
+///      is folded into the entry-level rolling hash rather than stored as explicit fields.
 struct NestedAction {
     bytes32 actionHash;
-    CrossChainCall[] calls;
+    uint256 callCount;    // iterations from the flat calls[] array
     bytes returnData;
+}
+
+/// @notice Represents an execution entry with pre-computed calls and return hash verification
+struct ExecutionEntry {
+    StateDelta[] stateDeltas;
+    bytes32 actionHash;
+    CrossChainCall[] calls;         // ALL calls flat, in execution order
+    NestedAction[] nestedActions;   // metadata only, no calls[]
+    uint256 callCount;              // entry-level iterations
+    bytes returnData;
+    bool failed;
+    bytes32 rollingHash;
 }
 
 /// @notice Pre-computed result for a static call or a call that reverts
@@ -47,20 +61,8 @@ struct StaticCall {
     bytes returnData;
     bool failed;
     bytes32 stateRoot;
-    uint64 crossChainCall;
-    uint64 nestedAction; // type(uint64).max = entry-level calls; otherwise = index into entry's nestedActions[]
-    CrossChainCall[] calls;
-}
-
-/// @notice Represents an execution entry with pre-computed calls and return hash verification
-struct ExecutionEntry {
-    StateDelta[] stateDeltas;
-    bytes32 actionHash;
-    CrossChainCall[] calls;
-    NestedAction[] nestedActions;
-    bytes returnData;
-    bool failed;
-    bytes32 rollingHash;
+    uint64 callNumber;                  // 1-indexed global call number
+    uint64 lastNestedActionConsumed;    // disambiguates phases within same call
 }
 
 /// @notice Stores the identity of an authorized CrossChainProxy
