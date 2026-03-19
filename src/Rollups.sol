@@ -17,7 +17,7 @@ struct RollupConfig {
 /// @notice L1 contract managing rollup state roots, ZK-proven batch posting, and cross-chain call execution
 /// @dev Execution entries are posted via `postBatch()` with a ZK proof. Immediate entries (actionHash == 0)
 ///      update state on the spot. Deferred entries are stored in a flat execution table and consumed
-///      sequentially. Each entry contains pre-computed calls and a return hash for verification.
+///      sequentially. Each entry contains pre-computed calls and a rolling hash for verification.
 contract Rollups is ICrossChainManager {
     /// @notice The rollup ID representing L1 mainnet
     uint256 public constant MAINNET_ROLLUP_ID = 0;
@@ -46,20 +46,27 @@ contract Rollups is ICrossChainManager {
     /// @notice Last block number when state was modified
     uint256 public lastStateUpdateBlock;
 
-    /// @notice Whether we're currently inside a cross-chain call execution
-    bool transient _insideExecution;
+    // ── Rolling hash tag constants ──
+    uint8 internal constant CALL_BEGIN = 1;
+    uint8 internal constant CALL_END = 2;
+    uint8 internal constant NESTED_BEGIN = 3;
+    uint8 internal constant NESTED_END = 4;
 
-    /// @notice The current execution entry being processed (for nested action consumption)
+    // ── Transient execution state (4 variables) ──
+
+    /// @notice The current execution entry being processed
     uint256 transient _currentEntryIndex;
 
-    /// @notice Index of the next nested action to consume within the current entry
-    uint256 transient _nestedActionIndex;
+    /// @notice Transient rolling hash accumulating tagged events across the entire entry
+    bytes32 transient _rollingHash;
 
-    /// @notice The index of the call currently being processed in _processCrossChainCalls
-    uint256 transient _currentCallIndex;
+    /// @notice 1-indexed global call counter and cursor into entry.calls[]
+    /// @dev Also replaces _insideExecution: _currentCallNumber != 0 means inside execution
+    uint256 transient _currentCallNumber;
 
-    /// @notice The nested action context: type(uint64).max for entry-level, otherwise the nested action index
-    uint64 transient _nestedActionContext;
+    /// @notice Sequential nested action consumption counter
+    /// @dev Also used by staticCallLookup to disambiguate multiple static calls within the same call
+    uint256 transient _lastNestedActionConsumed;
 
     /// @notice Emitted when a new rollup is created
     event RollupCreated(uint256 indexed rollupId, address indexed owner, bytes32 verificationKey, bytes32 initialState);
@@ -122,13 +129,16 @@ contract Rollups is ICrossChainManager {
     error RollingHashMismatch();
 
     /// @notice Carries execution results out of a reverted context
-    error ContextResult(bytes32 computedHash);
+    error ContextResult(bytes32 rollingHash, uint256 lastNestedActionConsumed, uint256 currentCallNumber);
 
     /// @notice Error when executeInContext reverts with an unexpected error
     error UnexpectedContextRevert(bytes revertData);
 
     /// @notice Error when not all nested actions were consumed after execution
     error UnconsumedNestedActions();
+
+    /// @notice Error when not all calls were consumed after execution
+    error UnconsumedCalls();
 
     /// @notice Error when executeCrossChainCall is called during execution with no matching nested action
     error NoNestedActionAvailable();
@@ -226,18 +236,19 @@ contract Rollups is ICrossChainManager {
         executionIndex = 0;
 
         // --- Process entries ---
-        // First entry may have actionHash == 0 (immediate state commitment with optional calls).
-        // All remaining entries must have actionHash != 0 (deferred, consumed via proxy calls).
-        uint256 startIdx = 0;
-        if (entries.length > 0 && entries[0].actionHash == bytes32(0)) {
-            _applyAndExecute(entries[0].stateDeltas, entries[0].calls, entries[0].rollingHash, 0);
-            startIdx = 1;
-        }
-        for (uint256 i = startIdx; i < entries.length; i++) {
+        // Push all entries first so _processNCalls can read entry.calls[] from storage
+        for (uint256 i = 0; i < entries.length; i++) {
             executions.push(entries[i]);
         }
         for (uint256 i = 0; i < _staticCalls.length; i++) {
             staticCalls.push(_staticCalls[i]);
+        }
+
+        // If the first entry has actionHash == 0, apply it immediately
+        if (entries.length > 0 && entries[0].actionHash == bytes32(0)) {
+            _currentEntryIndex = 0;
+            _applyAndExecute(entries[0].stateDeltas, entries[0].callCount, entries[0].rollingHash, 0);
+            executionIndex = 1;
         }
 
         emit BatchPosted(entries, publicInputsHash);
@@ -307,7 +318,7 @@ contract Rollups is ICrossChainManager {
 
         emit CrossChainCallExecuted(actionHash, msg.sender, sourceAddress, callData, msg.value);
 
-        if (_insideExecution) {
+        if (_insideExecution()) {
             // Inside a cross-chain call: consume the next nested action
             return _consumeNestedAction(actionHash);
         }
@@ -325,7 +336,7 @@ contract Rollups is ICrossChainManager {
         if (lastStateUpdateBlock != block.number) {
             revert ExecutionNotInCurrentBlock();
         }
-        if (_insideExecution) revert L2TXNotAllowedDuringExecution();
+        if (_insideExecution()) revert L2TXNotAllowedDuringExecution();
 
         return _consumeAndExecute(bytes32(0), 0);
     }
@@ -337,16 +348,16 @@ contract Rollups is ICrossChainManager {
     /// @notice Consumes the next nested action from the current entry
     function _consumeNestedAction(bytes32 actionHash) internal returns (bytes memory) {
         ExecutionEntry storage entry = executions[_currentEntryIndex];
-        uint256 idx = _nestedActionIndex++;
+        uint256 idx = _lastNestedActionConsumed++;
         if (idx >= entry.nestedActions.length) revert NoNestedActionAvailable();
 
         NestedAction storage nested = entry.nestedActions[idx];
         if (nested.actionHash != actionHash) revert ExecutionNotFound();
 
-        uint64 savedContext = _nestedActionContext;
-        _nestedActionContext = uint64(idx);
-        _processCrossChainCalls(bytes32(0), nested.calls);
-        _nestedActionContext = savedContext;
+        uint256 nestedNumber = idx + 1; // 1-indexed
+        _rollingHash = keccak256(abi.encodePacked(_rollingHash, NESTED_BEGIN, nestedNumber));
+        _processNCalls(nested.callCount);
+        _rollingHash = keccak256(abi.encodePacked(_rollingHash, NESTED_END, nestedNumber));
 
         return nested.returnData;
     }
@@ -364,20 +375,11 @@ contract Rollups is ICrossChainManager {
 
         emit ExecutionConsumed(actionHash, idx);
 
-        // Set execution context for nested action consumption
         _currentEntryIndex = idx;
-        _nestedActionIndex = 0;
-        _insideExecution = true;
-
-        _applyAndExecute(entry.stateDeltas, entry.calls, entry.rollingHash, etherIn);
-
-        // Verify all nested actions were consumed
-        if (_nestedActionIndex != entry.nestedActions.length) revert UnconsumedNestedActions();
-        _insideExecution = false;
+        _applyAndExecute(entry.stateDeltas, entry.callCount, entry.rollingHash, etherIn);
 
         bytes memory returnData = entry.returnData;
 
-        // If the action failed, revert with the return data
         if (entry.failed) {
             assembly {
                 revert(add(returnData, 0x20), mload(returnData))
@@ -387,107 +389,93 @@ contract Rollups is ICrossChainManager {
         return returnData;
     }
 
-    /// @notice Applies state deltas, processes cross-chain calls, verifies rolling hash, and checks ether balance
+    /// @notice Applies state deltas, processes calls, verifies rolling hash, and checks ether balance
     function _applyAndExecute(
         StateDelta[] memory deltas,
-        CrossChainCall[] memory calls,
+        uint256 callCount,
         bytes32 rollingHash,
         int256 etherIn
     ) internal {
-        // Sentinel value: type(uint64).max means "entry-level" (not inside any nested action).
-        // Valid nested action indices are 0, 1, 2... so max avoids collision with index 0.
-        // This context is read by staticCallLookup and _consumeNestedAction to disambiguate
-        // identical actionHashes occurring at different depths in the execution tree.
-        _nestedActionContext = type(uint64).max;
-        (bytes32 computedHash, int256 etherOut) = _processCrossChainCalls(bytes32(0), calls);
+        _rollingHash = bytes32(0);
+        _currentCallNumber = 0;
+        _lastNestedActionConsumed = 0;
+
+        int256 etherOut = _processNCalls(callCount);
         int256 totalEtherDelta = _applyStateDeltas(deltas);
-        if (computedHash != rollingHash) revert RollingHashMismatch();
+
+        ExecutionEntry storage entry = executions[_currentEntryIndex];
+        if (_rollingHash != rollingHash) revert RollingHashMismatch();
+        if (_currentCallNumber != entry.calls.length) revert UnconsumedCalls();
+        if (_lastNestedActionConsumed != entry.nestedActions.length) revert UnconsumedNestedActions();
         if (totalEtherDelta != etherIn - etherOut) revert EtherDeltaMismatch();
-        _nestedActionContext = 0;
+
+        _currentCallNumber = 0; // reset so _insideExecution() returns false
     }
 
-    /// @notice Processes cross-chain calls, opening new contexts for revertSpan calls
-    /// @param runningHash The accumulated hash from prior calls
-    /// @param calls The cross-chain calls to process
-    /// @return computedHash The chained hash of all results
+    /// @notice Processes N calls from the flat entry.calls[] array
+    /// @param count Number of iterations to process
     /// @return etherOut Total ETH sent in successful (non-reverted) calls
-    function _processCrossChainCalls(bytes32 runningHash, CrossChainCall[] memory calls) internal returns (
-        bytes32 computedHash,
-        int256 etherOut
-    ) {
-        computedHash = runningHash;
-        uint256 i = 0;
-        // Flat sequential iteration — no recursion. Each call is processed in order.
-        // Reentrant calls triggered during execution are handled via NestedAction[] on the entry,
-        // not by recursive invocations of this function.
-        while (i < calls.length) {
-            CrossChainCall memory cc = calls[i];
+    function _processNCalls(uint256 count) internal returns (int256 etherOut) {
+        ExecutionEntry storage entry = executions[_currentEntryIndex];
+        uint256 processed = 0;
+        while (processed < count) {
+            uint256 revertSpan = entry.calls[_currentCallNumber].revertSpan;
 
-            if (cc.revertSpan == 0) {
-                // Normal call path: route through the source proxy so msg.sender on the
-                // destination is the deterministic proxy address (not the manager).
+            if (revertSpan == 0) {
+                CrossChainCall memory cc = entry.calls[_currentCallNumber];
+                _currentCallNumber++;
+
+                _rollingHash = keccak256(abi.encodePacked(_rollingHash, CALL_BEGIN, _currentCallNumber));
+
                 address sourceProxy = computeCrossChainProxyAddress(cc.sourceAddress, cc.sourceRollup);
                 if (authorizedProxies[sourceProxy].originalAddress == address(0)) {
                     _createCrossChainProxyInternal(cc.sourceAddress, cc.sourceRollup);
                 }
 
-                // Set call context for staticCallLookup (tload works in static context)
-                _currentCallIndex = i;
-
                 (bool success, bytes memory retData) = sourceProxy.call{value: cc.value}(
                     abi.encodeCall(CrossChainProxy.executeOnBehalf, (cc.destination, cc.data))
                 );
 
-                // Track ETH leaving the manager — only on successful calls (reverted calls
-                // return the ETH). Verified against state delta ether accounting in _applyAndExecute.
                 if (cc.value > 0 && success) {
                     etherOut += int256(cc.value);
                 }
 
-                // Chain (success, retData) into the rolling hash for end-to-end verification
-                // against entry.rollingHash after all calls are processed.
-                computedHash = keccak256(abi.encodePacked(computedHash, success, retData));
-                i++;
+                _rollingHash = keccak256(abi.encodePacked(_rollingHash, CALL_END, _currentCallNumber, success, retData));
+                processed++;
             } else {
-                // revertSpan opens an isolated revert context spanning the next N calls (including this one).
-                // All state changes within the context are rolled back regardless of success/failure,
-                // but the rolling hash is preserved via ContextResult.
-                CrossChainCall[] memory contextCalls = new CrossChainCall[](cc.revertSpan);
-                for (uint256 j = 0; j < cc.revertSpan; j++) {
-                    contextCalls[j] = calls[i + j];
-                }
-                // Clear revertSpan on the first call so it executes as a normal CALL inside the context,
-                // otherwise it would recursively open another revert context.
-                contextCalls[0].revertSpan = 0;
+                uint256 savedCallNumber = _currentCallNumber;
+                entry.calls[_currentCallNumber].revertSpan = 0;
 
-                // Self-call that always reverts: isolates state changes while preserving the
-                // accumulated rolling hash via the ContextResult error. The hash is assigned
-                // directly (not re-hashed) to maintain continuity across revert boundaries.
-                try this.executeInContext(computedHash, contextCalls) {} catch (bytes memory revertData) {
-                    computedHash = _decodeContextResult(revertData);
+                try this.executeInContext(revertSpan) {} catch (bytes memory revertData) {
+                    (_rollingHash, _lastNestedActionConsumed, _currentCallNumber) = _decodeContextResult(revertData);
                 }
 
-                // Skip past all calls covered by this revert context
-                i += cc.revertSpan;
+                entry.calls[savedCallNumber].revertSpan = revertSpan;
+                processed += revertSpan;
             }
         }
-        _currentCallIndex = 0;
     }
 
-    /// @notice Executes cross-chain calls in an isolated context that always reverts
-    function executeInContext(bytes32 runningHash, CrossChainCall[] calldata calls) external {
+    /// @notice Executes calls in an isolated context that always reverts
+    function executeInContext(uint256 callCount) external {
         if (msg.sender != address(this)) revert NotSelf();
-        (bytes32 computedHash,) = _processCrossChainCalls(runningHash, calls);
-        revert ContextResult(computedHash);
+        _processNCalls(callCount);
+        revert ContextResult(_rollingHash, _lastNestedActionConsumed, _currentCallNumber);
     }
 
-    /// @notice Decodes a ContextResult revert payload, reverting if selector doesn't match
-    function _decodeContextResult(bytes memory revertData) internal pure returns (bytes32 computedHash) {
+    /// @notice Decodes a ContextResult revert payload
+    function _decodeContextResult(bytes memory revertData)
+        internal pure
+        returns (bytes32 rollingHash, uint256 naConsumed, uint256 callNumber)
+    {
         if (bytes4(revertData) != ContextResult.selector) {
             revert UnexpectedContextRevert(revertData);
         }
         assembly {
-            computedHash := mload(add(revertData, 36)) // skip length(32) + selector(4)
+            let ptr := add(revertData, 36)
+            rollingHash := mload(ptr)
+            naConsumed := mload(add(ptr, 32))
+            callNumber := mload(add(ptr, 64))
         }
     }
 
@@ -513,6 +501,11 @@ contract Rollups is ICrossChainManager {
 
             emit L2ExecutionPerformed(delta.rollupId, delta.newState);
         }
+    }
+
+    /// @notice Returns true if currently inside a cross-chain call execution
+    function _insideExecution() internal view returns (bool) {
+        return _currentCallNumber != 0;
     }
 
     // ──────────────────────────────────────────────
@@ -579,8 +572,7 @@ contract Rollups is ICrossChainManager {
     // ──────────────────────────────────────────────
 
     /// @notice Looks up a pre-computed static call result from the staticCalls table
-    /// @dev Called by proxies that detect they are inside a STATICCALL context (tstore fails).
-    ///      Matches by actionHash + current execution context (_currentCallIndex, _nestedActionContext).
+    /// @dev Matches by actionHash + current call number + last nested action consumed.
     ///      tload works in static context, so transient tracking variables are readable.
     /// @param sourceAddress The original caller address (msg.sender as seen by the proxy)
     /// @param callData The original calldata sent to the proxy
@@ -598,12 +590,12 @@ contract Rollups is ICrossChainManager {
             MAINNET_ROLLUP_ID
         );
 
-        uint64 callIdx = uint64(_currentCallIndex);
-        uint64 nestedCtx = _nestedActionContext;
+        uint64 callNum = uint64(_currentCallNumber);
+        uint64 lastNA = uint64(_lastNestedActionConsumed);
 
         for (uint256 i = 0; i < staticCalls.length; i++) {
             StaticCall storage sc = staticCalls[i];
-            if (sc.actionHash == actionHash && sc.crossChainCall == callIdx && sc.nestedAction == nestedCtx) {
+            if (sc.actionHash == actionHash && sc.callNumber == callNum && sc.lastNestedActionConsumed == lastNA) {
                 if (sc.failed) {
                     bytes memory returnData = sc.returnData;
                     assembly {
