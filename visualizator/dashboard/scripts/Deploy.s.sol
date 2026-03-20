@@ -153,11 +153,8 @@ contract Scenario1_L2 is Script {
 
         // Verify
         uint256 bCounter = Counter(counterL2Addr).counter();
-        uint256 pending = managerL2.pendingEntryCount();
         console.log("B.counter=%d (expected 1)", bCounter);
-        console.log("pendingEntries=%d (expected 0)", pending);
         require(bCounter == 1, "B.counter should be 1");
-        require(pending == 0, "All L2 entries should be consumed");
     }
 }
 

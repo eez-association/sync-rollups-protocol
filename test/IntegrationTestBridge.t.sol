@@ -215,7 +215,6 @@ contract IntegrationTestBridge is Test {
         );
 
         assertEq(alice.balance, aliceBalanceBefore + 1 ether, "Alice should receive 1 ether on L2");
-        assertEq(managerL2.pendingEntryCount(), 0, "All L2 execution entries consumed");
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -354,7 +353,6 @@ contract IntegrationTestBridge is Test {
         address wrappedAddr = bridgeL2.getWrappedToken(address(token), MAINNET_ROLLUP_ID);
         assertTrue(wrappedAddr != address(0), "Wrapped token should be deployed on L2");
         assertEq(WrappedToken(wrappedAddr).balanceOf(alice), 100e18, "Alice should have 100e18 wrapped tokens");
-        assertEq(managerL2.pendingEntryCount(), 0, "All L2 execution entries consumed");
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -444,43 +442,12 @@ contract IntegrationTestBridge is Test {
         assertEq(_getRollupState(L2_ROLLUP_ID), s1, "Phase 1: L2 state should be S1");
 
         // ════════════════════════════════════════════
-        //  Phase 2: L2 — Mint wrapped tokens
+        //  L2 execution table: load ALL entries for Phase 2 + Phase 3 in one call
         // ════════════════════════════════════════════
         //
-        //  SYSTEM delivers receiveTokens to bridgeL2:
-        //    auto-creates proxy for (bridgeL1, MAINNET) on L2
-        //    proxy.executeOnBehalf(bridgeL2, fwdCalldata) → bridgeL2.receiveTokens
-        //    onlyBridgeProxy(MAINNET): proxy for (bridgeL1, MAINNET) ✓
-        //    foreign token → deploys WrappedToken, mints to alice
-
-        {
-            ExecutionEntry[] memory entries = new ExecutionEntry[](1);
-            entries[0].stateDeltas = new StateDelta[](0);
-            entries[0].actionHash = keccak256(abi.encode(fwdResult));
-            entries[0].nextAction = fwdResult;
-
-            vm.prank(SYSTEM_ADDRESS);
-            managerL2.loadExecutionTable(entries);
-        }
-
-        vm.prank(SYSTEM_ADDRESS);
-        managerL2.executeIncomingCrossChainCall(
-            address(bridgeL2), 0, fwdCalldata, address(bridgeL1), MAINNET_ROLLUP_ID, new uint256[](0)
-        );
-
-        address wrappedAddr = bridgeL2.getWrappedToken(address(token), MAINNET_ROLLUP_ID);
-        assertTrue(wrappedAddr != address(0), "Phase 2: wrapped token should be deployed");
-        assertEq(WrappedToken(wrappedAddr).balanceOf(alice), 100e18, "Phase 2: alice should have 100e18 wrapped");
-        assertEq(managerL2.pendingEntryCount(), 0, "Phase 2: all L2 entries consumed");
-
-        // ════════════════════════════════════════════
-        //  Phase 3: L2 — Burn wrapped tokens (resolution from table)
-        // ════════════════════════════════════════════
-        //
-        //  Alice calls bridgeL2.bridgeTokens(wrappedToken, 100e18, MAINNET_ROLLUP_ID):
-        //    Burns wrapped tokens (bridge has burn authority)
-        //    proxy for (bridgeL1, MAINNET) on L2 (already exists)
-        //    executeCrossChainCall → CALL{MAINNET, bridgeL1, 0, retCalldata, bridgeL2, L2} matched → RESULT
+        //  In production the system loads the full execution table once per block.
+        //  Phase 2 needs: fwdResult hash → fwdResult (terminal)
+        //  Phase 3 needs: retCall hash → retResult (terminal)
 
         // Return calldata: bridgeL2 sends back to bridgeL1 on L1
         // originalToken = token, originalRollupId = MAINNET (traced from wrappedTokenInfo)
@@ -516,20 +483,52 @@ contract IntegrationTestBridge is Test {
         });
 
         {
-            ExecutionEntry[] memory entries = new ExecutionEntry[](1);
+            ExecutionEntry[] memory entries = new ExecutionEntry[](2);
+            // Phase 2 entry: incoming call result
             entries[0].stateDeltas = new StateDelta[](0);
-            entries[0].actionHash = keccak256(abi.encode(retCall));
-            entries[0].nextAction = retResult;
+            entries[0].actionHash = keccak256(abi.encode(fwdResult));
+            entries[0].nextAction = fwdResult;
+            // Phase 3 entry: outgoing bridge-back call
+            entries[1].stateDeltas = new StateDelta[](0);
+            entries[1].actionHash = keccak256(abi.encode(retCall));
+            entries[1].nextAction = retResult;
 
             vm.prank(SYSTEM_ADDRESS);
             managerL2.loadExecutionTable(entries);
         }
 
+        // ════════════════════════════════════════════
+        //  Phase 2: L2 — Mint wrapped tokens
+        // ════════════════════════════════════════════
+        //
+        //  SYSTEM delivers receiveTokens to bridgeL2:
+        //    auto-creates proxy for (bridgeL1, MAINNET) on L2
+        //    proxy.executeOnBehalf(bridgeL2, fwdCalldata) → bridgeL2.receiveTokens
+        //    onlyBridgeProxy(MAINNET): proxy for (bridgeL1, MAINNET) ✓
+        //    foreign token → deploys WrappedToken, mints to alice
+
+        vm.prank(SYSTEM_ADDRESS);
+        managerL2.executeIncomingCrossChainCall(
+            address(bridgeL2), 0, fwdCalldata, address(bridgeL1), MAINNET_ROLLUP_ID, new uint256[](0)
+        );
+
+        address wrappedAddr = bridgeL2.getWrappedToken(address(token), MAINNET_ROLLUP_ID);
+        assertTrue(wrappedAddr != address(0), "Phase 2: wrapped token should be deployed");
+        assertEq(WrappedToken(wrappedAddr).balanceOf(alice), 100e18, "Phase 2: alice should have 100e18 wrapped");
+
+        // ════════════════════════════════════════════
+        //  Phase 3: L2 — Burn wrapped tokens (resolution from table)
+        // ════════════════════════════════════════════
+        //
+        //  Alice calls bridgeL2.bridgeTokens(wrappedToken, 100e18, MAINNET_ROLLUP_ID):
+        //    Burns wrapped tokens (bridge has burn authority)
+        //    proxy for (bridgeL1, MAINNET) on L2 (already exists)
+        //    executeCrossChainCall → CALL{MAINNET, bridgeL1, 0, retCalldata, bridgeL2, L2} matched → RESULT
+
         vm.prank(alice);
         bridgeL2.bridgeTokens(wrappedAddr, 100e18, MAINNET_ROLLUP_ID, alice);
 
         assertEq(WrappedToken(wrappedAddr).balanceOf(alice), 0, "Phase 3: alice wrapped balance should be 0");
-        assertEq(managerL2.pendingEntryCount(), 0, "Phase 3: all L2 entries consumed");
 
         // ════════════════════════════════════════════
         //  Phase 4: L1 — Release tokens via executeL2TX

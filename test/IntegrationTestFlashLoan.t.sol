@@ -183,7 +183,7 @@ contract IntegrationTestFlashLoan is Test {
         // claimAndBridgeBack: called on executorL2 via proxy
         bytes memory claimAndBridgeBackCalldata = abi.encodeCall(
             FlashLoanBridgeExecutor.claimAndBridgeBack,
-            (wrappedTokenL2, address(flashLoanersNFT), address(bridgeL2), MAINNET_ROLLUP_ID, address(executor))
+            (wrappedTokenL2, address(flashLoanersNFT), address(bridgeL2), MAINNET_ROLLUP_ID, address(executor), alice)
         );
 
         // Return receiveTokens: L2 → L1, release native tokens to executor
@@ -304,7 +304,6 @@ contract IntegrationTestFlashLoan is Test {
         assertEq(WrappedToken(wrappedTokenL2).balanceOf(address(executorL2)), 0, "Wrapped tokens burned");
         assertTrue(flashLoanersNFT.hasClaimed(address(executorL2)), "executorL2 should have claimed NFT");
         assertEq(flashLoanersNFT.nextTokenId(), 1, "One NFT should be minted");
-        assertEq(managerL2.pendingEntryCount(), 0, "All L2 entries consumed");
 
         // ════════════════════════════════════════════
         //  Phase 2: L1 — Flash loan + cross-chain execution

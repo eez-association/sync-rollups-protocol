@@ -154,7 +154,6 @@ contract CrossChainManagerL2Test is Test {
         ExecutionEntry[] memory entries = new ExecutionEntry[](0);
         vm.prank(SYSTEM_ADDRESS);
         manager.loadExecutionTable(entries);
-        assertEq(manager.pendingEntryCount(), 0);
     }
 
     function test_LoadExecutionTable_StoresEntries() public {
@@ -209,59 +208,6 @@ contract CrossChainManagerL2Test is Test {
         s;
     }
 
-    // ── pendingEntryCount ──
-
-    function test_PendingEntryCount_IncreasesOnLoad() public {
-        assertEq(manager.pendingEntryCount(), 0);
-        _loadEntry(bytes32(uint256(1)), _emptyResult());
-        assertEq(manager.pendingEntryCount(), 1);
-        StateDelta[] memory emptyDeltas = new StateDelta[](0);
-        ExecutionEntry[] memory entries = new ExecutionEntry[](2);
-        entries[0].stateDeltas = emptyDeltas;
-        entries[0].actionHash = bytes32(uint256(2));
-        entries[0].nextAction = _emptyResult();
-        entries[1].stateDeltas = emptyDeltas;
-        entries[1].actionHash = bytes32(uint256(3));
-        entries[1].nextAction = _emptyResult();
-        vm.prank(SYSTEM_ADDRESS);
-        manager.loadExecutionTable(entries);
-        assertEq(manager.pendingEntryCount(), 3);
-    }
-
-    function test_PendingEntryCount_DecreasesOnConsume() public {
-        address proxy = manager.createCrossChainProxy(address(target), TEST_ROLLUP_ID);
-        bytes memory callData = abi.encodeCall(L2TestTarget.setValue, (42));
-        Action memory callAction = Action({
-            actionType: ActionType.CALL,
-            rollupId: TEST_ROLLUP_ID,
-            destination: address(target),
-            value: 0,
-            data: callData,
-            failed: false,
-            sourceAddress: address(this),
-            sourceRollup: TEST_ROLLUP_ID,
-            scope: new uint256[](0)
-        });
-        bytes32 actionHash = keccak256(abi.encode(callAction));
-        StateDelta[] memory emptyDeltas = new StateDelta[](0);
-        ExecutionEntry[] memory entries = new ExecutionEntry[](2);
-        entries[0].stateDeltas = emptyDeltas;
-        entries[0].actionHash = actionHash;
-        entries[0].nextAction = _emptyResult();
-        entries[1].stateDeltas = emptyDeltas;
-        entries[1].actionHash = actionHash;
-        entries[1].nextAction = _emptyResult();
-        vm.prank(SYSTEM_ADDRESS);
-        manager.loadExecutionTable(entries);
-        assertEq(manager.pendingEntryCount(), 2);
-        (bool s1,) = proxy.call(callData);
-        assertTrue(s1);
-        assertEq(manager.pendingEntryCount(), 1);
-        (bool s2,) = proxy.call(callData);
-        assertTrue(s2);
-        assertEq(manager.pendingEntryCount(), 0);
-    }
-
     // ── createCrossChainProxy ──
 
     function test_CreateCrossChainProxy() public {
@@ -310,9 +256,20 @@ contract CrossChainManagerL2Test is Test {
         manager.executeCrossChainCall(address(this), "");
     }
 
+    function test_ExecuteCrossChainCall_RevertsExecutionNotInCurrentBlock() public {
+        address proxy = manager.createCrossChainProxy(address(target), TEST_ROLLUP_ID);
+        bytes memory callData = abi.encodeCall(L2TestTarget.setValue, (42));
+        vm.expectRevert(CrossChainManagerL2.ExecutionNotInCurrentBlock.selector);
+        (bool s,) = proxy.call(callData);
+        s;
+    }
+
     function test_ExecuteCrossChainCall_RevertsExecutionNotFound() public {
         address proxy = manager.createCrossChainProxy(address(target), TEST_ROLLUP_ID);
         bytes memory callData = abi.encodeCall(L2TestTarget.setValue, (42));
+        // Load empty table so block check passes
+        vm.prank(SYSTEM_ADDRESS);
+        manager.loadExecutionTable(new ExecutionEntry[](0));
         vm.expectRevert(CrossChainManagerL2.ExecutionNotFound.selector);
         (bool s,) = proxy.call(callData);
         s;
@@ -677,8 +634,7 @@ contract CrossChainManagerL2Test is Test {
     function test_NewScope_ResultPassesThrough() public {
         Action memory result = _resultAction(abi.encode(uint256(42)));
         uint256[] memory scope = new uint256[](0);
-        address proxy = manager.createCrossChainProxy(address(target), TEST_ROLLUP_ID);
-        vm.prank(proxy);
+        vm.prank(address(manager));
         Action memory returned = manager.newScope(scope, result);
         assertEq(uint8(returned.actionType), uint8(ActionType.RESULT));
         assertEq(returned.data, abi.encode(uint256(42)));
@@ -707,8 +663,7 @@ contract CrossChainManagerL2Test is Test {
             scope: new uint256[](0)
         });
         _loadEntry(keccak256(abi.encode(resultFromChildCall)), _emptyResult());
-        address proxy = manager.createCrossChainProxy(address(target), TEST_ROLLUP_ID);
-        vm.prank(proxy);
+        vm.prank(address(manager));
         Action memory returned = manager.newScope(new uint256[](0), callAtChildScope);
         assertEq(uint8(returned.actionType), uint8(ActionType.RESULT));
         assertEq(target.value(), 999);
@@ -723,8 +678,7 @@ contract CrossChainManagerL2Test is Test {
         siblingScope[0] = 1;
         Action memory callAtSibling =
             _makeCallAction(TEST_ROLLUP_ID, address(target), 0, "", address(0xBEEF), 1, siblingScope);
-        address proxy = manager.createCrossChainProxy(address(target), TEST_ROLLUP_ID);
-        vm.prank(proxy);
+        vm.prank(address(manager));
         Action memory returned = manager.newScope(currentScope, callAtSibling);
         assertEq(uint8(returned.actionType), uint8(ActionType.CALL));
         assertEq(returned.scope[0], 1);
@@ -736,8 +690,7 @@ contract CrossChainManagerL2Test is Test {
         currentScope[1] = 1;
         Action memory callAtParent =
             _makeCallAction(TEST_ROLLUP_ID, address(target), 0, "", address(0xBEEF), 1, new uint256[](0));
-        address proxy = manager.createCrossChainProxy(address(target), TEST_ROLLUP_ID);
-        vm.prank(proxy);
+        vm.prank(address(manager));
         Action memory returned = manager.newScope(currentScope, callAtParent);
         assertEq(uint8(returned.actionType), uint8(ActionType.CALL));
         assertEq(returned.scope.length, 0);
@@ -752,8 +705,7 @@ contract CrossChainManagerL2Test is Test {
         bytes32 revertHash = keccak256(abi.encode(revertContinue));
         Action memory continuationAction = _emptyResult();
         _loadEntry(revertHash, continuationAction);
-        address proxy = manager.createCrossChainProxy(address(target), TEST_ROLLUP_ID);
-        vm.prank(proxy);
+        vm.prank(address(manager));
         vm.expectRevert(
             abi.encodeWithSelector(CrossChainManagerL2.ScopeReverted.selector, abi.encode(continuationAction))
         );
@@ -766,8 +718,7 @@ contract CrossChainManagerL2Test is Test {
         uint256[] memory revertScope = new uint256[](1);
         revertScope[0] = 1;
         Action memory revertAction = _makeRevertAction(TEST_ROLLUP_ID, revertScope);
-        address proxy = manager.createCrossChainProxy(address(target), TEST_ROLLUP_ID);
-        vm.prank(proxy);
+        vm.prank(address(manager));
         Action memory returned = manager.newScope(currentScope, revertAction);
         assertEq(uint8(returned.actionType), uint8(ActionType.REVERT));
         assertEq(returned.scope[0], 1);
@@ -777,8 +728,7 @@ contract CrossChainManagerL2Test is Test {
         uint256[] memory currentScope = new uint256[](1);
         currentScope[0] = 0;
         Action memory revertAction = _makeRevertAction(TEST_ROLLUP_ID, new uint256[](0));
-        address proxy = manager.createCrossChainProxy(address(target), TEST_ROLLUP_ID);
-        vm.prank(proxy);
+        vm.prank(address(manager));
         Action memory returned = manager.newScope(currentScope, revertAction);
         assertEq(uint8(returned.actionType), uint8(ActionType.REVERT));
     }
@@ -920,6 +870,9 @@ contract CrossChainManagerL2Test is Test {
         uint256 sourceRollup = 1;
         bytes memory callData = abi.encodeCall(L2TestTarget.setValue, (77));
         uint256[] memory scope = new uint256[](0);
+        // Load empty table so block check passes
+        vm.prank(SYSTEM_ADDRESS);
+        manager.loadExecutionTable(new ExecutionEntry[](0));
         vm.prank(SYSTEM_ADDRESS);
         vm.expectRevert(CrossChainManagerL2.InvalidRevertData.selector);
         manager.executeIncomingCrossChainCall(address(target), 0, callData, sourceAddr, sourceRollup, scope);
@@ -1052,8 +1005,7 @@ contract CrossChainManagerL2Test is Test {
         currentScope[0] = 0;
         Action memory callAtRoot =
             _makeCallAction(TEST_ROLLUP_ID, address(target), 0, "", address(0xBEEF), 1, new uint256[](0));
-        address proxy = manager.createCrossChainProxy(address(target), TEST_ROLLUP_ID);
-        vm.prank(proxy);
+        vm.prank(address(manager));
         Action memory returned = manager.newScope(currentScope, callAtRoot);
         assertEq(uint8(returned.actionType), uint8(ActionType.CALL));
     }
@@ -1067,8 +1019,7 @@ contract CrossChainManagerL2Test is Test {
         actionScope[1] = 2;
         Action memory callAction =
             _makeCallAction(TEST_ROLLUP_ID, address(target), 0, "", address(0xBEEF), 1, actionScope);
-        address proxy = manager.createCrossChainProxy(address(target), TEST_ROLLUP_ID);
-        vm.prank(proxy);
+        vm.prank(address(manager));
         Action memory returned = manager.newScope(currentScope, callAction);
         assertEq(uint8(returned.actionType), uint8(ActionType.CALL));
     }
@@ -1083,8 +1034,7 @@ contract CrossChainManagerL2Test is Test {
         actionScope[0] = 0;
         Action memory callAction =
             _makeCallAction(TEST_ROLLUP_ID, address(target), 0, "", address(0xBEEF), 1, actionScope);
-        address proxy = manager.createCrossChainProxy(address(target), TEST_ROLLUP_ID);
-        vm.prank(proxy);
+        vm.prank(address(manager));
         Action memory returned = manager.newScope(currentScope, callAction);
         assertEq(uint8(returned.actionType), uint8(ActionType.CALL));
     }
@@ -1097,8 +1047,7 @@ contract CrossChainManagerL2Test is Test {
         actionScope[1] = 2;
         Action memory callAction =
             _makeCallAction(TEST_ROLLUP_ID, address(target), 0, "", address(0xBEEF), 1, actionScope);
-        address proxy = manager.createCrossChainProxy(address(target), TEST_ROLLUP_ID);
-        vm.prank(proxy);
+        vm.prank(address(manager));
         Action memory returned = manager.newScope(currentScope, callAction);
         assertEq(uint8(returned.actionType), uint8(ActionType.CALL));
     }
@@ -1129,8 +1078,7 @@ contract CrossChainManagerL2Test is Test {
         _loadEntry(keccak256(abi.encode(resultFromCall)), _emptyResult());
         uint256[] memory startScope = new uint256[](1);
         startScope[0] = 0;
-        address proxy = manager.createCrossChainProxy(address(target), TEST_ROLLUP_ID);
-        vm.prank(proxy);
+        vm.prank(address(manager));
         Action memory returned = manager.newScope(startScope, callAtDeepScope);
         assertEq(uint8(returned.actionType), uint8(ActionType.RESULT));
         assertEq(target.value(), 321);
@@ -1160,8 +1108,7 @@ contract CrossChainManagerL2Test is Test {
             scope: new uint256[](0)
         });
         _loadEntry(keccak256(abi.encode(resultFromCall)), _emptyResult());
-        address proxy = manager.createCrossChainProxy(address(target), TEST_ROLLUP_ID);
-        vm.prank(proxy);
+        vm.prank(address(manager));
         Action memory returned = manager.newScope(new uint256[](0), callAtDeepScope);
         assertEq(uint8(returned.actionType), uint8(ActionType.RESULT));
         assertEq(target.value(), 777);
@@ -1205,8 +1152,7 @@ contract CrossChainManagerL2Test is Test {
         entries[1].nextAction = _emptyResult();
         vm.prank(SYSTEM_ADDRESS);
         manager.loadExecutionTable(entries);
-        address proxy = manager.createCrossChainProxy(address(target), TEST_ROLLUP_ID);
-        vm.prank(proxy);
+        vm.prank(address(manager));
         Action memory returned = manager.newScope(emptyScope, firstCall);
         assertEq(uint8(returned.actionType), uint8(ActionType.RESULT));
         assertEq(target.value(), 200);
@@ -1274,8 +1220,7 @@ contract CrossChainManagerL2Test is Test {
         entries[1].nextAction = continuationResult;
         vm.prank(SYSTEM_ADDRESS);
         manager.loadExecutionTable(entries);
-        address proxy = manager.createCrossChainProxy(address(target), TEST_ROLLUP_ID);
-        vm.prank(proxy);
+        vm.prank(address(manager));
         Action memory returned = manager.newScope(new uint256[](0), callAtChildScope);
         assertEq(uint8(returned.actionType), uint8(ActionType.RESULT));
         assertEq(abi.decode(returned.data, (uint256)), 456);
@@ -1289,6 +1234,9 @@ contract CrossChainManagerL2Test is Test {
     function test_Proxy_ExecuteOnBehalf_NonManagerFallsThrough() public {
         address proxy = manager.createCrossChainProxy(address(target), TEST_ROLLUP_ID);
         CrossChainProxy p = CrossChainProxy(payable(proxy));
+        // Load empty table so block check passes
+        vm.prank(SYSTEM_ADDRESS);
+        manager.loadExecutionTable(new ExecutionEntry[](0));
         // Non-manager callers are routed through _fallback() (cross-chain path),
         // which calls executeCrossChainCall and reverts with ExecutionNotFound
         vm.prank(address(0xDEAD));

@@ -15,14 +15,14 @@ contract CrossChainManagerL2 is ICrossChainManager {
     /// @notice The system address authorized for admin operations
     address public immutable SYSTEM_ADDRESS;
 
-    /// @notice Mapping from action hash to pre-computed executions
-    mapping(bytes32 actionHash => ExecutionEntry[] executions) internal _executions;
+    /// @notice Array of pre-computed executions
+    ExecutionEntry[] public executions;
 
     /// @notice Mapping of authorized CrossChainProxy contracts to their identity
     mapping(address proxy => ProxyInfo info) public authorizedProxies;
 
-    /// @notice Number of pending (unconsumed) execution entries in the table
-    uint256 public pendingEntryCount;
+    /// @notice Last block number when the execution table was loaded
+    uint256 public lastStateUpdateBlock;
 
     /// @notice Error when caller is not the system address
     error Unauthorized();
@@ -45,6 +45,12 @@ contract CrossChainManagerL2 is ICrossChainManager {
 
     /// @notice Error when ETH transfer to system address fails
     error EtherTransferFailed();
+
+    /// @notice Error when the execution table was already loaded this block
+    error StateAlreadyUpdatedThisBlock();
+
+    /// @notice Error when execution is attempted in a different block than the last table load
+    error ExecutionNotInCurrentBlock();
 
     /// @notice Emitted when a new CrossChainProxy is deployed and registered
     event CrossChainProxyCreated(address indexed proxy, address indexed originalAddress, uint256 indexed originalRollupId);
@@ -78,12 +84,21 @@ contract CrossChainManagerL2 is ICrossChainManager {
     // ──────────────────────────────────────────────
 
     /// @notice Loads execution entries into the execution table (system only)
+    /// @dev Deletes the previous execution table before loading new entries
     /// @param entries The execution entries to load
     function loadExecutionTable(ExecutionEntry[] calldata entries) external onlySystemAddress {
-        for (uint256 i = 0; i < entries.length; i++) {
-            _executions[entries[i].actionHash].push(entries[i]);
+        if (lastStateUpdateBlock == block.number) {
+            revert StateAlreadyUpdatedThisBlock();
         }
-        pendingEntryCount += entries.length;
+
+        // Delete previous execution table
+        delete executions;
+
+        for (uint256 i = 0; i < entries.length; i++) {
+            executions.push(entries[i]);
+        }
+
+        lastStateUpdateBlock = block.number;
         emit ExecutionTableLoaded(entries);
     }
 
@@ -98,6 +113,10 @@ contract CrossChainManagerL2 is ICrossChainManager {
     function executeCrossChainCall(address sourceAddress, bytes calldata callData) external payable returns (bytes memory result) {
         ProxyInfo storage proxyInfo = authorizedProxies[msg.sender];
         if (proxyInfo.originalAddress == address(0)) revert UnauthorizedProxy();
+
+        if (lastStateUpdateBlock != block.number) {
+            revert ExecutionNotInCurrentBlock();
+        }
 
         Action memory action = Action({
             actionType: ActionType.CALL,
@@ -140,6 +159,10 @@ contract CrossChainManagerL2 is ICrossChainManager {
         uint256 sourceRollup,
         uint256[] calldata scope
     ) external payable onlySystemAddress returns (bytes memory result) {
+        if (lastStateUpdateBlock != block.number) {
+            revert ExecutionNotInCurrentBlock();
+        }
+
         Action memory action = Action({
             actionType: ActionType.CALL,
             rollupId: ROLLUP_ID,
@@ -173,7 +196,7 @@ contract CrossChainManagerL2 is ICrossChainManager {
         uint256[] memory scope,
         Action memory action
     ) external returns (Action memory nextAction) {
-        if (msg.sender != address(this) && authorizedProxies[msg.sender].originalAddress == address(0)) {
+        if (msg.sender != address(this)) {
             revert UnauthorizedProxy();
         }
 
@@ -237,20 +260,25 @@ contract CrossChainManagerL2 is ICrossChainManager {
         emit CrossChainProxyCreated(proxy, originalAddress, originalRollupId);
     }
 
-    /// @notice Consumes the last execution entry for the given action hash
+    /// @notice Finds a matching execution for the given action hash, removes it, and returns the next action
     function _consumeExecution(bytes32 actionHash, Action memory action) internal returns (Action memory nextAction) {
-        ExecutionEntry[] storage executions = _executions[actionHash];
-        if (executions.length == 0) revert ExecutionNotFound();
+        for (uint256 i = 0; i < executions.length; i++) {
+            if (executions[i].actionHash != actionHash) continue;
 
-        // Save the next action before removing the entry
-        nextAction = executions[0].nextAction;
-        // Swap-and-pop: move the last entry into the consumed slot, then remove the last element
-        executions[0] = executions[executions.length - 1];
-        executions.pop();
-        pendingEntryCount--;
+            nextAction = executions[i].nextAction;
 
-        emit ExecutionConsumed(actionHash, action);
-        return nextAction;
+            // Swap-and-pop
+            uint256 lastIndex = executions.length - 1;
+            if (i != lastIndex) {
+                executions[i] = executions[lastIndex];
+            }
+            executions.pop();
+
+            emit ExecutionConsumed(actionHash, action);
+            return nextAction;
+        }
+
+        revert ExecutionNotFound();
     }
 
     /// @notice If nextAction is a CALL, enters scope navigation; then asserts a successful RESULT

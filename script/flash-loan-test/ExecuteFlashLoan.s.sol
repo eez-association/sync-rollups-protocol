@@ -45,7 +45,7 @@ contract ExecuteFlashLoanL2 is Script {
         // claimAndBridgeBack
         bytes memory claimAndBridgeBackCalldata = abi.encodeCall(
             FlashLoanBridgeExecutor.claimAndBridgeBack,
-            (wrappedTokenL2, flashLoanersNFT, bridgeL2, MAINNET_ROLLUP_ID, executorL1)
+            (wrappedTokenL2, flashLoanersNFT, bridgeL2, MAINNET_ROLLUP_ID, executorL1, executorL2)
         );
 
         // Return receiveTokens: L2 → L1
@@ -186,7 +186,7 @@ contract ExecuteFlashLoanL1 is Script {
         // claimAndBridgeBack
         bytes memory claimAndBridgeBackCalldata = abi.encodeCall(
             FlashLoanBridgeExecutor.claimAndBridgeBack,
-            (wrappedTokenL2, flashLoanersNFT, bridgeL2, MAINNET_ROLLUP_ID, executorL1)
+            (wrappedTokenL2, flashLoanersNFT, bridgeL2, MAINNET_ROLLUP_ID, executorL1, executorL2)
         );
 
         // Return receiveTokens: L2 → L1

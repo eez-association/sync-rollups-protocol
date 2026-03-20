@@ -20,6 +20,8 @@ contract FlashLoanBridgeExecutor is IFlashLoanReceiver {
     uint256 public immutable l2RollupId;
     address public immutable token;
 
+    address transient caller;
+
     constructor(
         address _flashLoanPool,
         address _bridge,
@@ -43,11 +45,14 @@ contract FlashLoanBridgeExecutor is IFlashLoanReceiver {
     }
 
     function execute() external {
+        caller = msg.sender;
         flashLoanPool.flashLoan(token, 10_000e18);
     }
 
     function onFlashLoan(address _token, uint256 amount) external override {
         require(msg.sender == address(flashLoanPool), "Unauthorized");
+
+        address nftRecipient = caller;
 
         // 1. Bridge tokens to executor on L2
         IERC20(_token).approve(address(bridge), amount);
@@ -55,7 +60,7 @@ contract FlashLoanBridgeExecutor is IFlashLoanReceiver {
 
         // 2. Trigger executor(L2) to claim NFT and bridge tokens back
         (bool success,) = executorL2Proxy.call(
-            abi.encodeCall(this.claimAndBridgeBack, (wrappedTokenL2, nftL2, bridgeL2, 0, address(this)))
+            abi.encodeCall(this.claimAndBridgeBack, (wrappedTokenL2, nftL2, bridgeL2, 0, address(this), nftRecipient))
         );
         require(success, "Cross-chain call failed");
 
@@ -63,14 +68,31 @@ contract FlashLoanBridgeExecutor is IFlashLoanReceiver {
         IERC20(_token).safeTransfer(msg.sender, amount);
     }
 
+    /// @notice Called cross-chain on L2 by the executor proxy.
+    ///         Claims a token-gated NFT and bridges wrapped tokens back to L1.
+    /// @param wrappedToken  The wrapped ERC20 on L2 (used for NFT balance gate + bridge burn)
+    /// @param nftContract   The FlashLoanersNFT contract on L2
+    /// @param _bridge       The Bridge contract on L2
+    /// @param destRollupId  The rollup to bridge tokens back to (L1 = 0)
+    /// @param returnTo      The address on L1 that receives the bridged-back tokens
+    /// @param nftRecipient  The address that receives the claimed NFT (msg.sender of execute() on L1)
     function claimAndBridgeBack(
         address wrappedToken,
         address nftContract,
         address _bridge,
         uint256 destRollupId,
-        address returnTo
+        address returnTo,
+        address nftRecipient
     ) external {
+        // Snapshot the next token ID before claim() increments it
+        uint256 tokenId = FlashLoanersNFT(nftContract).nextTokenId();
+
+        // Claim the NFT (minted to this contract since we hold >= MIN_BALANCE wrapped tokens)
         FlashLoanersNFT(nftContract).claim();
+        // Transfer the NFT to the original caller of execute() on L1
+        FlashLoanersNFT(nftContract).transferFrom(address(this), nftRecipient, tokenId);
+        
+        // Bridge all wrapped tokens back to L1
         uint256 balance = IERC20(wrappedToken).balanceOf(address(this));
         Bridge(_bridge).bridgeTokens(wrappedToken, balance, destRollupId, returnTo);
     }

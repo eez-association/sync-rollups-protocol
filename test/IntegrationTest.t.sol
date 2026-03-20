@@ -168,7 +168,6 @@ contract IntegrationTest is Test {
         );
 
         assertEq(counterL2.counter(), 1, "B(Counter on L2) should be 1");
-        assertEq(managerL2.pendingEntryCount(), 0, "All L2 execution entries consumed");
 
         // ════════════════════════════════════════════
         //  Phase 2: L1 — Alice calls A, resolves from execution table
@@ -377,7 +376,6 @@ contract IntegrationTest is Test {
         assertEq(counterAndProxyL2.counter(), 1, "D.counter should be 1");
         assertEq(counterAndProxyL2.targetCounter(), 1, "D.targetCounter should be 1");
         assertEq(counterL1.counter(), 1, "C(Counter on L1) should still be 1");
-        assertEq(managerL2.pendingEntryCount(), 0, "All L2 entries consumed");
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -607,7 +605,6 @@ contract IntegrationTest is Test {
         assertEq(counterAndProxy.counter(), 1, "A.counter should still be 1");
         assertEq(counterAndProxy.targetCounter(), 1, "A.targetCounter should still be 1");
         assertEq(counterL2.counter(), 1, "B(Counter on L2) should be 1 (executed via L2 scope nav)");
-        assertEq(managerL2.pendingEntryCount(), 0, "All L2 entries consumed");
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -807,6 +804,5 @@ contract IntegrationTest is Test {
         assertEq(counterAndProxyL2.counter(), 1, "D.counter should be 1");
         assertEq(counterAndProxyL2.targetCounter(), 1, "D.targetCounter should be 1");
         assertEq(counterL1.counter(), 1, "C(Counter on L1) should still be 1");
-        assertEq(managerL2.pendingEntryCount(), 0, "All L2 entries consumed");
     }
 }
