@@ -31,17 +31,15 @@ export type EntryStatus = "ja" | "jc" | "ok" | "consumed";
 export type TableEntry = {
   id: string;
   actionHash: string;
-  nextActionHash: string;
   delta: string | null;
   status: EntryStatus;
   stateDeltas: string[];
   rollupIds: bigint[];
   actionDetail?: Record<string, string>;
-  nextActionDetail?: Record<string, string>;
   /** Full untruncated action hash for decoding/verification */
   fullActionHash?: string;
-  /** Full computed hash of the nextAction */
-  fullNextActionHash?: string;
+  /** Entry metadata: callCount, nestedActions count, failed, rollingHash */
+  entryMeta?: Record<string, string>;
 };
 
 export type DiagramItem =

@@ -351,6 +351,7 @@ contract Rollups is ICrossChainManager {
         }
         if (_insideExecution()) revert L2TXNotAllowedDuringExecution();
 
+        emit L2TXExecuted(executionIndex);
         return _consumeAndExecute(bytes32(0), 0);
     }
 

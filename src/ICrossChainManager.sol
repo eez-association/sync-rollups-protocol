@@ -2,6 +2,8 @@
 pragma solidity ^0.8.28;
 
 /// @notice Represents an action used to build the entrypoint hash
+/// @dev Off-chain only. Not used by any on-chain function. Exists for tooling to compute
+///      actionHash = keccak256(abi.encode(rollupId, destination, value, data, sourceAddress, sourceRollup))
 struct Action {
     uint256 rollupId;
     address destination;

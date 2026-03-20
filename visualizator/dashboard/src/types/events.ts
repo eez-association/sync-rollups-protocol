@@ -1,5 +1,5 @@
 import type { Chain } from "./visualization";
-import type { Action, ExecutionEntry } from "./chain";
+import type { ExecutionEntry } from "./chain";
 
 export type EventName =
   | "RollupCreated"
@@ -13,7 +13,10 @@ export type EventName =
   | "L2TXExecuted"
   | "BatchPosted"
   | "ExecutionTableLoaded"
-  | "IncomingCrossChainCallExecuted";
+  | "CallResult"
+  | "NestedActionConsumed"
+  | "EntryExecuted"
+  | "RevertSpanExecuted";
 
 export type EventRecord = {
   id: string;
@@ -54,7 +57,7 @@ export type ExecutionTableLoadedArgs = {
 
 export type ExecutionConsumedArgs = {
   actionHash: `0x${string}`;
-  action: Action;
+  entryIndex: bigint;
 };
 
 export type CrossChainProxyCreatedArgs = {
@@ -71,14 +74,25 @@ export type CrossChainCallExecutedArgs = {
   value: bigint;
 };
 
-export type IncomingCrossChainCallExecutedArgs = {
+export type CallResultArgs = {
+  entryIndex: bigint;
+  callNumber: bigint;
+  success: boolean;
+  returnData: `0x${string}`;
+};
+
+export type NestedActionConsumedArgs = {
+  entryIndex: bigint;
+  nestedNumber: bigint;
   actionHash: `0x${string}`;
-  destination: `0x${string}`;
-  value: bigint;
-  data: `0x${string}`;
-  sourceAddress: `0x${string}`;
-  sourceRollup: bigint;
-  scope: bigint[];
+  callCount: bigint;
+};
+
+export type EntryExecutedArgs = {
+  entryIndex: bigint;
+  rollingHash: `0x${string}`;
+  callsProcessed: bigint;
+  nestedActionsConsumed: bigint;
 };
 
 export type RollupCreatedArgs = {
@@ -95,12 +109,9 @@ export type StateUpdatedArgs = {
 
 export type L2ExecutionPerformedArgs = {
   rollupId: bigint;
-  currentState: `0x${string}`;
   newState: `0x${string}`;
 };
 
 export type L2TXExecutedArgs = {
-  actionHash: `0x${string}`;
-  rollupId: bigint;
-  rlpEncodedTx: `0x${string}`;
+  entryIndex: bigint;
 };

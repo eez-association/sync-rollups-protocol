@@ -1,6 +1,5 @@
 import type { EventRecord } from "../types/events";
 import type { TransactionBundle, BundleDirection } from "../types/visualization";
-import { actionFromEventArgs, computeActionHash } from "./actionHashDecoder";
 
 /**
  * Cross-chain transaction correlation.
@@ -8,13 +7,12 @@ import { actionFromEventArgs, computeActionHash } from "./actionHashDecoder";
  * Matching rule: when the same actionHash appears in ExecutionConsumed events
  * on BOTH L1 and L2, those two events represent the same cross-chain operation.
  *
- * From the integration tests:
+ * In the new model:
  * - L1 postBatch loads entries keyed by actionHash
  * - L2 loadExecutionTable loads entries keyed by actionHash
- * - When a CALL is built on one chain, the matching entry (same actionHash)
- *   is consumed on the other chain
- * - The actionHash = keccak256(abi.encode(action)) is deterministic,
- *   so identical Actions on both chains produce the same hash
+ * - When a proxy call is triggered on one chain, the matching entry (same actionHash)
+ *   is consumed from the execution table
+ * - The actionHash = keccak256(abi.encode(rollupId, destination, value, data, sourceAddress, sourceRollup))
  */
 
 export type CorrelatedPair = {
@@ -117,7 +115,7 @@ export function findCorrelatedEntries(events: EventRecord[]): CorrelatedEntry[] 
  * Strategy:
  * 1. Build a map: actionHash -> [eventIds] from events that carry actionHashes
  *    (BatchPosted entries, ExecutionTableLoaded entries, ExecutionConsumed,
- *     CrossChainCallExecuted, L2TXExecuted, IncomingCrossChainCallExecuted)
+ *     CrossChainCallExecuted, L2TXExecuted)
  * 2. Build a map: eventId -> [actionHashes] (inverse)
  * 3. Use union-find (transitive closure) to group events that share any actionHash
  * 4. Each group becomes a TransactionBundle
@@ -142,35 +140,19 @@ export function buildTransactionBundles(events: EventRecord[]): TransactionBundl
   for (const event of events) {
     switch (event.eventName) {
       case "BatchPosted": {
-        const entries = event.args.entries as Array<{ actionHash: string; nextAction?: Record<string, unknown> }> | undefined;
+        const entries = event.args.entries as Array<{ actionHash: string }> | undefined;
         if (entries) {
           for (const entry of entries) {
             link(event.id, entry.actionHash);
-            // Also link via nextAction computed hash to connect L1 batch → L2 table
-            if (entry.nextAction) {
-              try {
-                const fields = actionFromEventArgs(entry.nextAction);
-                const nextHash = computeActionHash(fields);
-                link(event.id, nextHash);
-              } catch { /* skip if parsing fails */ }
-            }
           }
         }
         break;
       }
       case "ExecutionTableLoaded": {
-        const entries = event.args.entries as Array<{ actionHash: string; nextAction?: Record<string, unknown> }> | undefined;
+        const entries = event.args.entries as Array<{ actionHash: string }> | undefined;
         if (entries) {
           for (const entry of entries) {
             link(event.id, entry.actionHash);
-            // Also link via nextAction computed hash
-            if (entry.nextAction) {
-              try {
-                const fields = actionFromEventArgs(entry.nextAction);
-                const nextHash = computeActionHash(fields);
-                link(event.id, nextHash);
-              } catch { /* skip if parsing fails */ }
-            }
           }
         }
         break;
@@ -182,10 +164,7 @@ export function buildTransactionBundles(events: EventRecord[]): TransactionBundl
         link(event.id, event.args.actionHash as string);
         break;
       case "L2TXExecuted":
-        link(event.id, event.args.actionHash as string);
-        break;
-      case "IncomingCrossChainCallExecuted":
-        link(event.id, event.args.actionHash as string);
+        // L2TXExecuted only has entryIndex now, no actionHash — skip linking
         break;
     }
   }
@@ -332,8 +311,7 @@ function inferDirection(events: EventRecord[]): BundleDirection {
   const actionEvents = events.filter((e) =>
     e.eventName === "ExecutionConsumed" ||
     e.eventName === "CrossChainCallExecuted" ||
-    e.eventName === "L2TXExecuted" ||
-    e.eventName === "IncomingCrossChainCallExecuted"
+    e.eventName === "L2TXExecuted"
   );
 
   if (actionEvents.length === 0) {
@@ -373,10 +351,7 @@ function generateBundleTitle(events: EventRecord[], direction: BundleDirection):
   }
 
   const l2tx = events.find((e) => e.eventName === "L2TXExecuted");
-  if (l2tx) return `L2TX execution (rollup ${String(l2tx.args.rollupId)})`;
-
-  const incoming = events.find((e) => e.eventName === "IncomingCrossChainCallExecuted");
-  if (incoming) return `Incoming cross-chain call to ${(incoming.args.destination as string)?.slice(0, 8)}...`;
+  if (l2tx) return `L2TX execution (entry ${String(l2tx.args.entryIndex)})`;
 
   const batch = events.find((e) => e.eventName === "BatchPosted");
   const load = events.find((e) => e.eventName === "ExecutionTableLoaded");

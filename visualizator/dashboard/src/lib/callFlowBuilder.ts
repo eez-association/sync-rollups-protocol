@@ -1,11 +1,11 @@
 import type { EventRecord } from "../types/events";
 import type { DiagramItem } from "../types/visualization";
-import { actionTypeName, truncateAddress, formatScope } from "./actionFormatter";
-import { actionFromEventArgs, type ActionFields } from "./actionHashDecoder";
+import { truncateAddress } from "./actionFormatter";
 
 const KNOWN_SELECTORS: Record<string, string> = {
   "0xd09de08a": "increment()",
   "0x06661abd": "counter()",
+  "0x1c71ef55": "incrementProxy()",
 };
 
 export type CallFlowNode = {
@@ -19,13 +19,12 @@ export type CallFlowStep = {
   from: CallFlowNode;
   to: CallFlowNode;
   label: string;
-  actionType: string;
   isReturn: boolean;
 };
 
 /**
  * Build a call flow diagram from a bundle's events.
- * Extracts Actions from ExecutionConsumed events and orders them to form a call chain.
+ * Uses CrossChainCallExecuted and CallResult events to trace the flow.
  */
 export function buildCallFlow(
   events: EventRecord[],
@@ -33,74 +32,54 @@ export function buildCallFlow(
 ): DiagramItem[] {
   const items: DiagramItem[] = [];
 
-  // Extract actions from ExecutionConsumed events
-  const consumedActions: { action: ActionFields; chain: "l1" | "l2"; hash: string }[] = [];
+  // Extract call flow from CrossChainCallExecuted events
   for (const event of events) {
-    if (event.eventName !== "ExecutionConsumed") continue;
-    try {
-      const actionArg = event.args.action as Record<string, unknown>;
-      if (!actionArg) continue;
-      const fields = actionFromEventArgs(actionArg);
-      consumedActions.push({
-        action: fields,
-        chain: event.chain,
-        hash: event.args.actionHash as string,
-      });
-    } catch {
-      continue;
-    }
-  }
+    if (event.eventName !== "CrossChainCallExecuted") continue;
 
-  if (consumedActions.length === 0) return items;
+    const src = event.args.sourceAddress as string;
+    const proxy = event.args.proxy as string;
+    const callData = event.args.callData as string;
+    const chain = event.chain;
 
-  // Build diagram from action sequence
-  for (let i = 0; i < consumedActions.length; i++) {
-    const { action, chain } = consumedActions[i];
-    const rollupChain = action.rollupId === 0n ? "l1" : "l2";
+    const srcInfo = resolveAddress(src, knownAddresses);
+    const proxyInfo = resolveAddress(proxy, knownAddresses);
 
-    if (action.actionType === 0) {
-      // CALL
-      const srcInfo = resolveAddress(action.sourceAddress, knownAddresses);
-      const destInfo = resolveAddress(action.destination, knownAddresses);
-
-      if (i === 0 || items.length === 0) {
-        // First node: source
-        items.push({
-          kind: "node",
-          label: srcInfo.label,
-          sub: srcInfo.type,
-          type: srcInfo.type,
-          chain: srcInfo.chain || chain,
-        });
-      }
-
-      // Arrow with function call
-      const selector = action.data.length >= 10 ? action.data.slice(0, 10) : action.data;
-      const fnName = KNOWN_SELECTORS[selector.toLowerCase()] ?? selector;
-      items.push({ kind: "arrow", label: fnName });
-
-      // Destination node
+    if (items.length === 0) {
       items.push({
         kind: "node",
-        label: destInfo.label,
-        sub: destInfo.type,
-        type: destInfo.type,
-        chain: rollupChain,
-      });
-    } else if (action.actionType === 1) {
-      // RESULT - add return arrow
-      const dataPreview = action.data === "0x" ? "void" : `data=${action.data.slice(0, 10)}...`;
-      items.push({ kind: "arrow", label: `return(${dataPreview})` });
-    } else if (action.actionType === 2) {
-      // L2TX
-      items.push({
-        kind: "node",
-        label: "L2TX",
-        sub: `rlp=${action.data.slice(0, 8)}...`,
-        type: "system",
-        chain: rollupChain,
+        label: srcInfo.label,
+        sub: srcInfo.type,
+        type: srcInfo.type,
+        chain: srcInfo.chain || chain,
       });
     }
+
+    // Arrow with function call
+    const selector = callData && callData.length >= 10 ? callData.slice(0, 10) : callData ?? "";
+    const fnName = KNOWN_SELECTORS[selector.toLowerCase()] ?? selector;
+    items.push({ kind: "arrow", label: fnName });
+
+    // Proxy node
+    items.push({
+      kind: "node",
+      label: proxyInfo.label,
+      sub: proxyInfo.type,
+      type: proxyInfo.type,
+      chain,
+    });
+
+    // Arrow to manager
+    items.push({ kind: "arrow", label: "execCC" });
+
+    // Manager node
+    const mgrLabel = chain === "l1" ? "Rollups" : "ManagerL2";
+    items.push({
+      kind: "node",
+      label: mgrLabel,
+      sub: "system",
+      type: "system",
+      chain,
+    });
   }
 
   return items;
@@ -158,10 +137,16 @@ function stepTitle(event: EventRecord): string {
       return "Cross-chain call executed";
     case "L2TXExecuted":
       return "L2TX executed";
-    case "IncomingCrossChainCallExecuted":
-      return "Incoming cross-chain call";
     case "CrossChainProxyCreated":
       return "Proxy created";
+    case "CallResult":
+      return "Call result";
+    case "NestedActionConsumed":
+      return "Nested action consumed";
+    case "EntryExecuted":
+      return "Entry executed";
+    case "RevertSpanExecuted":
+      return "Revert span executed";
     default:
       return event.eventName;
   }
@@ -169,26 +154,20 @@ function stepTitle(event: EventRecord): string {
 
 function stepDetail(event: EventRecord): string {
   switch (event.eventName) {
-    case "ExecutionConsumed": {
-      try {
-        const actionArg = event.args.action as Record<string, unknown>;
-        if (actionArg) {
-          const fields = actionFromEventArgs(actionArg);
-          const typeName = actionTypeName(fields.actionType);
-          const dest = fields.destination !== "0x0000000000000000000000000000000000000000"
-            ? truncateAddress(fields.destination) : "";
-          const scope = fields.scope.length > 0 ? ` scope=${formatScope(fields.scope)}` : "";
-          return `${typeName} → rollup ${fields.rollupId}${dest ? ` → ${dest}` : ""}${scope}`;
-        }
-      } catch { /* fallthrough */ }
-      return `actionHash: ${(event.args.actionHash as string)?.slice(0, 18)}...`;
-    }
+    case "ExecutionConsumed":
+      return `actionHash: ${(event.args.actionHash as string)?.slice(0, 18)}... entryIndex: ${String(event.args.entryIndex ?? "")}`;
     case "CrossChainCallExecuted":
       return `proxy=${truncateAddress(event.args.proxy as string)} src=${truncateAddress(event.args.sourceAddress as string)}`;
     case "L2TXExecuted":
-      return `rollup=${String(event.args.rollupId)}`;
-    case "IncomingCrossChainCallExecuted":
-      return `dest=${truncateAddress(event.args.destination as string)} src=${truncateAddress(event.args.sourceAddress as string)}`;
+      return `entryIndex=${String(event.args.entryIndex ?? "")}`;
+    case "CallResult":
+      return `call#${String(event.args.callNumber ?? "")} success=${String(event.args.success ?? "")}`;
+    case "NestedActionConsumed":
+      return `nested#${String(event.args.nestedNumber ?? "")} callCount=${String(event.args.callCount ?? "")}`;
+    case "EntryExecuted":
+      return `calls=${String(event.args.callsProcessed ?? "")} nested=${String(event.args.nestedActionsConsumed ?? "")}`;
+    case "RevertSpanExecuted":
+      return `startCall=${String(event.args.startCallNumber ?? "")} span=${String(event.args.span ?? "")}`;
     default:
       return `block ${event.blockNumber.toString()}, tx ${event.transactionHash.slice(0, 10)}...`;
   }
