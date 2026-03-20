@@ -223,7 +223,7 @@ contract CrossChainManagerL2Test is Test {
     function test_CreateCrossChainProxy_EmitsEvent() public {
         vm.expectEmit(true, true, true, true);
         emit CrossChainManagerL2.CrossChainProxyCreated(
-            manager.computeCrossChainProxyAddress(address(target), TEST_ROLLUP_ID, block.chainid),
+            manager.computeCrossChainProxyAddress(address(target), TEST_ROLLUP_ID),
             address(target),
             TEST_ROLLUP_ID
         );
@@ -231,7 +231,7 @@ contract CrossChainManagerL2Test is Test {
     }
 
     function test_ComputeCrossChainProxyAddress_MatchesActual() public {
-        address computed = manager.computeCrossChainProxyAddress(address(target), TEST_ROLLUP_ID, block.chainid);
+        address computed = manager.computeCrossChainProxyAddress(address(target), TEST_ROLLUP_ID);
         address actual = manager.createCrossChainProxy(address(target), TEST_ROLLUP_ID);
         assertEq(computed, actual);
     }
@@ -487,7 +487,7 @@ contract CrossChainManagerL2Test is Test {
             scope: new uint256[](0)
         });
         _loadEntry(keccak256(abi.encode(resultFromCall)), _emptyResult());
-        address expectedProxy = manager.computeCrossChainProxyAddress(sourceAddr, sourceRollup, block.chainid);
+        address expectedProxy = manager.computeCrossChainProxyAddress(sourceAddr, sourceRollup);
         (address origBefore,) = manager.authorizedProxies(expectedProxy);
         assertEq(origBefore, address(0));
         vm.prank(SYSTEM_ADDRESS);

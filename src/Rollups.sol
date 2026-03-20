@@ -208,7 +208,7 @@ contract Rollups is ICrossChainManager {
         bytes32 publicInputsHash = keccak256(
             abi.encodePacked(
                 blockhash(block.number - 1),
-                block.number,
+                block.timestamp,
                 abi.encode(entryHashes),
                 abi.encode(blobHashes),
                 keccak256(callData)
@@ -315,7 +315,7 @@ contract Rollups is ICrossChainManager {
             actionType: ActionType.L2TX,
             rollupId: rollupId,
             destination: address(0),
-            value: 0, // TODO fields not used
+            value: 0,
             data: rlpEncodedTx,
             failed: false,
             sourceAddress: address(0),
@@ -374,7 +374,7 @@ contract Rollups is ICrossChainManager {
                     uint256 rollupId = nextAction.rollupId;
                     bytes32 stateRoot = rollups[rollupId].stateRoot;
                     Action memory continuation = _getRevertContinuation(rollupId);
-                    revert ScopeReverted(abi.encode(continuation), stateRoot, rollupId);
+                    revert ScopeReverted(abi.encode(continuation), stateRoot, rollupId); // TODO this might not be enough, multiple touced rollups
                 } else {
                     // Revert is for parent/sibling scope - return to caller
                     break;
@@ -406,8 +406,7 @@ contract Rollups is ICrossChainManager {
         // Execute the CALL through source proxy
         address sourceProxy = computeCrossChainProxyAddress(
             action.sourceAddress,
-            action.sourceRollup,
-            block.chainid
+            action.sourceRollup
         );
 
         if (authorizedProxies[sourceProxy].originalAddress == address(0)) {
@@ -471,7 +470,7 @@ contract Rollups is ICrossChainManager {
                 // Copy nextAction to memory before removing from storage
                 nextAction = execution.nextAction;
 
-                // Remove the execution from storage (swap-and-pop) TODO check optimal way to do this
+                // Remove the execution from storage (swap-and-pop)
                 uint256 lastIndex = executions.length - 1;
                 if (i != lastIndex) {
                     executions[i] = executions[lastIndex];
@@ -632,7 +631,7 @@ contract Rollups is ICrossChainManager {
 
     /// @notice Deploys a CrossChainProxy via CREATE2 and registers it as authorized
     function _createCrossChainProxyInternal(address originalAddress, uint256 originalRollupId) internal returns (address proxy) {
-        bytes32 salt = keccak256(abi.encodePacked(block.chainid, originalRollupId, originalAddress));
+        bytes32 salt = keccak256(abi.encodePacked(originalRollupId, originalAddress));
 
         proxy = address(new CrossChainProxy{salt: salt}(address(this), originalAddress, originalRollupId));
 
@@ -671,10 +670,9 @@ contract Rollups is ICrossChainManager {
     /// @notice Computes the deterministic CREATE2 address for a CrossChainProxy
     /// @param originalAddress The original address this proxy represents
     /// @param originalRollupId The original rollup ID
-    /// @param domain The domain (chain ID) for the address computation
     /// @return The computed proxy address
-    function computeCrossChainProxyAddress(address originalAddress, uint256 originalRollupId, uint256 domain) public view returns (address) {
-        bytes32 salt = keccak256(abi.encodePacked(domain, originalRollupId, originalAddress));
+    function computeCrossChainProxyAddress(address originalAddress, uint256 originalRollupId) public view returns (address) {
+        bytes32 salt = keccak256(abi.encodePacked(originalRollupId, originalAddress));
         bytes32 bytecodeHash = keccak256(
             abi.encodePacked(
                 type(CrossChainProxy).creationCode,

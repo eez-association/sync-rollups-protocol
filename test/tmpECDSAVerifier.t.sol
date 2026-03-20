@@ -101,7 +101,7 @@ contract tmpECDSAVerifierTest is Test {
         bytes32 publicInputsHash = keccak256(
             abi.encodePacked(
                 blockhash(block.number - 1),
-                block.number,
+                block.timestamp,
                 abi.encode(entryHashes),
                 abi.encode(new bytes32[](0)), // no blobs
                 keccak256("")                 // empty callData

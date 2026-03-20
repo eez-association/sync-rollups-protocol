@@ -53,7 +53,7 @@ interface ICrossChainManager {
         payable
         returns (bytes memory result);
     function createCrossChainProxy(address originalAddress, uint256 originalRollupId) external returns (address proxy);
-    function computeCrossChainProxyAddress(address originalAddress, uint256 originalRollupId, uint256 domain)
+    function computeCrossChainProxyAddress(address originalAddress, uint256 originalRollupId)
         external
         view
         returns (address);

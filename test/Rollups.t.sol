@@ -198,7 +198,7 @@ contract RollupsTest is Test {
         uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
         address targetAddr = address(0x5678);
 
-        address computedAddr = rollups.computeCrossChainProxyAddress(targetAddr, rollupId, block.chainid);
+        address computedAddr = rollups.computeCrossChainProxyAddress(targetAddr, rollupId);
         address actualAddr = rollups.createCrossChainProxy(targetAddr, rollupId);
 
         assertEq(computedAddr, actualAddr);
@@ -780,7 +780,7 @@ contract RollupsTest is Test {
         uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
 
         // Do NOT create proxy for (alice, 0) -- it should be auto-created
-        address expectedProxy = rollups.computeCrossChainProxyAddress(alice, 0, block.chainid);
+        address expectedProxy = rollups.computeCrossChainProxyAddress(alice, 0);
 
         bytes32 state1 = keccak256("ap1");
         bytes32 state2 = keccak256("ap2");
@@ -2460,7 +2460,7 @@ contract RollupsTest is Test {
 
     function test_CreateCrossChainProxy_EmitsEvent() public {
         uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
-        address expectedProxy = rollups.computeCrossChainProxyAddress(address(target), rollupId, block.chainid);
+        address expectedProxy = rollups.computeCrossChainProxyAddress(address(target), rollupId);
 
         vm.expectEmit(true, true, true, true);
         emit Rollups.CrossChainProxyCreated(expectedProxy, address(target), rollupId);

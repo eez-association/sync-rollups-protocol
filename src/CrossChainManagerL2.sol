@@ -46,9 +46,6 @@ contract CrossChainManagerL2 is ICrossChainManager {
     /// @notice Error when ETH transfer to system address fails
     error EtherTransferFailed();
 
-    /// @notice Error when the execution table was already loaded this block
-    error StateAlreadyUpdatedThisBlock();
-
     /// @notice Error when execution is attempted in a different block than the last table load
     error ExecutionNotInCurrentBlock();
 
@@ -87,10 +84,6 @@ contract CrossChainManagerL2 is ICrossChainManager {
     /// @dev Deletes the previous execution table before loading new entries
     /// @param entries The execution entries to load
     function loadExecutionTable(ExecutionEntry[] calldata entries) external onlySystemAddress {
-        if (lastStateUpdateBlock == block.number) {
-            revert StateAlreadyUpdatedThisBlock();
-        }
-
         // Delete previous execution table
         delete executions;
 
@@ -254,7 +247,7 @@ contract CrossChainManagerL2 is ICrossChainManager {
 
     /// @notice Deploys a CrossChainProxy via CREATE2 and registers it as authorized
     function _createProxyInternal(address originalAddress, uint256 originalRollupId) internal returns (address proxy) {
-        bytes32 salt = keccak256(abi.encodePacked(block.chainid, originalRollupId, originalAddress));
+        bytes32 salt = keccak256(abi.encodePacked(originalRollupId, originalAddress));
         proxy = address(new CrossChainProxy{salt: salt}(address(this), originalAddress, originalRollupId));
         authorizedProxies[proxy] = ProxyInfo(originalAddress, uint64(originalRollupId));
         emit CrossChainProxyCreated(proxy, originalAddress, originalRollupId);
@@ -313,8 +306,7 @@ contract CrossChainManagerL2 is ICrossChainManager {
     ) internal returns (uint256[] memory scope, Action memory nextAction) {
         address sourceProxy = computeCrossChainProxyAddress(
             action.sourceAddress,
-            action.sourceRollup,
-            block.chainid
+            action.sourceRollup
         );
 
         if (authorizedProxies[sourceProxy].originalAddress == address(0)) {
@@ -415,14 +407,12 @@ contract CrossChainManagerL2 is ICrossChainManager {
     /// @notice Computes the deterministic CREATE2 address for a CrossChainProxy
     /// @param originalAddress The address this proxy represents on the source rollup
     /// @param originalRollupId The source rollup ID
-    /// @param domain The domain (chain ID) used in the CREATE2 salt
     /// @return The computed proxy address
     function computeCrossChainProxyAddress(
         address originalAddress,
-        uint256 originalRollupId,
-        uint256 domain
+        uint256 originalRollupId
     ) public view returns (address) {
-        bytes32 salt = keccak256(abi.encodePacked(domain, originalRollupId, originalAddress));
+        bytes32 salt = keccak256(abi.encodePacked(originalRollupId, originalAddress));
         bytes32 bytecodeHash = keccak256(
             abi.encodePacked(
                 type(CrossChainProxy).creationCode,
