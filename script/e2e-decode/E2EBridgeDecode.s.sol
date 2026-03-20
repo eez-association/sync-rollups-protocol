@@ -1,9 +1,15 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 import {Rollups} from "../../src/Rollups.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta} from "../../src/ICrossChainManager.sol";
+import {
+    ExecutionEntry,
+    StateDelta,
+    CrossChainCall,
+    NestedAction,
+    StaticCall
+} from "../../src/ICrossChainManager.sol";
 import {IZKVerifier} from "../../src/IZKVerifier.sol";
 import {Bridge} from "../../src/periphery/Bridge.sol";
 import {_deployBridge} from "../DeployBridge.s.sol";
@@ -20,16 +26,17 @@ contract BridgeBatcher {
     function execute(
         Rollups rollups,
         ExecutionEntry[] calldata entries,
+        StaticCall[] calldata staticCalls,
         Bridge bridge,
         uint256 rollupId,
         address destination
     ) external payable {
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, staticCalls, 0, "", "proof");
         bridge.bridgeEther{value: msg.value}(rollupId, destination);
     }
 }
 
-/// @title E2EBridgeDeploy — Deploy infra + bridge contracts
+/// @title E2EBridgeDeploy -- Deploy infra + bridge contracts
 contract E2EBridgeDeploy is Script {
     function run() external {
         vm.startBroadcast();
@@ -50,7 +57,7 @@ contract E2EBridgeDeploy is Script {
     }
 }
 
-/// @title E2EBridgeExecute — postBatch + bridgeEther via BridgeBatcher (single tx)
+/// @title E2EBridgeExecute -- postBatch + bridgeEther via BridgeBatcher (single tx)
 contract E2EBridgeExecute is Script {
     function run(address rollupsAddr, address bridgeAddr) external {
         vm.startBroadcast();
@@ -60,50 +67,49 @@ contract E2EBridgeExecute is Script {
         address destination = msg.sender;
         uint256 L2_ROLLUP_ID = 1;
 
-        // CALL that executeCrossChainCall will build when bridge calls proxy for (destination, L2)
+        // actionHash: what executeCrossChainCall builds when bridge calls proxy for (destination, L2)
         // proxy.originalAddress = destination, proxy.originalRollupId = L2
         // sourceAddress = bridgeAddr (bridge is msg.sender to proxy)
-        Action memory callAction = Action({
-            actionType: ActionType.CALL,
-            rollupId: L2_ROLLUP_ID,
-            destination: destination,
-            value: 1 ether,
-            data: "",
-            failed: false,
-            sourceAddress: bridgeAddr,
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-
-        Action memory resultAction = Action({
-            actionType: ActionType.RESULT,
-            rollupId: L2_ROLLUP_ID,
-            destination: address(0),
-            value: 0,
-            data: "",
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
+        bytes32 actionHash = keccak256(
+            abi.encode(
+                L2_ROLLUP_ID,       // rollupId
+                destination,         // destination (proxy.originalAddress)
+                uint256(1 ether),    // value
+                bytes(""),           // data (empty ETH transfer)
+                bridgeAddr,          // sourceAddress
+                uint256(0)           // sourceRollup (MAINNET)
+            )
+        );
 
         StateDelta[] memory stateDeltas = new StateDelta[](1);
         stateDeltas[0] = StateDelta({
             rollupId: L2_ROLLUP_ID,
-            currentState: keccak256("l2-initial-state"),
             newState: keccak256("l2-state-after-bridge"),
             etherDelta: 1 ether
         });
 
+        CrossChainCall[] memory calls = new CrossChainCall[](0);
+        NestedAction[] memory nestedActions = new NestedAction[](0);
+
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
-        entries[0].stateDeltas = stateDeltas;
-        entries[0].actionHash = keccak256(abi.encode(callAction));
-        entries[0].nextAction = resultAction;
+        entries[0] = ExecutionEntry({
+            stateDeltas: stateDeltas,
+            actionHash: actionHash,
+            calls: calls,
+            nestedActions: nestedActions,
+            callCount: 0,
+            returnData: "",
+            failed: false,
+            rollingHash: bytes32(0)
+        });
+
+        StaticCall[] memory noStaticCalls = new StaticCall[](0);
 
         // Single tx: postBatch + bridgeEther
         batcher.execute{value: 1 ether}(
             Rollups(rollupsAddr),
             entries,
+            noStaticCalls,
             Bridge(bridgeAddr),
             L2_ROLLUP_ID,
             destination

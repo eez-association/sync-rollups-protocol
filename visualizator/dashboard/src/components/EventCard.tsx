@@ -1,9 +1,8 @@
-import React, { useState, useMemo } from "react";
+import React, { useState } from "react";
 import { COLORS } from "../theme";
 import type { EventRecord } from "../types/events";
 import { truncateHex, truncateAddress } from "../lib/actionFormatter";
 import { TxDetails } from "./TxDetails";
-import { actionFromEventArgs, decodeActionHash, actionSummary } from "../lib/actionHashDecoder";
 
 type Props = {
   event: EventRecord;
@@ -23,8 +22,11 @@ const EVENT_COLORS: Record<string, string> = {
   RollupCreated: COLORS.acc,
   StateUpdated: COLORS.warn,
   L2ExecutionPerformed: COLORS.l2,
-  IncomingCrossChainCallExecuted: COLORS.l2,
   L2TXExecuted: COLORS.warn,
+  CallResult: COLORS.dim,
+  NestedActionConsumed: COLORS.add,
+  EntryExecuted: COLORS.ok,
+  RevertSpanExecuted: COLORS.warn,
 };
 
 function eventColor(eventName: string): string {
@@ -42,17 +44,19 @@ function eventDetail(event: EventRecord): string {
       return entries ? `Loads ${entries.length} ${entries.length === 1 ? "entry" : "entries"} into L2 table` : "";
     }
     case "ExecutionConsumed":
-      return `Entry consumed: ${truncateHex(event.args.actionHash as string)}`;
+      return `Entry consumed: ${truncateHex(event.args.actionHash as string)} (index ${String(event.args.entryIndex ?? "")})`;
     case "CrossChainCallExecuted":
       return `Proxy ${truncateAddress(event.args.proxy as string)} called by ${truncateAddress(event.args.sourceAddress as string)}`;
     case "CrossChainProxyCreated":
       return `Proxy ${truncateAddress(event.args.proxy as string)} for ${truncateAddress(event.args.originalAddress as string)}`;
-    case "IncomingCrossChainCallExecuted":
-      return `Incoming call to ${truncateAddress(event.args.destination as string)} from ${truncateAddress(event.args.sourceAddress as string)}`;
     case "RollupCreated":
       return `Rollup ${String(event.args.rollupId)} created`;
     case "L2ExecutionPerformed":
       return `State updated for rollup ${String(event.args.rollupId)}`;
+    case "CallResult":
+      return `Call #${String(event.args.callNumber ?? "")} ${event.args.success ? "success" : "failed"}`;
+    case "EntryExecuted":
+      return `Entry #${String(event.args.entryIndex ?? "")} executed (${String(event.args.callsProcessed ?? 0)} calls)`;
     default:
       return "";
   }
@@ -99,20 +103,6 @@ export const EventCard: React.FC<Props> = ({
   const chainBorder = event.chain === "l1" ? COLORS.l1b : COLORS.l2b;
   const detail = eventDetail(event);
   const { adds, consumes } = tableChangeSummary(event);
-
-  // Decode action hash for ExecutionConsumed events
-  const decoded = useMemo(() => {
-    if (event.eventName !== "ExecutionConsumed") return null;
-    try {
-      const actionArg = event.args.action as Record<string, unknown>;
-      if (!actionArg) return null;
-      const fields = actionFromEventArgs(actionArg);
-      const storedHash = event.args.actionHash as string;
-      return decodeActionHash(storedHash, fields);
-    } catch {
-      return null;
-    }
-  }, [event]);
 
   // Style matching index.html .si
   const opacity = selected ? 1 : isPlayed ? 0.65 : 0.25;
@@ -180,38 +170,6 @@ export const EventCard: React.FC<Props> = ({
         {detail && (
           <div style={{ color: COLORS.dim, fontSize: "0.55rem" }}>
             {detail}
-          </div>
-        )}
-
-        {/* Decoded action for ExecutionConsumed */}
-        {decoded && (
-          <div
-            style={{
-              marginTop: 3,
-              padding: "3px 6px",
-              borderRadius: 4,
-              background: "rgba(0,0,0,0.25)",
-              border: `1px solid ${decoded.verified ? "rgba(52,211,153,0.2)" : "rgba(239,68,68,0.3)"}`,
-              fontSize: "0.5rem",
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 2 }}>
-              <span style={{ color: decoded.verified ? COLORS.ok : COLORS.rm, fontWeight: 700 }}>
-                {decoded.verified ? "hash verified" : "HASH MISMATCH"}
-              </span>
-              <span style={{ color: COLORS.dim }}>|</span>
-              <span style={{ color: COLORS.add }}>
-                {actionSummary(decoded.fields)}
-              </span>
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "80px 1fr", gap: "0px 6px", fontSize: "0.48rem" }}>
-              {Object.entries(decoded.display).map(([k, v]) => (
-                <React.Fragment key={k}>
-                  <span style={{ color: COLORS.dim }}>{k}</span>
-                  <span style={{ color: COLORS.tx, wordBreak: "break-all" }}>{v}</span>
-                </React.Fragment>
-              ))}
-            </div>
           </div>
         )}
 

@@ -203,40 +203,6 @@ export function discoverFromEvent(
       break;
     }
 
-    case "IncomingCrossChainCallExecuted": {
-      const dest = (args.destination as string).toLowerCase();
-      const srcAddr = (args.sourceAddress as string).toLowerCase();
-      if (!knownAddresses.has(dest)) {
-        ensureNode(dest, truncateAddress(dest), "contract", event.chain);
-      }
-      // The source is from the other chain - add it as a known address
-      if (srcAddr && srcAddr !== "0x0000000000000000000000000000000000000000") {
-        const srcChain: Chain = event.chain === "l1" ? "l2" : "l1";
-        if (!knownAddresses.has(srcAddr)) {
-          addressInfos.push({
-            address: srcAddr,
-            label: truncateAddress(srcAddr),
-            type: "contract",
-            chain: srcChain,
-          });
-        }
-      }
-      // Add edge from manager to destination
-      const managerId =
-        event.chain === "l1"
-          ? l1ManagerAddress.toLowerCase()
-          : l2ManagerAddress.toLowerCase();
-      if (managerId && existingNodeIds.has(managerId) && existingNodeIds.has(dest)) {
-        newEdges.push({
-          from: managerId,
-          to: dest,
-          label: "execIncoming",
-          id: `${managerId}->${dest}`,
-        });
-      }
-      break;
-    }
-
     case "RollupCreated":
     case "StateUpdated":
     case "VerificationKeyUpdated":
@@ -244,6 +210,10 @@ export function discoverFromEvent(
     case "L2ExecutionPerformed":
     case "ExecutionConsumed":
     case "L2TXExecuted":
+    case "CallResult":
+    case "NestedActionConsumed":
+    case "EntryExecuted":
+    case "RevertSpanExecuted":
       break;
   }
 

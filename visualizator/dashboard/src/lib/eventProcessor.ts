@@ -1,7 +1,6 @@
 import type { EventRecord } from "../types/events";
 import type { TableEntry } from "../types/visualization";
 import { truncateHex } from "./actionFormatter";
-import { computeActionHash, formatActionFields, actionFromEventArgs, actionSummary, type ActionFields } from "./actionHashDecoder";
 
 /**
  * Processes an event into table entry mutations.
@@ -11,15 +10,6 @@ export type ConsumeInfo = {
   actionHash: string;
   actionDetail: Record<string, string>;
 };
-
-// Cache: actionHash -> decoded detail from ExecutionConsumed events.
-// Allows entries added *after* their consumption was already seen (e.g. L2
-// consumed before L1 BatchPosted is processed) to show decoded fields immediately.
-const actionDetailCache = new Map<string, Record<string, string>>();
-
-export function getActionDetailCache() {
-  return actionDetailCache;
-}
 
 export function processEventForTables(
   event: EventRecord,
@@ -41,22 +31,16 @@ export function processEventForTables(
       const entries = event.args.entries as Array<{
         stateDeltas: Array<{
           rollupId: bigint;
-          currentState: string;
           newState: string;
           etherDelta: bigint;
         }>;
         actionHash: string;
-        nextAction: {
-          actionType: number;
-          rollupId: bigint;
-          destination: string;
-          value: bigint;
-          data: string;
-          failed: boolean;
-          sourceAddress: string;
-          sourceRollup: bigint;
-          scope: bigint[];
-        };
+        calls: unknown[];
+        nestedActions: unknown[];
+        callCount: bigint;
+        returnData: string;
+        failed: boolean;
+        rollingHash: string;
       }>;
       if (!entries) break;
       for (const entry of entries) {
@@ -74,22 +58,16 @@ export function processEventForTables(
       const entries = event.args.entries as Array<{
         stateDeltas: Array<{
           rollupId: bigint;
-          currentState: string;
           newState: string;
           etherDelta: bigint;
         }>;
         actionHash: string;
-        nextAction: {
-          actionType: number;
-          rollupId: bigint;
-          destination: string;
-          value: bigint;
-          data: string;
-          failed: boolean;
-          sourceAddress: string;
-          sourceRollup: bigint;
-          scope: bigint[];
-        };
+        calls: unknown[];
+        nestedActions: unknown[];
+        callCount: bigint;
+        returnData: string;
+        failed: boolean;
+        rollingHash: string;
       }>;
       if (!entries) break;
       for (const entry of entries) {
@@ -101,19 +79,10 @@ export function processEventForTables(
 
     case "ExecutionConsumed": {
       const actionHash = event.args.actionHash as string;
-      const actionArg = event.args.action as Record<string, unknown> | undefined;
-      let actionDetail: Record<string, string> = {};
-      if (actionArg) {
-        const fields = actionFromEventArgs(actionArg);
-        const computed = computeActionHash(fields);
-        actionDetail = {
-          computedHash: computed,
-          ...formatActionFields(fields),
-        };
-      }
-      if (Object.keys(actionDetail).length > 0) {
-        actionDetailCache.set(actionHash.toLowerCase(), actionDetail);
-      }
+      const actionDetail: Record<string, string> = {
+        actionHash,
+        entryIndex: String(event.args.entryIndex ?? ""),
+      };
       const info: ConsumeInfo = { actionHash, actionDetail };
       if (event.chain === "l1") {
         result.l1Consumes.push(info);
@@ -131,69 +100,45 @@ function entryToTableEntry(
   entry: {
     stateDeltas: Array<{
       rollupId: bigint;
-      currentState: string;
       newState: string;
       etherDelta: bigint;
     }>;
     actionHash: string;
-    nextAction: {
-      actionType: number;
-      rollupId: bigint;
-      destination: string;
-      value: bigint;
-      data: string;
-      failed: boolean;
-      sourceAddress: string;
-      sourceRollup: bigint;
-      scope: bigint[];
-    };
+    calls: unknown[];
+    nestedActions: unknown[];
+    callCount: bigint;
+    returnData: string;
+    failed: boolean;
+    rollingHash: string;
   },
   eventId: string,
 ): TableEntry {
-  const na = entry.nextAction;
-  const naFields: ActionFields = {
-    actionType: na.actionType,
-    rollupId: BigInt(na.rollupId),
-    destination: na.destination as `0x${string}`,
-    value: BigInt(na.value),
-    data: na.data as `0x${string}`,
-    failed: na.failed,
-    sourceAddress: na.sourceAddress as `0x${string}`,
-    sourceRollup: BigInt(na.sourceRollup),
-    scope: na.scope.map((s) => BigInt(s)),
-  };
-
-  const nextSummary = actionSummary(naFields);
   const deltas = entry.stateDeltas.map(
-    (sd) => `r${sd.rollupId}: ${truncateHex(sd.currentState)} -> ${truncateHex(sd.newState)}`,
+    (sd) => `r${sd.rollupId}: -> ${truncateHex(sd.newState)}`,
   );
   const rollupIds = entry.stateDeltas.map((sd) => sd.rollupId);
 
-  // Check cache first — the action may have been decoded from an earlier ExecutionConsumed
-  const cached = actionDetailCache.get(entry.actionHash.toLowerCase());
-  const actionDetail: Record<string, string> = cached ?? {
-    actionHash: entry.actionHash,
-  };
-
-  // Build next action detail with decoded fields + its computed hash
-  const nextComputedHash = computeActionHash(naFields);
-  const nextActionDetail: Record<string, string> = {
-    computedHash: nextComputedHash,
-    ...formatActionFields(naFields),
+  const entryMeta: Record<string, string> = {
+    callCount: String(entry.callCount ?? 0),
+    callsLen: String(entry.calls?.length ?? 0),
+    nestedLen: String(entry.nestedActions?.length ?? 0),
+    failed: entry.failed ? "true" : "false",
+    rollingHash: truncateHex(entry.rollingHash ?? "0x0"),
+    returnData: entry.returnData && entry.returnData !== "0x"
+      ? truncateHex(entry.returnData, 12)
+      : "(empty)",
   };
 
   return {
     id: `${eventId}-${entry.actionHash}`,
     actionHash: truncateHex(entry.actionHash),
-    nextActionHash: nextSummary,
     delta: deltas.length > 0 ? deltas.join("; ") : null,
     status: "ja",
     stateDeltas: deltas,
     rollupIds,
-    actionDetail,
-    nextActionDetail,
+    actionDetail: { actionHash: entry.actionHash },
     fullActionHash: entry.actionHash,
-    fullNextActionHash: nextComputedHash,
+    entryMeta,
   };
 }
 
@@ -238,7 +183,6 @@ export function extractRollupState(
       const entries = event.args.entries as Array<{
         stateDeltas: Array<{
           rollupId: bigint;
-          currentState: string;
           newState: string;
           etherDelta: bigint;
         }>;

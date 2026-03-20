@@ -1,8 +1,8 @@
-# Plan: Integration Test Scenarios for Cross-Chain Calls
+# Integration Test Plan — Flat Execution Model
 
 ## Context
 
-The existing integration test (`test/IntegrationTest.t.sol`) covers one scenario: L1-originated simple call (Alice -> A -> B' -> B). We need 3 more tests covering reverse direction (L2 -> L1) and nested cross-chain calls with scope navigation.
+Integration tests cover cross-chain execution scenarios using the flat calls/rolling-hash model. Each test constructs `ExecutionEntry` structs with flat `calls[]` arrays, computes rolling hashes with the 4 tagged events, and verifies end-to-end execution across L1 (Rollups) and L2 (CrossChainManagerL2).
 
 ## Legend
 
@@ -12,199 +12,111 @@ The existing integration test (`test/IntegrationTest.t.sol`) covers one scenario
 - **D** = CounterAndProxy on L2 (calls a proxy target, updates local counter)
 - **X'** = CrossChainProxy for X
 
-## 4 Scenarios
+## Test Files
 
-| # | Flow | Direction | Type |
-|---|------|-----------|------|
-| 1 | Alice -> A (-> B') -> B | L1 -> L2 | Simple (existing) |
-| 2 | Alice -> D (-> C') -> C | L2 -> L1 | Simple (reverse) |
-| 3 | Alice -> A' (-> A -> B') -> B | L2 entry -> nested L2 scope | Nested |
-| 4 | Alice -> D' (-> D -> C') -> C | L1 entry -> nested L1 scope | Nested |
-
-## Decisions
-
-- **Scenario 4 confirmed:** Alice -> D' (-> D -> C') -> C
-- **L1 execution (Scenario 2):** Use `executeL2TX` as trigger through Rollups system
-- **Nested call model (Scenarios 3 & 4):** Multiple scoped entries with full scope navigation
+| File | Tests | Coverage |
+|---|---|---|
+| `IntegrationTest.t.sol` | 4 scenarios | Core cross-chain calls |
+| `IntegrationTestBridge.t.sol` | 3 tests | Bridge ether/token/roundtrip |
+| `IntegrationTestFlashLoan.t.sol` | 1 test | Cross-chain atomic flash loan |
 
 ---
 
-## Setup Additions
+## IntegrationTest.t.sol — 4 Scenarios
 
-**File:** `test/IntegrationTest.t.sol`
+### Scenario 1: L1 calls L2 (simple deferred entry)
 
-New state variables:
+**Flow:** Alice calls A, A calls B' proxy on L1, entry consumed with pre-computed result.
+
+- 1 deferred `ExecutionEntry` on L1 with `actionHash` matching `(rollupId=L2, dest=B, source=A, sourceRollup=MAINNET)`
+- `calls[]` is empty (simple consumption, no sub-calls)
+- `returnData = abi.encode(1)` (pre-computed result of B.increment())
+- Triggered by Alice calling B' proxy, which calls `executeCrossChainCall`
+
+### Scenario 2: L2 calls L1 (simple deferred entry)
+
+**Flow:** Alice calls D on L2, D calls C' proxy, entry consumed.
+
+- 1 deferred `ExecutionEntry` on L2 loaded via `loadExecutionTable`
+- Same pattern: empty `calls[]`, pre-computed `returnData`
+- Triggered by Alice calling C' proxy on L2
+
+### Scenario 3: Nested L2 entry (cross-manager)
+
+**Flow:** L2 entry has `calls[]` that execute A.incrementProxy() via A' proxy. Inside A, a call crosses into Rollups (different manager), consuming a separate L1 deferred entry.
+
+- L2 entry with 1 call in `calls[]`, `callCount=1`
+- Rolling hash computed with CALL_BEGIN(1) + CALL_END(1)
+- L1 has a separate deferred entry consumed by the cross-manager call
+
+### Scenario 4: Nested L1 entry (cross-manager)
+
+**Flow:** Mirror of Scenario 3. L1 entry with `calls[]` triggering execution on L2 via cross-manager call.
+
+- L1 entry with 1 call in `calls[]`, `callCount=1`, with state deltas
+- Rolling hash computed with CALL_BEGIN(1) + CALL_END(1)
+- L2 has a separate entry consumed by the cross-manager call
+
+---
+
+## IntegrationTestBridge.t.sol — 3 Tests
+
+### test_BridgeEther_L1toL2
+
+ETH bridge from L1 to L2. Posts a batch on L1 that locks ETH, loads an L2 entry that delivers ETH to destination via Bridge.receiveTokens.
+
+### test_BridgeTokens_L1toL2
+
+ERC20 token bridge. L1 entry locks tokens in Bridge. L2 entry delivers wrapped tokens via Bridge.receiveTokens, deploying WrappedToken on L2.
+
+### test_BridgeTokens_Roundtrip
+
+Full lock -> mint -> burn -> release cycle. 4 phases:
+1. L1: lock tokens via Bridge.bridgeTokens (deferred entry)
+2. L2: mint wrapped tokens via Bridge.receiveTokens (system loads entry)
+3. L2: burn wrapped tokens via Bridge.bridgeTokens (deferred entry)
+4. L1: release original tokens via immediate entry in postBatch
+
+---
+
+## IntegrationTestFlashLoan.t.sol — 1 Test
+
+### test_CrossChainFlashLoan
+
+Atomic cross-chain flash loan using Bridge + FlashLoan + FlashLoanBridgeExecutor + FlashLoanersNFT.
+
+Phase 1: Bridge tokens from L1 to L2, fund executor
+Phase 2: Execute flash loan — borrow tokens on L1, bridge to L2, claim NFT, bridge back, repay
+
+---
+
+## Rolling Hash Construction
+
+All entries with `calls[]` need a pre-computed `rollingHash`. Start with `bytes32(0)`:
+
+```
+For each call (1-indexed callNumber):
+  hash = keccak256(abi.encodePacked(hash, uint8(1), uint256(callNumber)))   // CALL_BEGIN
+  hash = keccak256(abi.encodePacked(hash, uint8(2), uint256(callNumber), success, retData))  // CALL_END
+
+For nested actions (wrap inner calls):
+  hash = keccak256(abi.encodePacked(hash, uint8(3), uint256(nestedNumber)))  // NESTED_BEGIN
+  ... inner calls ...
+  hash = keccak256(abi.encodePacked(hash, uint8(4), uint256(nestedNumber)))  // NESTED_END
+```
+
+## API Reference
+
 ```solidity
-Counter public counterL1;                    // C
-CounterAndProxy public counterAndProxyL2;    // D
-address public counterProxyL2;               // C' (proxy for C on L2)
-address public counterAndProxyProxyL2;       // A' (proxy for A on L2)
-address public counterAndProxyL2ProxyL1;     // D' (proxy for D on L1)
+postBatch(ExecutionEntry[] entries, StaticCall[] staticCalls, uint256 blobCount, bytes callData, bytes proof)
+loadExecutionTable(ExecutionEntry[] entries, StaticCall[] staticCalls)
+executeL2TX()  // no arguments, consumes next entry with actionHash == 0
 ```
-
-setUp() additions:
-```solidity
-// C: Counter on L1
-counterL1 = new Counter();
-
-// C': proxy for C on L2 (so L2 contracts can call L1's Counter)
-counterProxyL2 = managerL2.createCrossChainProxy(address(counterL1), MAINNET_ROLLUP_ID);
-
-// D: CounterAndProxy on L2, targeting C'
-counterAndProxyL2 = new CounterAndProxy(counterProxyL2);
-
-// A': proxy for A on L2 (for Scenario 3)
-counterAndProxyProxyL2 = managerL2.createCrossChainProxy(address(counterAndProxy), MAINNET_ROLLUP_ID);
-
-// D': proxy for D on L1 (for Scenario 4)
-counterAndProxyL2ProxyL1 = rollups.createCrossChainProxy(address(counterAndProxyL2), L2_ROLLUP_ID);
-```
-
----
-
-## Test 2: Alice -> D (-> C') -> C (L2 calls L1, simple)
-
-### Phase 1 — L1: Execute Counter via executeL2TX
-
-Uses `executeL2TX` to trigger Counter.increment() on L1 through the Rollups execution system.
-
-**postBatch entries (2 deferred):**
-
-Entry 1: `hash(L2TX) -> CALL to C`
-```
-L2TX = {L2TX, rollupId=L2_ROLLUP_ID, dest=0, data=rlpEncodedTx, source=0, sourceRollup=MAINNET}
-CALL = {CALL, rollupId=MAINNET_ROLLUP_ID, dest=counterL1, data=increment,
-        source=counterAndProxyL2, sourceRollup=L2_ROLLUP_ID, scope=[]}
-stateDeltas = [{rollupId=L2, currentState=initial, newState=after, etherDelta=0}]
-```
-
-Entry 2: `hash(RESULT) -> RESULT (terminal)`
-```
-RESULT = {RESULT, rollupId=MAINNET_ROLLUP_ID, data=abi.encode(1), failed=false}
-stateDeltas = [] (empty)
-```
-
-**Execution flow:**
-1. `rollups.postBatch([entry1, entry2], ...)` — stores deferred entries
-2. `executeL2TX(L2_ROLLUP_ID, rlpEncodedTx)` — triggers resolution
-3. Builds L2TX action -> `_findAndApplyExecution` -> returns CALL
-4. `_resolveScopes(CALL)` -> `newScope([], CALL)` -> `_processCallAtScope`
-5. Creates D' proxy on L1 (proxy for D on L2) — or reuse if exists
-6. `D'.executeOnBehalf(counterL1, increment)` -> `Counter.increment()` returns 1
-7. Builds RESULT -> `_findAndApplyExecution(resultHash)` -> terminal RESULT
-8. Assert: `counterL1.counter() == 1`
-
-### Phase 2 — L2: Alice calls D, resolves from execution table
-
-**L2 execution table (1 entry):**
-```
-Entry: hash(CALL) -> RESULT
-CALL = {CALL, rollupId=MAINNET_ROLLUP_ID, dest=counterL1, data=increment,
-        source=counterAndProxyL2, sourceRollup=L2_ROLLUP_ID, scope=[]}
-RESULT = {RESULT, rollupId=MAINNET_ROLLUP_ID, data=abi.encode(1), failed=false}
-```
-
-**Execution flow:**
-1. `managerL2.loadExecutionTable([entry])`
-2. Alice calls `counterAndProxyL2.increment()`
-3. D calls C' -> `managerL2.executeCrossChainCall(D, increment)`
-4. Manager builds CALL, `_consumeExecution(hash)` -> RESULT(1)
-5. `_resolveScopes(RESULT)` -> already RESULT, return data
-6. D processes: `targetCounter = 1, counter++`
-
-**Assertions:**
-- `counterL1.counter() == 1` (from Phase 1)
-- `counterAndProxyL2.counter() == 1`
-- `counterAndProxyL2.targetCounter() == 1`
-- `managerL2.pendingEntryCount() == 0`
-
----
-
-## Test 3: Alice -> A' (-> A -> B') -> B (nested, L2 side)
-
-Full scope navigation on L2. A' is reentrant (called by Alice via fallback, then by manager via executeOnBehalf during scope navigation — different functions, no state conflict).
-
-**L2 execution table (2 entries):**
-
-Entry 1: `hash(CALL#1) -> CALL#2`
-```
-CALL#1 = {CALL, rollupId=MAINNET_ROLLUP_ID, dest=counterAndProxy(A), data=increment,
-          source=Alice, sourceRollup=L2_ROLLUP_ID, scope=[]}
-CALL#2 = {CALL, rollupId=L2_ROLLUP_ID, dest=counterL2(B), data=increment,
-          source=counterAndProxy(A), sourceRollup=MAINNET_ROLLUP_ID, scope=[0]}
-```
-
-Entry 2: `hash(RESULT) -> RESULT (terminal)`
-```
-RESULT = {RESULT, rollupId=L2_ROLLUP_ID, data=abi.encode(1), failed=false}
-```
-
-**Execution flow:**
-1. `managerL2.loadExecutionTable([entry1, entry2])`
-2. Alice calls A' on L2: `address(counterAndProxyProxyL2).call(increment.selector)`
-3. A'.fallback -> `managerL2.executeCrossChainCall(Alice, increment.selector)`
-4. Manager builds CALL#1 -> `_consumeExecution(hash)` -> returns CALL#2
-5. `_resolveScopes(CALL#2)` -> CALL -> enter scope navigation
-6. `newScope([], CALL#2)`: scope=[0] is child of [] -> recurse
-7. `newScope([0], CALL#2)`: scopes match -> `_processCallAtScope`
-8. sourceProxy = A' (proxy for counterAndProxy on MAINNET, already exists)
-9. `A'.executeOnBehalf(counterL2, increment)` -> `Counter.increment()` -> returns 1
-10. Builds RESULT{rollupId=L2, data=encode(1)} -> `_consumeExecution(resultHash)` -> terminal RESULT
-11. Returns up the scope chain -> returns to Alice
-
-**Assertions:**
-- `counterL2.counter() == 1` (actually executed via scope navigation)
-- `managerL2.pendingEntryCount() == 0`
-
----
-
-## Test 4: Alice -> D' (-> D -> C') -> C (nested, L1 side)
-
-Full scope navigation on L1. D' is reentrant (same as A' in Scenario 3, different functions).
-
-**postBatch entries (2 deferred):**
-
-Entry 1: `hash(CALL#1) -> CALL#2`
-```
-CALL#1 = {CALL, rollupId=L2_ROLLUP_ID, dest=counterAndProxyL2(D), data=increment,
-          source=Alice, sourceRollup=MAINNET_ROLLUP_ID, scope=[]}
-CALL#2 = {CALL, rollupId=MAINNET_ROLLUP_ID, dest=counterL1(C), data=increment,
-          source=counterAndProxyL2(D), sourceRollup=L2_ROLLUP_ID, scope=[0]}
-stateDeltas for Entry 1 = [{rollupId=L2, currentState=initial, newState=after, etherDelta=0}]
-```
-
-Entry 2: `hash(RESULT) -> RESULT (terminal)`
-```
-RESULT = {RESULT, rollupId=MAINNET_ROLLUP_ID, data=abi.encode(1), failed=false}
-stateDeltas for Entry 2 = [] (empty)
-```
-
-**Execution flow:**
-1. `rollups.postBatch([entry1, entry2], ...)`
-2. Alice calls D' on L1: `address(counterAndProxyL2ProxyL1).call(increment.selector)`
-3. D'.fallback -> `rollups.executeCrossChainCall(Alice, increment.selector)`
-4. Rollups builds CALL#1 -> `_findAndApplyExecution(hash)` -> applies L2 state delta -> returns CALL#2
-5. `_resolveScopes(CALL#2)` -> CALL -> enter scope navigation
-6. `newScope([], CALL#2)`: scope=[0] is child of [] -> recurse
-7. `newScope([0], CALL#2)`: scopes match -> `_processCallAtScope`
-8. sourceProxy = D' (proxy for counterAndProxyL2 on L2, already exists)
-9. `D'.executeOnBehalf(counterL1, increment)` -> `Counter.increment()` -> returns 1
-10. Builds RESULT{rollupId=MAINNET, data=encode(1)} -> `_findAndApplyExecution(resultHash)` -> terminal RESULT (empty deltas pass ether check since no ETH involved)
-11. Returns up the scope chain -> returns to Alice
-
-**Assertions:**
-- `counterL1.counter() == 1` (actually executed via scope navigation)
-- L2 rollup stateRoot updated to newState
-- No pending execution entries
-
----
-
-## Files to Modify
-
-1. `test/IntegrationTest.t.sol` — Add setUp() variables and 3 new test functions
 
 ## Verification
 
 ```bash
 forge test --match-contract IntegrationTest -vvv
+forge test --match-contract IntegrationTestBridge -vvv
+forge test --match-contract IntegrationTestFlashLoan -vvv
 ```

@@ -46,14 +46,6 @@ function computeActiveForEvent(
       break;
     }
 
-    case "IncomingCrossChainCallExecuted": {
-      const dest = (args.destination as string)?.toLowerCase();
-      if (managerAddr) activeNodes.push(managerAddr);
-      if (dest) activeNodes.push(dest);
-      if (managerAddr && dest) activeEdges.push(`${managerAddr}->${dest}`);
-      break;
-    }
-
     case "CrossChainProxyCreated": {
       const proxy = (args.proxy as string)?.toLowerCase();
       if (proxy) activeNodes.push(proxy);

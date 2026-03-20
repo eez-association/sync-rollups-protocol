@@ -69,9 +69,7 @@ export function useEventStream() {
       if (event.args.sourceAddress) {
         activeNodes.push((event.args.sourceAddress as string).toLowerCase());
       }
-      if (event.args.destination) {
-        activeNodes.push((event.args.destination as string).toLowerCase());
-      }
+      // No more IncomingCrossChainCallExecuted event with destination field
       const managerAddr =
         event.chain === "l1"
           ? l1ContractAddress.toLowerCase()

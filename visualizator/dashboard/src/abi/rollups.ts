@@ -1,3 +1,48 @@
+const crossChainCallTuple = {
+  type: "tuple" as const,
+  components: [
+    { name: "destination", type: "address" },
+    { name: "value", type: "uint256" },
+    { name: "data", type: "bytes" },
+    { name: "sourceAddress", type: "address" },
+    { name: "sourceRollup", type: "uint256" },
+    { name: "revertSpan", type: "uint256" },
+  ],
+} as const;
+
+const nestedActionTuple = {
+  type: "tuple" as const,
+  components: [
+    { name: "actionHash", type: "bytes32" },
+    { name: "callCount", type: "uint256" },
+    { name: "returnData", type: "bytes" },
+  ],
+} as const;
+
+const stateDeltaTuple = {
+  type: "tuple" as const,
+  components: [
+    { name: "rollupId", type: "uint256" },
+    { name: "newState", type: "bytes32" },
+    { name: "etherDelta", type: "int256" },
+  ],
+} as const;
+
+const executionEntryTuple = {
+  name: "entries",
+  type: "tuple[]" as const,
+  components: [
+    { name: "stateDeltas", type: "tuple[]", components: stateDeltaTuple.components },
+    { name: "actionHash", type: "bytes32" },
+    { name: "calls", type: "tuple[]", components: crossChainCallTuple.components },
+    { name: "nestedActions", type: "tuple[]", components: nestedActionTuple.components },
+    { name: "callCount", type: "uint256" },
+    { name: "returnData", type: "bytes" },
+    { name: "failed", type: "bool" },
+    { name: "rollingHash", type: "bytes32" },
+  ],
+} as const;
+
 export const rollupsAbi = [
   {
     type: "event",
@@ -48,7 +93,6 @@ export const rollupsAbi = [
     name: "L2ExecutionPerformed",
     inputs: [
       { name: "rollupId", type: "uint256", indexed: true },
-      { name: "currentState", type: "bytes32", indexed: false },
       { name: "newState", type: "bytes32", indexed: false },
     ],
   },
@@ -57,22 +101,7 @@ export const rollupsAbi = [
     name: "ExecutionConsumed",
     inputs: [
       { name: "actionHash", type: "bytes32", indexed: true },
-      {
-        name: "action",
-        type: "tuple",
-        indexed: false,
-        components: [
-          { name: "actionType", type: "uint8" },
-          { name: "rollupId", type: "uint256" },
-          { name: "destination", type: "address" },
-          { name: "value", type: "uint256" },
-          { name: "data", type: "bytes" },
-          { name: "failed", type: "bool" },
-          { name: "sourceAddress", type: "address" },
-          { name: "sourceRollup", type: "uint256" },
-          { name: "scope", type: "uint256[]" },
-        ],
-      },
+      { name: "entryIndex", type: "uint256", indexed: true },
     ],
   },
   {
@@ -90,49 +119,54 @@ export const rollupsAbi = [
     type: "event",
     name: "L2TXExecuted",
     inputs: [
-      { name: "actionHash", type: "bytes32", indexed: true },
-      { name: "rollupId", type: "uint256", indexed: true },
-      { name: "rlpEncodedTx", type: "bytes", indexed: false },
+      { name: "entryIndex", type: "uint256", indexed: true },
     ],
   },
   {
     type: "event",
     name: "BatchPosted",
     inputs: [
-      {
-        name: "entries",
-        type: "tuple[]",
-        indexed: false,
-        components: [
-          {
-            name: "stateDeltas",
-            type: "tuple[]",
-            components: [
-              { name: "rollupId", type: "uint256" },
-              { name: "currentState", type: "bytes32" },
-              { name: "newState", type: "bytes32" },
-              { name: "etherDelta", type: "int256" },
-            ],
-          },
-          { name: "actionHash", type: "bytes32" },
-          {
-            name: "nextAction",
-            type: "tuple",
-            components: [
-              { name: "actionType", type: "uint8" },
-              { name: "rollupId", type: "uint256" },
-              { name: "destination", type: "address" },
-              { name: "value", type: "uint256" },
-              { name: "data", type: "bytes" },
-              { name: "failed", type: "bool" },
-              { name: "sourceAddress", type: "address" },
-              { name: "sourceRollup", type: "uint256" },
-              { name: "scope", type: "uint256[]" },
-            ],
-          },
-        ],
-      },
+      { ...executionEntryTuple, indexed: false },
       { name: "publicInputsHash", type: "bytes32", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "CallResult",
+    inputs: [
+      { name: "entryIndex", type: "uint256", indexed: true },
+      { name: "callNumber", type: "uint256", indexed: true },
+      { name: "success", type: "bool", indexed: false },
+      { name: "returnData", type: "bytes", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "NestedActionConsumed",
+    inputs: [
+      { name: "entryIndex", type: "uint256", indexed: true },
+      { name: "nestedNumber", type: "uint256", indexed: true },
+      { name: "actionHash", type: "bytes32", indexed: false },
+      { name: "callCount", type: "uint256", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "EntryExecuted",
+    inputs: [
+      { name: "entryIndex", type: "uint256", indexed: true },
+      { name: "rollingHash", type: "bytes32", indexed: false },
+      { name: "callsProcessed", type: "uint256", indexed: false },
+      { name: "nestedActionsConsumed", type: "uint256", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "RevertSpanExecuted",
+    inputs: [
+      { name: "entryIndex", type: "uint256", indexed: true },
+      { name: "startCallNumber", type: "uint256", indexed: false },
+      { name: "span", type: "uint256", indexed: false },
     ],
   },
 ] as const;
