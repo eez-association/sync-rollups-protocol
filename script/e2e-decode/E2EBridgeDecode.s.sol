@@ -3,13 +3,16 @@ pragma solidity ^0.8.24;
 
 import {Script, console} from "forge-std/Script.sol";
 import {Rollups} from "../../src/Rollups.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta} from "../../src/ICrossChainManager.sol";
+import {Action, ActionType, ExecutionEntry, StaticCall, StateDelta} from "../../src/ICrossChainManager.sol";
 import {IZKVerifier} from "../../src/IZKVerifier.sol";
 import {Bridge} from "../../src/periphery/Bridge.sol";
 import {_deployBridge} from "../DeployBridge.s.sol";
 
 contract MockZKVerifier is IZKVerifier {
-    function verify(bytes calldata, bytes32) external pure override returns (bool) {
+    function verify(
+        bytes calldata,
+        bytes32
+    ) external pure override returns (bool) {
         return true;
     }
 }
@@ -24,7 +27,7 @@ contract BridgeBatcher {
         uint256 rollupId,
         address destination
     ) external payable {
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
         bridge.bridgeEther{value: msg.value}(rollupId, destination);
     }
 }
@@ -52,7 +55,10 @@ contract E2EBridgeDeploy is Script {
 
 /// @title E2EBridgeExecute — postBatch + bridgeEther via BridgeBatcher (single tx)
 contract E2EBridgeExecute is Script {
-    function run(address rollupsAddr, address bridgeAddr) external {
+    function run(
+        address rollupsAddr,
+        address bridgeAddr
+    ) external {
         vm.startBroadcast();
 
         BridgeBatcher batcher = new BridgeBatcher();
@@ -101,13 +107,9 @@ contract E2EBridgeExecute is Script {
         entries[0].nextAction = resultAction;
 
         // Single tx: postBatch + bridgeEther
-        batcher.execute{value: 1 ether}(
-            Rollups(rollupsAddr),
-            entries,
-            Bridge(bridgeAddr),
-            L2_ROLLUP_ID,
-            destination
-        );
+        batcher.execute{
+            value: 1 ether
+        }(Rollups(rollupsAddr), entries, Bridge(bridgeAddr), L2_ROLLUP_ID, destination);
 
         console.log("done");
 

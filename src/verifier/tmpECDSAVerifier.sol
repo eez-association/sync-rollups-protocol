@@ -18,15 +18,23 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 contract tmpECDSAVerifier is IZKVerifier, Ownable {
     address public signer;
 
-    constructor(address initialOwner, address initialSigner) Ownable(initialOwner) {
+    constructor(
+        address initialOwner,
+        address initialSigner
+    ) Ownable(initialOwner) {
         signer = initialSigner;
     }
 
-    function setSigner(address newSigner) external onlyOwner {
+    function setSigner(
+        address newSigner
+    ) external onlyOwner {
         signer = newSigner;
     }
 
-    function verify(bytes calldata proof, bytes32 publicInputsHash) external view returns (bool) {
+    function verify(
+        bytes calldata proof,
+        bytes32 publicInputsHash
+    ) external view returns (bool) {
         address recovered = ECDSA.recover(publicInputsHash, proof);
         return recovered == signer;
     }

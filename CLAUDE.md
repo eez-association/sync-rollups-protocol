@@ -1,108 +1,62 @@
 # L1/L2 Sync Smart Contracts
 
-## Project Overview
+Foundry-based Solidity project for L1/L2 rollup synchronization. L2 executions are verified on L1 via ZK proofs; on L2 a system address loads execution tables.
 
-This is a Foundry-based Solidity project implementing smart contracts for L1/L2 rollup synchronization. The system allows L2 executions to be verified and executed on L1 using ZK proofs, and on L2 via system-loaded execution tables.
-
-## Build & Test Commands
+## Commands
 
 ```bash
-forge build          # Compile contracts
+forge build          # Compile
 forge test           # Run all tests
-forge test -vvv      # Run tests with verbose output
-forge fmt            # Format code
+forge test -vvv      # Verbose tests
+forge fmt            # Format
 ```
 
-## Architecture
+## Core Contracts
 
-### Core Contracts
+| Contract | Role |
+|---|---|
+| `Rollups.sol` | L1 manager — rollup state, ZK-proven `postBatch`, cross-chain execution, scope navigation, static call lookup |
+| `CrossChainManagerL2.sol` | L2 manager — system-loaded execution tables, no ZK/state deltas, static call lookup |
+| `CrossChainProxy.sol` | CREATE2 proxy per (address, rollupId). STATICCALL detection via TSTORE probe; normal -> `executeCrossChainCall`, static -> `staticCallLookup`; manager -> `executeOnBehalf` |
+| `ICrossChainManager.sol` | Shared interface + types (Action, StateDelta, ExecutionEntry, StaticCall, StaticSubCall, ProxyInfo) + shared errors |
+| `IZKVerifier.sol` | ZK proof verification interface |
 
-- **Rollups.sol**: L1 contract managing rollup state roots, ZK-proven batch posting (immediate + deferred execution entries), and cross-chain call execution with scope-based nested call navigation
-- **CrossChainProxy.sol**: Proxy contract deployed via CREATE2 for each (address, rollupId) pair. Forwards incoming calls to the manager via `executeL2Call()` and executes outgoing calls via `executeOnBehalf()`
-- **CrossChainManagerL2.sol**: L2-side contract for cross-chain execution. No ZK proofs or rollup state management — a system address loads execution tables, which are consumed by proxy calls or remote calls
-- **IZKVerifier.sol**: Interface for external ZK proof verification
+## Periphery
 
-### Data Types
+| Contract | Role |
+|---|---|
+| `Bridge.sol` | Lock-and-mint ETH/ERC20 bridging between rollups (CREATE2, `initialize()`) |
+| `WrappedToken.sol` | ERC20 for bridged tokens, minted/burned by Bridge |
+| `FlashLoan.sol` / `FlashLoanersNFT.sol` / `FlashLoanBridgeExecutor.sol` | DeFi mock contracts for testing |
+| `tmpECDSAVerifier.sol` | Temporary ECDSA-based verifier (stands in for ZK) |
 
-```solidity
-enum ActionType { CALL, RESULT, L2TX, REVERT, REVERT_CONTINUE }
+## Key Invariants
 
-struct Action {
-    ActionType actionType;
-    uint256 rollupId;
-    address destination;    // for CALL
-    uint256 value;          // for CALL
-    bytes data;             // callData for CALL, returnData for RESULT, rlpEncodedTx for L2TX
-    bool failed;            // for RESULT
-    address sourceAddress;  // for CALL - immediate caller address
-    uint256 sourceRollup;   // for CALL - immediate caller's rollup ID
-    uint256[] scope;        // hierarchical scope for nested call navigation
-}
+- Executions can only be consumed in the **same block** they were posted/loaded (`ExecutionNotInCurrentBlock`)
+- On L1, `_etherDelta` (transient) must net to zero after state delta application (`EtherDeltaMismatch`)
+- On L1, immediate entries (`actionHash == 0`) are consumed during `postBatch` via `executeL2TX()`; deferred entries are matched at consumption time by forward-scan from `executionIndex` with hard `StateRootMismatch` revert
+- On L2, `_consumeExecution` matches by actionHash with forward-scan from `executionIndex` (no state deltas to verify)
+- Consumed executions are tracked by `executionIndex` advancement (strict sequential ordering, no swap-and-pop)
+- `ScopeReverted` on L1 carries `(nextAction, stateRoot, rollupId)` for state restoration; on L2 carries only `(nextAction)` (no rollup state to restore)
+- Static call rolling hash is verified on-chain by `_processNStaticCalls`
 
-struct StateDelta {
-    uint256 rollupId;
-    bytes32 currentState;
-    bytes32 newState;
-    int256 etherDelta;       // Change in rollup's ETH balance
-}
+## Execution Flow
 
-struct ExecutionEntry {
-    StateDelta[] stateDeltas;
-    bytes32 actionHash;      // bytes32(0) = immediate, otherwise deferred
-    Action nextAction;
-}
+1. **L1**: `postBatch()` verifies ZK proof, stores all entries + static calls, consumes immediate entries via `executeL2TX()` loop
+2. **Entry**: User calls a `CrossChainProxy` -> fallback detects context -> normal: `executeCrossChainCall()`, static: `staticCallLookup()`
+3. **Lookup**: Manager hashes the CALL action, forward-scans from `executionIndex` (skip-scan: skip failed, hard revert on non-failed non-matching), applies deltas (L1), returns `nextAction`
+4. **Scoping**: If `nextAction` is a CALL, `_resolveScopes` -> `newScope()` recursively navigates via try/catch, executing through source proxies' `executeOnBehalf`
+5. **Reverts**: REVERT actions trigger `ScopeReverted` error, caught by parent scope, state restored (L1), continuation via REVERT_CONTINUE lookup
 
-struct ProxyInfo {
-    address originalAddress;
-    uint64 originalRollupId;
-}
+## CREATE2 Proxy Addresses
 
-struct RollupConfig {
-    address owner;           // Can update state and verification key
-    bytes32 verificationKey; // Used for ZK proof verification
-    bytes32 stateRoot;       // Current state root
-    uint256 etherBalance;    // ETH held by this rollup
-}
-```
+- Salt: `keccak256(abi.encodePacked(originalRollupId, originalAddress))`
+- Use `computeCrossChainProxyAddress(originalAddress, originalRollupId)` to predict
 
-### Key Functions (L1 - Rollups)
+## Spec Maintenance
 
-1. **createRollup(initialState, verificationKey, owner)**: Creates a new rollup
-2. **createCrossChainProxy(originalAddress, originalRollupId)**: Deploys CrossChainProxy via CREATE2
-3. **postBatch(entries, blobCount, callData, proof)**: Posts execution entries with ZK proof. Entries with `actionHash == 0` are applied immediately (state commitments); others are stored for deferred consumption. Sum of ether deltas for immediate entries must be zero.
-4. **executeL2Call(sourceAddress, callData)**: Executes a cross-chain call initiated by an authorized proxy
-5. **executeL2TX(rollupId, rlpEncodedTx)**: Executes a pre-computed L2 transaction (permissionless)
-6. **newScope(scope, action)**: Navigates scope tree for nested cross-chain calls with revert handling
-7. **depositEther(rollupId)**: Deposits ETH to a rollup's balance
-8. **setStateByOwner(rollupId, newStateRoot)**: Updates state root without proof (owner only)
-9. **setVerificationKey(rollupId, newVerificationKey)**: Updates verification key (owner only)
-10. **transferRollupOwnership(rollupId, newOwner)**: Transfers rollup ownership (owner only)
-11. **computeCrossChainProxyAddress(originalAddress, originalRollupId, domain)**: Computes deterministic proxy address
+**`specs/SYNC_ROLLUPS_PROTOCOL_SPEC.md` is the authoritative protocol reference.** It MUST be kept in sync with the contracts. Whenever you make a meaningful contract change — altering an interface/ABI, changing how callers interact with the contract, modifying execution semantics, adding/removing functions or errors — update the spec. **Do NOT read the spec until after tests pass.** The workflow is: make the contract change, update tests, run tests, then read the spec and update the relevant sections. This avoids loading the large spec file into context unnecessarily.
 
-### Key Functions (L2 - CrossChainManagerL2)
+## See Also
 
-1. **loadExecutionTable(entries)**: Loads execution entries (system address only)
-2. **executeCrossChainCall(sourceAddress, callData)**: Executes a cross-chain call from a local proxy
-3. **executeRemoteCall(destination, value, data, sourceAddress, sourceRollup, scope)**: Executes a remote call from another chain (system only)
-4. **createCrossChainProxy(originalAddress, originalRollupId)**: Deploys CrossChainProxy via CREATE2
-
-### Execution Flow
-
-1. On L1, `postBatch()` processes execution entries with a ZK proof. Immediate entries update state; deferred entries are stored in the execution table.
-2. Users call CrossChainProxy contracts, which forward to `executeL2Call()` on the manager.
-3. The manager builds a CALL action, looks up the matching execution by action hash and current rollup states, applies state deltas, and returns the next action.
-4. If the next action is a CALL, scope navigation (`newScope()`) recursively processes nested calls through source proxies via `executeOnBehalf()`.
-5. REVERT actions trigger `ScopeReverted`, restoring rollup state and continuing with a REVERT_CONTINUE action.
-6. Used executions are removed from storage (swap-and-pop).
-
-### CREATE2 Address Derivation
-
-Proxy addresses are deterministic based on:
-- Salt: `keccak256(domain, originalRollupId, originalAddress)`
-- Bytecode: CrossChainProxy creation code with constructor args (manager, originalAddress, originalRollupId)
-
-Use `computeCrossChainProxyAddress(originalAddress, originalRollupId, domain)` to predict addresses.
-
-## Testing
-
-Tests use a `MockZKVerifier` that accepts all proofs by default. Set `verifier.setVerifyResult(false)` to test proof rejection.
+- `additions_to_CLAUDE.md` — pending improvement suggestions (redundant errors, etc.) for manual review

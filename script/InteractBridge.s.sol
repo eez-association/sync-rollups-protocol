@@ -11,7 +11,12 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 ///     --rpc-url $RPC --broadcast --private-key $PK \
 ///     --sig "run(address,uint256,address,uint256)" $BRIDGE $ROLLUP_ID $DESTINATION $AMOUNT_WEI
 contract BridgeEtherScript is Script {
-    function run(address bridge, uint256 rollupId, address destination, uint256 amount) external {
+    function run(
+        address bridge,
+        uint256 rollupId,
+        address destination,
+        uint256 amount
+    ) external {
         vm.startBroadcast();
 
         Bridge(bridge).bridgeEther{value: amount}(rollupId, destination);
@@ -27,7 +32,12 @@ contract BridgeEtherScript is Script {
 ///     --rpc-url $RPC --broadcast --private-key $PK \
 ///     --sig "run(address,address,uint256,uint256)" $BRIDGE $TOKEN $AMOUNT $ROLLUP_ID
 contract BridgeTokensScript is Script {
-    function run(address bridge, address token, uint256 amount, uint256 rollupId) external {
+    function run(
+        address bridge,
+        address token,
+        uint256 amount,
+        uint256 rollupId
+    ) external {
         vm.startBroadcast();
 
         IERC20(token).approve(bridge, amount);

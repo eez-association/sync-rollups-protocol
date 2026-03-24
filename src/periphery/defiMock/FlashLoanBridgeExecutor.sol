@@ -49,7 +49,10 @@ contract FlashLoanBridgeExecutor is IFlashLoanReceiver {
         flashLoanPool.flashLoan(token, 10_000e18);
     }
 
-    function onFlashLoan(address _token, uint256 amount) external override {
+    function onFlashLoan(
+        address _token,
+        uint256 amount
+    ) external override {
         require(msg.sender == address(flashLoanPool), "Unauthorized");
 
         address nftRecipient = caller;
@@ -60,7 +63,9 @@ contract FlashLoanBridgeExecutor is IFlashLoanReceiver {
 
         // 2. Trigger executor(L2) to claim NFT and bridge tokens back
         (bool success,) = executorL2Proxy.call(
-            abi.encodeCall(this.claimAndBridgeBack, (wrappedTokenL2, nftL2, bridgeL2, 0, address(this), nftRecipient))
+            abi.encodeCall(
+                this.claimAndBridgeBack, (wrappedTokenL2, nftL2, bridgeL2, 0, address(this), nftRecipient)
+            )
         );
         require(success, "Cross-chain call failed");
 
@@ -91,7 +96,7 @@ contract FlashLoanBridgeExecutor is IFlashLoanReceiver {
         FlashLoanersNFT(nftContract).claim();
         // Transfer the NFT to the original caller of execute() on L1
         FlashLoanersNFT(nftContract).transferFrom(address(this), nftRecipient, tokenId);
-        
+
         // Bridge all wrapped tokens back to L1
         uint256 balance = IERC20(wrappedToken).balanceOf(address(this));
         Bridge(_bridge).bridgeTokens(wrappedToken, balance, destRollupId, returnTo);

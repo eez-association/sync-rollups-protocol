@@ -25,7 +25,10 @@ contract TestToken is ERC20 {
 ///     --rpc-url $L1_RPC --broadcast --private-key $PK \
 ///     --sig "run(address,bytes32)" $ROLLUPS $SALT
 contract DeployTokenAndBridgeL1 is Script {
-    function run(address rollups, bytes32 salt) external {
+    function run(
+        address rollups,
+        bytes32 salt
+    ) external {
         vm.startBroadcast();
 
         // Deploy test ERC20 token (1M tokens minted to deployer)
@@ -47,7 +50,11 @@ contract DeployTokenAndBridgeL1 is Script {
 ///     --rpc-url $L2_RPC --broadcast --private-key $PK \
 ///     --sig "run(address,uint256,bytes32)" $MANAGER_L2 $L2_ROLLUP_ID $SALT
 contract DeployBridgeL2 is Script {
-    function run(address managerL2, uint256 rollupId, bytes32 salt) external {
+    function run(
+        address managerL2,
+        uint256 rollupId,
+        bytes32 salt
+    ) external {
         vm.startBroadcast();
 
         address bridge = _deployBridge(salt);
@@ -64,7 +71,11 @@ contract DeployBridgeL2 is Script {
 ///     --rpc-url $L1_RPC \
 ///     --sig "run(address,address,uint256)" $BRIDGE_L2 $TOKEN $TOKEN_ORIGIN_ROLLUP_ID
 contract ComputeWrappedTokenAddress is Script {
-    function run(address bridgeL2, address token, uint256 tokenOriginRollupId) external view {
+    function run(
+        address bridgeL2,
+        address token,
+        uint256 tokenOriginRollupId
+    ) external view {
         string memory name = ERC20(token).name();
         string memory symbol = ERC20(token).symbol();
         uint8 tokenDecimals = ERC20(token).decimals();
@@ -72,8 +83,7 @@ contract ComputeWrappedTokenAddress is Script {
         bytes32 wrappedSalt = keccak256(abi.encodePacked(token, tokenOriginRollupId));
         bytes32 wrappedBytecodeHash = keccak256(
             abi.encodePacked(
-                type(WrappedToken).creationCode,
-                abi.encode(name, symbol, tokenDecimals, bridgeL2)
+                type(WrappedToken).creationCode, abi.encode(name, symbol, tokenDecimals, bridgeL2)
             )
         );
         address wrappedTokenL2 = address(
@@ -91,13 +101,14 @@ contract ComputeWrappedTokenAddress is Script {
 ///     --rpc-url $L2_RPC --broadcast --private-key $PK \
 ///     --sig "run(address)" $WRAPPED_TOKEN_L2
 contract DeployFlashLoanL2 is Script {
-    function run(address wrappedTokenL2) external {
+    function run(
+        address wrappedTokenL2
+    ) external {
         vm.startBroadcast();
 
         // ExecutorL2: constructor args unused — claimAndBridgeBack takes all params as function args
         FlashLoanBridgeExecutor executorL2 = new FlashLoanBridgeExecutor(
-            address(0), address(0), address(0), address(0),
-            address(0), address(0), address(0), 0, address(0)
+            address(0), address(0), address(0), address(0), address(0), address(0), address(0), 0, address(0)
         );
         console.log("EXECUTOR_L2=%s", address(executorL2));
 

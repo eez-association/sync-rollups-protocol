@@ -2,7 +2,15 @@
 pragma solidity ^0.8.24;
 
 import {CrossChainProxy} from "./CrossChainProxy.sol";
-import {ICrossChainManager, ActionType, Action, ExecutionEntry, ProxyInfo} from "./ICrossChainManager.sol";
+import {
+    ICrossChainManager,
+    ActionType,
+    Action,
+    ExecutionEntry,
+    StaticCall,
+    StaticSubCall,
+    ProxyInfo
+} from "./ICrossChainManager.sol";
 
 /// @title CrossChainManagerL2
 /// @notice L2-side contract for cross-chain execution via pre-computed execution tables
@@ -18,6 +26,12 @@ contract CrossChainManagerL2 is ICrossChainManager {
     /// @notice Array of pre-computed executions
     ExecutionEntry[] public executions;
 
+    /// @notice Index of the next execution entry to consume
+    uint256 public executionIndex;
+
+    /// @notice Array of pre-computed static call results
+    StaticCall[] public staticCalls;
+
     /// @notice Mapping of authorized CrossChainProxy contracts to their identity
     mapping(address proxy => ProxyInfo info) public authorizedProxies;
 
@@ -27,30 +41,17 @@ contract CrossChainManagerL2 is ICrossChainManager {
     /// @notice Error when caller is not the system address
     error Unauthorized();
 
-    /// @notice Error when caller is not a registered CrossChainProxy
-    error UnauthorizedProxy();
-
-    /// @notice Error when no matching execution entry exists for the action hash
-    error ExecutionNotFound();
-
-    /// @notice Error when a cross-chain call resolves to a failed or non-RESULT action
-    error CallExecutionFailed();
-
     /// @notice Error used to unwind scope during revert handling, carrying the continuation action
     /// @param nextAction The ABI-encoded continuation action to resume with after the revert
     error ScopeReverted(bytes nextAction);
 
-    /// @notice Error when revert data from a child scope is too short to decode
-    error InvalidRevertData();
-
     /// @notice Error when ETH transfer to system address fails
     error EtherTransferFailed();
 
-    /// @notice Error when execution is attempted in a different block than the last table load
-    error ExecutionNotInCurrentBlock();
-
     /// @notice Emitted when a new CrossChainProxy is deployed and registered
-    event CrossChainProxyCreated(address indexed proxy, address indexed originalAddress, uint256 indexed originalRollupId);
+    event CrossChainProxyCreated(
+        address indexed proxy, address indexed originalAddress, uint256 indexed originalRollupId
+    );
 
     /// @notice Emitted when execution entries are loaded into the execution table
     event ExecutionTableLoaded(ExecutionEntry[] entries);
@@ -59,14 +60,31 @@ contract CrossChainManagerL2 is ICrossChainManager {
     event ExecutionConsumed(bytes32 indexed actionHash, Action action);
 
     /// @notice Emitted when a cross-chain call is executed via proxy
-    event CrossChainCallExecuted(bytes32 indexed actionHash, address indexed proxy, address sourceAddress, bytes callData, uint256 value);
+    event CrossChainCallExecuted(
+        bytes32 indexed actionHash,
+        address indexed proxy,
+        address sourceAddress,
+        bytes callData,
+        uint256 value
+    );
 
     /// @notice Emitted when an incoming cross-chain call is executed via system address
-    event IncomingCrossChainCallExecuted(bytes32 indexed actionHash, address destination, uint256 value, bytes data, address sourceAddress, uint256 sourceRollup, uint256[] scope);
+    event IncomingCrossChainCallExecuted(
+        bytes32 indexed actionHash,
+        address destination,
+        uint256 value,
+        bytes data,
+        address sourceAddress,
+        uint256 sourceRollup,
+        uint256[] scope
+    );
 
     /// @param _rollupId The rollup ID this L2 instance belongs to
     /// @param _systemAddress The privileged address allowed to load execution tables and call executeIncomingCrossChainCall
-    constructor(uint256 _rollupId, address _systemAddress) {
+    constructor(
+        uint256 _rollupId,
+        address _systemAddress
+    ) {
         ROLLUP_ID = _rollupId;
         SYSTEM_ADDRESS = _systemAddress;
     }
@@ -80,15 +98,24 @@ contract CrossChainManagerL2 is ICrossChainManager {
     //  Admin: load execution table
     // ──────────────────────────────────────────────
 
-    /// @notice Loads execution entries into the execution table (system only)
-    /// @dev Deletes the previous execution table before loading new entries
+    /// @notice Loads execution entries and static call results into the tables (system only)
+    /// @dev Deletes the previous tables before loading new entries
     /// @param entries The execution entries to load
-    function loadExecutionTable(ExecutionEntry[] calldata entries) external onlySystemAddress {
-        // Delete previous execution table
+    /// @param _staticCalls Pre-computed static call results for read-only cross-chain calls
+    function loadExecutionTable(
+        ExecutionEntry[] calldata entries,
+        StaticCall[] calldata _staticCalls
+    ) external onlySystemAddress {
         delete executions;
+        delete staticCalls;
+        executionIndex = 0;
 
         for (uint256 i = 0; i < entries.length; i++) {
             executions.push(entries[i]);
+        }
+
+        for (uint256 i = 0; i < _staticCalls.length; i++) {
+            staticCalls.push(_staticCalls[i]);
         }
 
         lastStateUpdateBlock = block.number;
@@ -103,7 +130,10 @@ contract CrossChainManagerL2 is ICrossChainManager {
     /// @param sourceAddress The original caller address (msg.sender as seen by the proxy)
     /// @param callData The original calldata sent to the proxy
     /// @return result The return data from the execution
-    function executeCrossChainCall(address sourceAddress, bytes calldata callData) external payable returns (bytes memory result) {
+    function executeCrossChainCall(
+        address sourceAddress,
+        bytes calldata callData
+    ) external payable returns (bytes memory result) {
         ProxyInfo storage proxyInfo = authorizedProxies[msg.sender];
         if (proxyInfo.originalAddress == address(0)) revert UnauthorizedProxy();
 
@@ -122,7 +152,7 @@ contract CrossChainManagerL2 is ICrossChainManager {
             sourceRollup: ROLLUP_ID,
             scope: new uint256[](0)
         });
-        
+
         // burn ether — return to system address
         if (msg.value > 0) {
             (bool success,) = SYSTEM_ADDRESS.call{value: msg.value}("");
@@ -169,7 +199,9 @@ contract CrossChainManagerL2 is ICrossChainManager {
         });
 
         bytes32 actionHash = keccak256(abi.encode(action));
-        emit IncomingCrossChainCallExecuted(actionHash, destination, value, data, sourceAddress, sourceRollup, scope);
+        emit IncomingCrossChainCallExecuted(
+            actionHash, destination, value, data, sourceAddress, sourceRollup, scope
+        );
 
         return _resolveScopes(action);
     }
@@ -190,7 +222,7 @@ contract CrossChainManagerL2 is ICrossChainManager {
         Action memory action
     ) external returns (Action memory nextAction) {
         if (msg.sender != address(this)) {
-            revert UnauthorizedProxy();
+            revert OnlySelf();
         }
 
         nextAction = action;
@@ -237,7 +269,10 @@ contract CrossChainManagerL2 is ICrossChainManager {
     /// @param originalAddress The address this proxy represents on the source rollup
     /// @param originalRollupId The source rollup ID
     /// @return proxy The deployed proxy address
-    function createCrossChainProxy(address originalAddress, uint256 originalRollupId) external returns (address proxy) {
+    function createCrossChainProxy(
+        address originalAddress,
+        uint256 originalRollupId
+    ) external returns (address proxy) {
         return _createProxyInternal(originalAddress, originalRollupId);
     }
 
@@ -246,26 +281,34 @@ contract CrossChainManagerL2 is ICrossChainManager {
     // ──────────────────────────────────────────────
 
     /// @notice Deploys a CrossChainProxy via CREATE2 and registers it as authorized
-    function _createProxyInternal(address originalAddress, uint256 originalRollupId) internal returns (address proxy) {
+    function _createProxyInternal(
+        address originalAddress,
+        uint256 originalRollupId
+    ) internal returns (address proxy) {
         bytes32 salt = keccak256(abi.encodePacked(originalRollupId, originalAddress));
         proxy = address(new CrossChainProxy{salt: salt}(address(this), originalAddress, originalRollupId));
         authorizedProxies[proxy] = ProxyInfo(originalAddress, uint64(originalRollupId));
         emit CrossChainProxyCreated(proxy, originalAddress, originalRollupId);
     }
 
-    /// @notice Finds a matching execution for the given action hash, removes it, and returns the next action
-    function _consumeExecution(bytes32 actionHash, Action memory action) internal returns (Action memory nextAction) {
-        for (uint256 i = 0; i < executions.length; i++) {
-            if (executions[i].actionHash != actionHash) continue;
+    /// @notice Finds a matching execution by scanning forward from executionIndex (skip-scan)
+    /// @dev Failed entries with non-matching hashes are skipped. Advances executionIndex past consumed entry.
+    function _consumeExecution(
+        bytes32 actionHash,
+        Action memory action
+    ) internal returns (Action memory nextAction) {
+        for (uint256 i = executionIndex; i < executions.length; i++) {
+            if (executions[i].actionHash != actionHash) {
+                // Skip-scan: failed/reverted entries can be skipped
+                if (executions[i].nextAction.failed) {
+                    continue;
+                } else {
+                    revert ExecutionNotFound();
+                }
+            }
 
             nextAction = executions[i].nextAction;
-
-            // Swap-and-pop
-            uint256 lastIndex = executions.length - 1;
-            if (i != lastIndex) {
-                executions[i] = executions[lastIndex];
-            }
-            executions.pop();
+            executionIndex = i + 1;
 
             emit ExecutionConsumed(actionHash, action);
             return nextAction;
@@ -277,7 +320,9 @@ contract CrossChainManagerL2 is ICrossChainManager {
     /// @notice If nextAction is a CALL, enters scope navigation; then asserts a successful RESULT
     /// @param nextAction The action to resolve (CALL triggers scope navigation, RESULT returns directly)
     /// @return result The return data from the resolved execution
-    function _resolveScopes(Action memory nextAction) internal returns (bytes memory result) {
+    function _resolveScopes(
+        Action memory nextAction
+    ) internal returns (bytes memory result) {
         if (nextAction.actionType == ActionType.CALL) {
             uint256[] memory emptyScope = new uint256[](0);
             try this.newScope(emptyScope, nextAction) returns (Action memory retAction) {
@@ -287,8 +332,14 @@ contract CrossChainManagerL2 is ICrossChainManager {
             }
         }
 
-        if (nextAction.actionType != ActionType.RESULT || nextAction.failed) {
+        if (nextAction.actionType != ActionType.RESULT) {
             revert CallExecutionFailed();
+        }
+        if (nextAction.failed) {
+            bytes memory returnData = nextAction.data;
+            assembly {
+                revert(add(returnData, 0x20), mload(returnData))
+            }
         }
         return nextAction.data;
     }
@@ -304,18 +355,16 @@ contract CrossChainManagerL2 is ICrossChainManager {
         uint256[] memory currentScope,
         Action memory action
     ) internal returns (uint256[] memory scope, Action memory nextAction) {
-        address sourceProxy = computeCrossChainProxyAddress(
-            action.sourceAddress,
-            action.sourceRollup
-        );
+        address sourceProxy = computeCrossChainProxyAddress(action.sourceAddress, action.sourceRollup);
 
         if (authorizedProxies[sourceProxy].originalAddress == address(0)) {
             _createProxyInternal(action.sourceAddress, action.sourceRollup);
         }
 
-        (bool success, bytes memory returnData) = address(sourceProxy).call{value: action.value}(
-            abi.encodeCall(CrossChainProxy.executeOnBehalf, (action.destination, action.data))
-        );
+        (bool success, bytes memory returnData) = address(sourceProxy)
+        .call{
+            value: action.value
+        }(abi.encodeCall(CrossChainProxy.executeOnBehalf, (action.destination, action.data)));
 
         Action memory resultAction = Action({
             actionType: ActionType.RESULT,
@@ -338,7 +387,9 @@ contract CrossChainManagerL2 is ICrossChainManager {
     /// @notice Decodes a ScopeReverted error's payload back into a continuation Action
     /// @param revertData The raw revert bytes (includes the 4-byte selector)
     /// @return nextAction The decoded continuation action
-    function _handleScopeRevert(bytes memory revertData) internal pure returns (Action memory nextAction) {
+    function _handleScopeRevert(
+        bytes memory revertData
+    ) internal pure returns (Action memory nextAction) {
         if (revertData.length <= 4) revert InvalidRevertData();
 
         // Strip 4-byte selector by advancing the memory pointer
@@ -355,7 +406,9 @@ contract CrossChainManagerL2 is ICrossChainManager {
     /// @notice Builds a REVERT_CONTINUE action and looks up the next action from the execution table
     /// @param rollupId The rollup ID that reverted
     /// @return nextAction The continuation action after the revert
-    function _getRevertContinuation(uint256 rollupId) internal returns (Action memory nextAction) {
+    function _getRevertContinuation(
+        uint256 rollupId
+    ) internal returns (Action memory nextAction) {
         Action memory revertContinueAction = Action({
             actionType: ActionType.REVERT_CONTINUE,
             rollupId: rollupId,
@@ -373,7 +426,10 @@ contract CrossChainManagerL2 is ICrossChainManager {
     }
 
     /// @notice Appends an element to a scope array, creating a new child scope level
-    function _appendToScope(uint256[] memory scope, uint256 element) internal pure returns (uint256[] memory) {
+    function _appendToScope(
+        uint256[] memory scope,
+        uint256 element
+    ) internal pure returns (uint256[] memory) {
         uint256[] memory result = new uint256[](scope.length + 1);
         for (uint256 i = 0; i < scope.length; i++) {
             result[i] = scope[i];
@@ -383,7 +439,10 @@ contract CrossChainManagerL2 is ICrossChainManager {
     }
 
     /// @notice Returns true if two scope arrays are identical
-    function _scopesMatch(uint256[] memory a, uint256[] memory b) internal pure returns (bool) {
+    function _scopesMatch(
+        uint256[] memory a,
+        uint256[] memory b
+    ) internal pure returns (bool) {
         if (a.length != b.length) return false;
         for (uint256 i = 0; i < a.length; i++) {
             if (a[i] != b[i]) return false;
@@ -392,7 +451,10 @@ contract CrossChainManagerL2 is ICrossChainManager {
     }
 
     /// @notice Returns true if targetScope is strictly deeper than currentScope (shares its prefix)
-    function _isChildScope(uint256[] memory currentScope, uint256[] memory targetScope) internal pure returns (bool) {
+    function _isChildScope(
+        uint256[] memory currentScope,
+        uint256[] memory targetScope
+    ) internal pure returns (bool) {
         if (targetScope.length <= currentScope.length) return false;
         for (uint256 i = 0; i < currentScope.length; i++) {
             if (currentScope[i] != targetScope[i]) return false;
@@ -403,6 +465,93 @@ contract CrossChainManagerL2 is ICrossChainManager {
     // ──────────────────────────────────────────────
     //  Views
     // ──────────────────────────────────────────────
+
+    /// @notice Looks up a pre-computed result for a static (read-only) cross-chain call
+    /// @dev Called by CrossChainProxy when it detects a STATICCALL context.
+    ///      msg.sender must be an authorized proxy. Matches by actionHash + executionIndex.
+    ///      If the entry has sub-calls, executes them in static context and verifies the rolling hash.
+    ///      If the entry is marked as failed, reverts with the pre-computed returnData.
+    /// @param sourceAddress The original caller address (msg.sender as seen by the proxy)
+    /// @param callData The original calldata sent to the proxy
+    /// @return result The pre-computed return data
+    function staticCallLookup(
+        address sourceAddress,
+        bytes calldata callData
+    ) external view returns (bytes memory result) {
+        if (lastStateUpdateBlock != block.number) {
+            revert ExecutionNotInCurrentBlock();
+        }
+
+        ProxyInfo storage proxyInfo = authorizedProxies[msg.sender];
+        if (proxyInfo.originalAddress == address(0)) {
+            revert UnauthorizedProxy();
+        }
+
+        Action memory action = Action({
+            actionType: ActionType.CALL,
+            rollupId: proxyInfo.originalRollupId,
+            destination: proxyInfo.originalAddress,
+            value: 0,
+            data: callData,
+            failed: false,
+            sourceAddress: sourceAddress,
+            sourceRollup: ROLLUP_ID,
+            scope: new uint256[](0)
+        });
+
+        bytes32 actionHash = keccak256(abi.encode(action));
+        uint256 currentExecIdx = executionIndex;
+
+        for (uint256 i = 0; i < staticCalls.length; i++) {
+            StaticCall storage sc = staticCalls[i];
+            if (sc.actionHash == actionHash && sc.executionIndex == currentExecIdx) {
+                // Verify sub-call rolling hash if calls are present
+                if (sc.calls.length > 0) {
+                    bytes32 computedHash = _processNStaticCalls(sc.calls);
+                    if (computedHash != sc.rollingHash) revert RollingHashMismatch();
+                }
+                // Failed static calls replay the revert
+                if (sc.failed) {
+                    bytes memory returnData = sc.returnData;
+                    assembly {
+                        revert(add(returnData, 0x20), mload(returnData))
+                    }
+                }
+                return sc.returnData;
+            }
+        }
+
+        revert StaticCallNotFound();
+    }
+
+    /// @notice Executes sub-calls in static context and computes a rolling hash of results
+    /// @dev Replays each sub-call through its source proxy's `executeOnBehalf` in static context.
+    ///      The rolling hash chains `keccak256(prevHash ++ success ++ returnData)` over all calls,
+    ///      starting from `bytes32(0)`. The caller compares the final hash against the stored
+    ///      `rollingHash` to verify that on-chain sub-call results match the off-chain proof.
+    ///      Reverts with `ProxyNotDeployed` if any referenced proxy has no code (cannot CREATE2
+    ///      in static context, so all proxies must be deployed before this is called).
+    function _processNStaticCalls(
+        StaticSubCall[] storage calls
+    ) internal view returns (bytes32 computedHash) {
+        for (uint256 i = 0; i < calls.length; i++) {
+            StaticSubCall storage cc = calls[i];
+
+            // Compute the CREATE2 address for the source proxy and verify it's deployed
+            address sourceProxy = computeCrossChainProxyAddress(cc.sourceAddress, cc.sourceRollup);
+            if (sourceProxy.code.length == 0) revert ProxyNotDeployed();
+
+            // Execute the sub-call in static context through the proxy.
+            // executeOnBehalf (called by manager) forwards to destination.call{value:0}(data),
+            // which is allowed in STATICCALL context and propagates the static flag.
+            (bool success, bytes memory retData) = sourceProxy.staticcall(
+                abi.encodeCall(CrossChainProxy.executeOnBehalf, (cc.destination, cc.data))
+            );
+
+            // Chain into rolling hash: H_i = keccak256(H_{i-1} ++ success ++ retData)
+            computedHash = keccak256(abi.encodePacked(computedHash, success, retData));
+        }
+    }
 
     /// @notice Computes the deterministic CREATE2 address for a CrossChainProxy
     /// @param originalAddress The address this proxy represents on the source rollup
@@ -419,6 +568,8 @@ contract CrossChainManagerL2 is ICrossChainManager {
                 abi.encode(address(this), originalAddress, originalRollupId)
             )
         );
-        return address(uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), address(this), salt, bytecodeHash)))));
+        return address(
+            uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), address(this), salt, bytecodeHash))))
+        );
     }
 }

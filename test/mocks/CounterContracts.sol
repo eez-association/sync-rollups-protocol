@@ -15,7 +15,9 @@ contract CounterAndProxy {
     uint256 public targetCounter;
     uint256 public counter;
 
-    constructor(Counter _target) {
+    constructor(
+        Counter _target
+    ) {
         target = _target;
     }
 

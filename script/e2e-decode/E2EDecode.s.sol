@@ -4,12 +4,15 @@ pragma solidity ^0.8.24;
 import {Script, console} from "forge-std/Script.sol";
 import {Rollups} from "../../src/Rollups.sol";
 import {CrossChainProxy} from "../../src/CrossChainProxy.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta} from "../../src/ICrossChainManager.sol";
+import {Action, ActionType, ExecutionEntry, StaticCall, StateDelta} from "../../src/ICrossChainManager.sol";
 import {IZKVerifier} from "../../src/IZKVerifier.sol";
 import {Counter, CounterAndProxy} from "../../test/mocks/CounterContracts.sol";
 
 contract MockZKVerifier is IZKVerifier {
-    function verify(bytes calldata, bytes32) external pure override returns (bool) {
+    function verify(
+        bytes calldata,
+        bytes32
+    ) external pure override returns (bool) {
         return true;
     }
 }
@@ -22,7 +25,7 @@ contract Batcher {
         ExecutionEntry[] calldata entries,
         CounterAndProxy cap
     ) external {
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
         cap.incrementProxy();
     }
 }
@@ -51,7 +54,11 @@ contract E2EDeploy is Script {
 
 /// @title E2EExecute — postBatch + incrementProxy via Batcher (single tx)
 contract E2EExecute is Script {
-    function run(address rollupsAddr, address counterL2Addr, address counterAndProxyAddr) external {
+    function run(
+        address rollupsAddr,
+        address counterL2Addr,
+        address counterAndProxyAddr
+    ) external {
         vm.startBroadcast();
 
         // Deploy the batcher helper

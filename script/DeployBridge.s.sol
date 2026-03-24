@@ -48,7 +48,9 @@ contract DeployCreate2Factory is Script {
 /// @title BridgeComputeAddress
 /// @dev forge script script/DeployBridge.s.sol:BridgeComputeAddress --sig "run(bytes32)" $SALT
 contract BridgeComputeAddress is Script {
-    function run(bytes32 salt) external view {
+    function run(
+        bytes32 salt
+    ) external view {
         address predicted = _computeBridgeAddress(salt);
         console.log("Predicted BRIDGE=%s", predicted);
     }
@@ -58,7 +60,10 @@ contract BridgeComputeAddress is Script {
 /// @dev forge script script/DeployBridge.s.sol:BridgeDeployL1 \
 ///   --rpc-url $L1_RPC --broadcast --private-key $PK --sig "run(address,bytes32)" $ROLLUPS $SALT
 contract BridgeDeployL1 is Script {
-    function run(address rollups, bytes32 salt) external {
+    function run(
+        address rollups,
+        bytes32 salt
+    ) external {
         vm.startBroadcast();
         address bridge = _deployBridge(salt);
         Bridge(bridge).initialize(rollups, 0, msg.sender);
@@ -71,7 +76,11 @@ contract BridgeDeployL1 is Script {
 /// @dev forge script script/DeployBridge.s.sol:BridgeDeployL2 \
 ///   --rpc-url $L2_RPC --broadcast --private-key $PK --sig "run(address,uint256,bytes32)" $MANAGER $ROLLUP_ID $SALT
 contract BridgeDeployL2 is Script {
-    function run(address managerL2, uint256 rollupId, bytes32 salt) external {
+    function run(
+        address managerL2,
+        uint256 rollupId,
+        bytes32 salt
+    ) external {
         vm.startBroadcast();
         address bridge = _deployBridge(salt);
         Bridge(bridge).initialize(managerL2, rollupId, msg.sender);
@@ -80,14 +89,20 @@ contract BridgeDeployL2 is Script {
     }
 }
 
-function _computeBridgeAddress(bytes32 salt) view returns (address) {
+function _computeBridgeAddress(
+    bytes32 salt
+) view returns (address) {
     bytes memory initCode = type(Bridge).creationCode;
     return address(
-        uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), CREATE2_FACTORY, salt, keccak256(initCode)))))
+        uint160(
+            uint256(keccak256(abi.encodePacked(bytes1(0xff), CREATE2_FACTORY, salt, keccak256(initCode))))
+        )
     );
 }
 
-function _deployBridge(bytes32 salt) returns (address deployed) {
+function _deployBridge(
+    bytes32 salt
+) returns (address deployed) {
     deployed = _computeBridgeAddress(salt);
     (bool success,) = CREATE2_FACTORY.call(abi.encodePacked(salt, type(Bridge).creationCode));
     require(success, "CREATE2 deployment failed");

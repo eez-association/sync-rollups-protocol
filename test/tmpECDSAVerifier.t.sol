@@ -5,7 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {tmpECDSAVerifier} from "../src/verifier/tmpECDSAVerifier.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Rollups} from "../src/Rollups.sol";
-import {ExecutionEntry, StateDelta, Action, ActionType} from "../src/ICrossChainManager.sol";
+import {ExecutionEntry, StaticCall, StateDelta, Action, ActionType} from "../src/ICrossChainManager.sol";
 
 contract tmpECDSAVerifierTest is Test {
     tmpECDSAVerifier verifier;
@@ -19,7 +19,10 @@ contract tmpECDSAVerifierTest is Test {
         verifier = new tmpECDSAVerifier(owner, signerAddr);
     }
 
-    function _sign(uint256 pk, bytes32 publicInputsHash) internal pure returns (bytes memory) {
+    function _sign(
+        uint256 pk,
+        bytes32 publicInputsHash
+    ) internal pure returns (bytes memory) {
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, publicInputsHash);
         return abi.encodePacked(r, s, v);
     }
@@ -63,14 +66,15 @@ contract tmpECDSAVerifierTest is Test {
 
         // Build an immediate entry (actionHash = 0) with a single state delta
         StateDelta[] memory deltas = new StateDelta[](1);
-        deltas[0] = StateDelta({rollupId: rollupId, currentState: initialState, newState: newState, etherDelta: 0});
+        deltas[0] =
+            StateDelta({rollupId: rollupId, currentState: initialState, newState: newState, etherDelta: 0});
 
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         entries[0] = ExecutionEntry({
             stateDeltas: deltas,
             actionHash: bytes32(0),
             nextAction: Action({
-                actionType: ActionType.CALL,
+                actionType: ActionType.RESULT,
                 rollupId: 0,
                 destination: address(0),
                 value: 0,
@@ -88,10 +92,7 @@ contract tmpECDSAVerifierTest is Test {
         bytes32[] memory entryHashes = new bytes32[](1);
         entryHashes[0] = keccak256(
             abi.encodePacked(
-                abi.encode(deltas),
-                abi.encode(vks),
-                entries[0].actionHash,
-                abi.encode(entries[0].nextAction)
+                abi.encode(deltas), abi.encode(vks), entries[0].actionHash, abi.encode(entries[0].nextAction)
             )
         );
 
@@ -104,7 +105,8 @@ contract tmpECDSAVerifierTest is Test {
                 block.timestamp,
                 abi.encode(entryHashes),
                 abi.encode(new bytes32[](0)), // no blobs
-                keccak256("")                 // empty callData
+                keccak256(""), // empty callData
+                keccak256(abi.encode(new StaticCall[](0))) // empty staticCalls
             )
         );
 
@@ -112,10 +114,10 @@ contract tmpECDSAVerifierTest is Test {
         bytes memory proof = _sign(SIGNER_PK, publicInputsHash);
 
         // postBatch should succeed
-        rollups.postBatch(entries, 0, "", proof);
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", proof);
 
         // Verify state was updated
-        (, , bytes32 stateRoot,) = rollups.rollups(rollupId);
+        (,, bytes32 stateRoot,) = rollups.rollups(rollupId);
         assertEq(stateRoot, newState);
     }
 }

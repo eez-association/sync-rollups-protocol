@@ -5,14 +5,24 @@ import {Test, console} from "forge-std/Test.sol";
 import {Rollups, RollupConfig} from "../src/Rollups.sol";
 import {CrossChainManagerL2} from "../src/CrossChainManagerL2.sol";
 import {CrossChainProxy} from "../src/CrossChainProxy.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta, ProxyInfo} from "../src/ICrossChainManager.sol";
+import {
+    Action,
+    ActionType,
+    ExecutionEntry,
+    StateDelta,
+    ProxyInfo,
+    StaticCall
+} from "../src/ICrossChainManager.sol";
 import {IZKVerifier} from "../src/IZKVerifier.sol";
 import {Bridge} from "../src/periphery/Bridge.sol";
 import {WrappedToken} from "../src/periphery/WrappedToken.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 contract MockZKVerifier is IZKVerifier {
-    function verify(bytes calldata, bytes32) external pure override returns (bool) {
+    function verify(
+        bytes calldata,
+        bytes32
+    ) external pure override returns (bool) {
         return true;
     }
 }
@@ -88,7 +98,9 @@ contract IntegrationTestBridge is Test {
         vm.deal(alice, 10 ether);
     }
 
-    function _getRollupState(uint256 rollupId) internal view returns (bytes32) {
+    function _getRollupState(
+        uint256 rollupId
+    ) internal view returns (bytes32) {
         (,, bytes32 stateRoot,) = rollups.rollups(rollupId);
         return stateRoot;
     }
@@ -154,10 +166,7 @@ contract IntegrationTestBridge is Test {
         {
             StateDelta[] memory stateDeltas = new StateDelta[](1);
             stateDeltas[0] = StateDelta({
-                rollupId: L2_ROLLUP_ID,
-                currentState: currentState,
-                newState: newState,
-                etherDelta: 1 ether
+                rollupId: L2_ROLLUP_ID, currentState: currentState, newState: newState, etherDelta: 1 ether
             });
 
             ExecutionEntry[] memory entries = new ExecutionEntry[](1);
@@ -165,7 +174,7 @@ contract IntegrationTestBridge is Test {
             entries[0].actionHash = keccak256(abi.encode(callAction));
             entries[0].nextAction = resultAction;
 
-            rollups.postBatch(entries, 0, "", "proof");
+            rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
         }
 
         // Alice triggers the bridge
@@ -195,7 +204,7 @@ contract IntegrationTestBridge is Test {
             entries[0].nextAction = resultAction;
 
             vm.prank(SYSTEM_ADDRESS);
-            managerL2.loadExecutionTable(entries);
+            managerL2.loadExecutionTable(entries, new StaticCall[](0));
         }
 
         // Fund SYSTEM with 1 ether for the delivery
@@ -205,13 +214,15 @@ contract IntegrationTestBridge is Test {
 
         // SYSTEM delivers 1 ether to alice via proxy for (bridgeL1, MAINNET)
         vm.prank(SYSTEM_ADDRESS);
-        managerL2.executeIncomingCrossChainCall{value: 1 ether}(
-            alice,                    // dest = alice
-            1 ether,                  // value
-            "",                       // data (empty — ether transfer to EOA)
-            address(bridgeL1),        // source = bridgeL1
-            MAINNET_ROLLUP_ID,        // sourceRollup = MAINNET
-            new uint256[](0)          // scope = [] (root)
+        managerL2.executeIncomingCrossChainCall{
+            value: 1 ether
+        }(
+            alice, // dest = alice
+            1 ether, // value
+            "", // data (empty — ether transfer to EOA)
+            address(bridgeL1), // source = bridgeL1
+            MAINNET_ROLLUP_ID, // sourceRollup = MAINNET
+            new uint256[](0) // scope = [] (root)
         );
 
         assertEq(alice.balance, aliceBalanceBefore + 1 ether, "Alice should receive 1 ether on L2");
@@ -288,10 +299,7 @@ contract IntegrationTestBridge is Test {
         {
             StateDelta[] memory stateDeltas = new StateDelta[](1);
             stateDeltas[0] = StateDelta({
-                rollupId: L2_ROLLUP_ID,
-                currentState: currentState,
-                newState: newState,
-                etherDelta: 0
+                rollupId: L2_ROLLUP_ID, currentState: currentState, newState: newState, etherDelta: 0
             });
 
             ExecutionEntry[] memory entries = new ExecutionEntry[](1);
@@ -299,7 +307,7 @@ contract IntegrationTestBridge is Test {
             entries[0].actionHash = keccak256(abi.encode(callAction));
             entries[0].nextAction = resultAction;
 
-            rollups.postBatch(entries, 0, "", "proof");
+            rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
         }
 
         // Alice approves and bridges tokens
@@ -335,24 +343,26 @@ contract IntegrationTestBridge is Test {
             entries[0].nextAction = resultAction;
 
             vm.prank(SYSTEM_ADDRESS);
-            managerL2.loadExecutionTable(entries);
+            managerL2.loadExecutionTable(entries, new StaticCall[](0));
         }
 
         // SYSTEM delivers receiveTokens to bridgeL2
         vm.prank(SYSTEM_ADDRESS);
         managerL2.executeIncomingCrossChainCall(
-            address(bridgeL2),        // dest = bridgeL2
-            0,                        // value = 0 (token bridge, no ether)
-            receiveTokensCalldata,    // data = receiveTokens(...)
-            address(bridgeL1),        // source = bridgeL1
-            MAINNET_ROLLUP_ID,        // sourceRollup = MAINNET
-            new uint256[](0)          // scope = [] (root)
+            address(bridgeL2), // dest = bridgeL2
+            0, // value = 0 (token bridge, no ether)
+            receiveTokensCalldata, // data = receiveTokens(...)
+            address(bridgeL1), // source = bridgeL1
+            MAINNET_ROLLUP_ID, // sourceRollup = MAINNET
+            new uint256[](0) // scope = [] (root)
         );
 
         // Assert wrapped token was deployed and minted
         address wrappedAddr = bridgeL2.getWrappedToken(address(token), MAINNET_ROLLUP_ID);
         assertTrue(wrappedAddr != address(0), "Wrapped token should be deployed on L2");
-        assertEq(WrappedToken(wrappedAddr).balanceOf(alice), 100e18, "Alice should have 100e18 wrapped tokens");
+        assertEq(
+            WrappedToken(wrappedAddr).balanceOf(alice), 100e18, "Alice should have 100e18 wrapped tokens"
+        );
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -421,14 +431,15 @@ contract IntegrationTestBridge is Test {
 
         {
             StateDelta[] memory stateDeltas = new StateDelta[](1);
-            stateDeltas[0] = StateDelta({ rollupId: L2_ROLLUP_ID, currentState: s0, newState: s1, etherDelta: 0 });
+            stateDeltas[0] =
+                StateDelta({rollupId: L2_ROLLUP_ID, currentState: s0, newState: s1, etherDelta: 0});
 
             ExecutionEntry[] memory entries = new ExecutionEntry[](1);
             entries[0].stateDeltas = stateDeltas;
             entries[0].actionHash = keccak256(abi.encode(fwdCall));
             entries[0].nextAction = fwdResult;
 
-            rollups.postBatch(entries, 0, "", "proof");
+            rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
         }
 
         vm.prank(alice);
@@ -494,7 +505,7 @@ contract IntegrationTestBridge is Test {
             entries[1].nextAction = retResult;
 
             vm.prank(SYSTEM_ADDRESS);
-            managerL2.loadExecutionTable(entries);
+            managerL2.loadExecutionTable(entries, new StaticCall[](0));
         }
 
         // ════════════════════════════════════════════
@@ -514,7 +525,9 @@ contract IntegrationTestBridge is Test {
 
         address wrappedAddr = bridgeL2.getWrappedToken(address(token), MAINNET_ROLLUP_ID);
         assertTrue(wrappedAddr != address(0), "Phase 2: wrapped token should be deployed");
-        assertEq(WrappedToken(wrappedAddr).balanceOf(alice), 100e18, "Phase 2: alice should have 100e18 wrapped");
+        assertEq(
+            WrappedToken(wrappedAddr).balanceOf(alice), 100e18, "Phase 2: alice should have 100e18 wrapped"
+        );
 
         // ════════════════════════════════════════════
         //  Phase 3: L2 — Burn wrapped tokens (resolution from table)
@@ -543,35 +556,21 @@ contract IntegrationTestBridge is Test {
         // Need new block for postBatch (StateAlreadyUpdatedThisBlock)
         vm.roll(block.number + 1);
 
-        bytes memory rlpData = hex"03";
-
-        Action memory l2txAction = Action({
-            actionType: ActionType.L2TX,
-            rollupId: L2_ROLLUP_ID,
-            destination: address(0),
-            value: 0,
-            data: rlpData,
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: MAINNET_ROLLUP_ID,
-            scope: new uint256[](0)
-        });
-
         bytes32 s2 = keccak256("l2-state-after-roundtrip-ret1");
         bytes32 s3 = keccak256("l2-state-after-roundtrip-ret2");
 
         {
             StateDelta[] memory deltas1 = new StateDelta[](1);
-            deltas1[0] = StateDelta({ rollupId: L2_ROLLUP_ID, currentState: s1, newState: s2, etherDelta: 0 });
+            deltas1[0] = StateDelta({rollupId: L2_ROLLUP_ID, currentState: s1, newState: s2, etherDelta: 0});
 
             StateDelta[] memory deltas2 = new StateDelta[](1);
-            deltas2[0] = StateDelta({ rollupId: L2_ROLLUP_ID, currentState: s2, newState: s3, etherDelta: 0 });
+            deltas2[0] = StateDelta({rollupId: L2_ROLLUP_ID, currentState: s2, newState: s3, etherDelta: 0});
 
             ExecutionEntry[] memory entries = new ExecutionEntry[](2);
 
-            // Entry 1: L2TX → CALL to bridgeL1.receiveTokens
+            // Entry 1: L2TX (actionHash=0, auto-consumed by postBatch) → CALL to bridgeL1.receiveTokens
             entries[0].stateDeltas = deltas1;
-            entries[0].actionHash = keccak256(abi.encode(l2txAction));
+            entries[0].actionHash = bytes32(0);
             entries[0].nextAction = retCall;
 
             // Entry 2: RESULT → RESULT (terminal)
@@ -579,15 +578,18 @@ contract IntegrationTestBridge is Test {
             entries[1].actionHash = keccak256(abi.encode(retResult));
             entries[1].nextAction = retResult;
 
-            rollups.postBatch(entries, 0, "", "proof");
+            rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
         }
 
-        rollups.executeL2TX(L2_ROLLUP_ID, rlpData);
+        // postBatch auto-consumes L2TX entries (actionHash=0), triggering:
+        //   L2TX → CALL to bridgeL1.receiveTokens → release tokens to alice
 
         // ── Final assertions ──
         assertEq(token.balanceOf(alice), 1000e18, "Roundtrip: alice should have all 1000e18 tokens back");
         assertEq(token.balanceOf(address(bridgeL1)), 0, "Roundtrip: bridgeL1 should have 0 locked tokens");
-        assertEq(WrappedToken(wrappedAddr).balanceOf(alice), 0, "Roundtrip: alice wrapped balance should be 0");
+        assertEq(
+            WrappedToken(wrappedAddr).balanceOf(alice), 0, "Roundtrip: alice wrapped balance should be 0"
+        );
         assertEq(_getRollupState(L2_ROLLUP_ID), s3, "Roundtrip: L2 state should be S3");
     }
 }

@@ -70,7 +70,9 @@ contract Bridge {
     // ──────────────────────────────────────────────
 
     /// @dev Validates that msg.sender is the CrossChainProxy representing this bridge from `sourceRollupId`.
-    modifier onlyBridgeProxy(uint256 sourceRollupId) {
+    modifier onlyBridgeProxy(
+        uint256 sourceRollupId
+    ) {
         address expectedProxy = manager.computeCrossChainProxyAddress(_bridgeAddress(), sourceRollupId);
         if (msg.sender != expectedProxy) revert UnauthorizedCaller();
         _;
@@ -88,7 +90,9 @@ contract Bridge {
     event Initialized(address indexed manager, uint256 rollupId, address indexed admin);
     event CanonicalBridgeAddressSet(address indexed addr);
     event EtherBridged(address indexed sender, uint256 indexed rollupId, uint256 amount);
-    event TokensBridged(address indexed token, address indexed sender, uint256 indexed rollupId, uint256 amount);
+    event TokensBridged(
+        address indexed token, address indexed sender, uint256 indexed rollupId, uint256 amount
+    );
     event TokensReleased(address indexed token, address indexed to, uint256 amount);
     event WrappedTokensMinted(address indexed wrappedToken, address indexed to, uint256 amount);
     event WrappedTokenDeployed(
@@ -103,7 +107,11 @@ contract Bridge {
     /// @param _manager The cross-chain manager address
     /// @param _rollupId This chain's rollup ID (0 = L1 mainnet)
     /// @param _admin The admin address that can set the canonical bridge address
-    function initialize(address _manager, uint256 _rollupId, address _admin) external {
+    function initialize(
+        address _manager,
+        uint256 _rollupId,
+        address _admin
+    ) external {
         if (address(manager) != address(0)) revert AlreadyInitialized();
         if (_manager == address(0)) revert ZeroAddress();
         if (_admin == address(0)) revert ZeroAddress();
@@ -119,7 +127,9 @@ contract Bridge {
     /// @notice Set the canonical bridge address used for cross-chain proxy lookups
     /// @dev Use this when the Bridge is deployed at a different address on this chain
     ///      than on the counterpart chains. Decentralized deployment strategy TBD.
-    function setCanonicalBridgeAddress(address bridgeAddress) external onlyAdmin {
+    function setCanonicalBridgeAddress(
+        address bridgeAddress
+    ) external onlyAdmin {
         canonicalBridgeAddress = bridgeAddress;
         emit CanonicalBridgeAddressSet(bridgeAddress);
     }
@@ -130,7 +140,10 @@ contract Bridge {
 
     /// @notice Bridge ETH to destinationAddress on the destination rollup
     /// @param _rollupId The destination rollup ID
-    function bridgeEther(uint256 _rollupId, address destinationAddress) external payable {
+    function bridgeEther(
+        uint256 _rollupId,
+        address destinationAddress
+    ) external payable {
         if (msg.value == 0) revert ZeroAmount();
 
         address proxy = _getOrDeployProxy(destinationAddress, _rollupId);
@@ -147,7 +160,12 @@ contract Bridge {
     /// @param amount The amount to bridge
     /// @param _rollupId The destination rollup ID
     /// @param destinationAddress The recipient address on the destination rollup
-    function bridgeTokens(address token, uint256 amount, uint256 _rollupId, address destinationAddress) external {
+    function bridgeTokens(
+        address token,
+        uint256 amount,
+        uint256 _rollupId,
+        address destinationAddress
+    ) external {
         if (amount == 0) revert ZeroAmount();
         if (token == address(0)) revert ZeroAddress();
 
@@ -166,9 +184,7 @@ contract Bridge {
             originalToken = info.originalToken;
             originalRollupId = info.originalRollupId;
             (name, symbol, tokenDecimals) = (
-                IERC20Metadata(token).name(),
-                IERC20Metadata(token).symbol(),
-                IERC20Metadata(token).decimals()
+                IERC20Metadata(token).name(), IERC20Metadata(token).symbol(), IERC20Metadata(token).decimals()
             );
         } else {
             // Native token: lock in this contract
@@ -181,7 +197,16 @@ contract Bridge {
         (bool success, bytes memory reason) = bridgeProxy.call(
             abi.encodeCall(
                 this.receiveTokens,
-                (originalToken, originalRollupId, destinationAddress, amount, name, symbol, tokenDecimals, rollupId)
+                (
+                    originalToken,
+                    originalRollupId,
+                    destinationAddress,
+                    amount,
+                    name,
+                    symbol,
+                    tokenDecimals,
+                    rollupId
+                )
             )
         );
         if (!success) revert ProxyCallFailed(reason);
@@ -220,7 +245,8 @@ contract Bridge {
             emit TokensReleased(originalToken, to, amount);
         } else {
             // Token is foreign → mint wrapped tokens
-            address wrapped = _getOrDeployWrapped(originalToken, originalRollupId, name, symbol, tokenDecimals);
+            address wrapped =
+                _getOrDeployWrapped(originalToken, originalRollupId, name, symbol, tokenDecimals);
             WrappedToken(wrapped).mint(to, amount);
             emit WrappedTokensMinted(wrapped, to, amount);
         }
@@ -232,7 +258,10 @@ contract Bridge {
 
     /// @notice Get the WrappedToken address for a given (originalToken, originalRollupId) pair
     /// @dev Returns address(0) if the token has not been bridged yet.
-    function getWrappedToken(address originalToken, uint256 originalRollupId) external view returns (address) {
+    function getWrappedToken(
+        address originalToken,
+        uint256 originalRollupId
+    ) external view returns (address) {
         return wrappedTokens[_wrappedSalt(originalToken, originalRollupId)];
     }
 
@@ -248,7 +277,10 @@ contract Bridge {
     }
 
     /// @dev Computes the deterministic salt for a WrappedToken.
-    function _wrappedSalt(address originalToken, uint256 originalRollupId) internal pure returns (bytes32) {
+    function _wrappedSalt(
+        address originalToken,
+        uint256 originalRollupId
+    ) internal pure returns (bytes32) {
         return keccak256(abi.encodePacked(originalToken, originalRollupId));
     }
 
@@ -266,12 +298,7 @@ contract Bridge {
         if (wrappedAddr != address(0)) return wrappedAddr;
 
         // First bridge for this token — deploy a new WrappedToken via CREATE2
-        WrappedToken wrapped = new WrappedToken{salt: salt}(
-            name,
-            symbol,
-            tokenDecimals,
-            address(this)
-        );
+        WrappedToken wrapped = new WrappedToken{salt: salt}(name, symbol, tokenDecimals, address(this));
 
         // Register in both lookup directions: salt → address and address → origin info
         wrappedAddr = address(wrapped);
@@ -282,7 +309,10 @@ contract Bridge {
     }
 
     /// @dev Ensures a CrossChainProxy exists for (addr, rollupId), creating it if needed.
-    function _getOrDeployProxy(address originalAddress, uint256 _rollupId) internal returns (address proxy) {
+    function _getOrDeployProxy(
+        address originalAddress,
+        uint256 _rollupId
+    ) internal returns (address proxy) {
         proxy = manager.computeCrossChainProxyAddress(originalAddress, _rollupId);
         if (proxy.code.length == 0) {
             manager.createCrossChainProxy(originalAddress, _rollupId);
@@ -290,11 +320,9 @@ contract Bridge {
     }
 
     /// @dev Reads token metadata (name, symbol, decimals) with safe fallbacks.
-    function _getSafeTokenMetadata(address token)
-        internal
-        view
-        returns (string memory name, string memory symbol, uint8 tokenDecimals)
-    {
+    function _getSafeTokenMetadata(
+        address token
+    ) internal view returns (string memory name, string memory symbol, uint8 tokenDecimals) {
         try IERC20Metadata(token).name() returns (string memory n) {
             name = n;
         } catch {

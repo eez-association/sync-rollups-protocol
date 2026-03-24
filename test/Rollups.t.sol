@@ -3,7 +3,15 @@ pragma solidity ^0.8.24;
 
 import {Test, Vm} from "forge-std/Test.sol";
 import {Rollups, RollupConfig} from "../src/Rollups.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta, ProxyInfo} from "../src/ICrossChainManager.sol";
+import {
+    ICrossChainManager,
+    Action,
+    ActionType,
+    ExecutionEntry,
+    StaticCall,
+    StateDelta,
+    ProxyInfo
+} from "../src/ICrossChainManager.sol";
 import {CrossChainProxy} from "../src/CrossChainProxy.sol";
 import {IZKVerifier} from "../src/IZKVerifier.sol";
 
@@ -11,11 +19,16 @@ import {IZKVerifier} from "../src/IZKVerifier.sol";
 contract MockZKVerifier is IZKVerifier {
     bool public shouldVerify = true;
 
-    function setVerifyResult(bool _shouldVerify) external {
+    function setVerifyResult(
+        bool _shouldVerify
+    ) external {
         shouldVerify = _shouldVerify;
     }
 
-    function verify(bytes calldata, bytes32) external view override returns (bool) {
+    function verify(
+        bytes calldata,
+        bytes32
+    ) external view override returns (bool) {
         return shouldVerify;
     }
 }
@@ -24,7 +37,9 @@ contract MockZKVerifier is IZKVerifier {
 contract TestTarget {
     uint256 public value;
 
-    function setValue(uint256 _value) external {
+    function setValue(
+        uint256 _value
+    ) external {
         value = _value;
     }
 
@@ -60,28 +75,39 @@ contract RollupsTest is Test {
         target = new TestTarget();
     }
 
-    function _getRollupState(uint256 rollupId) internal view returns (bytes32) {
+    function _getRollupState(
+        uint256 rollupId
+    ) internal view returns (bytes32) {
         (,, bytes32 stateRoot,) = rollups.rollups(rollupId);
         return stateRoot;
     }
 
-    function _getRollupOwner(uint256 rollupId) internal view returns (address) {
+    function _getRollupOwner(
+        uint256 rollupId
+    ) internal view returns (address) {
         (address owner,,,) = rollups.rollups(rollupId);
         return owner;
     }
 
-    function _getRollupVK(uint256 rollupId) internal view returns (bytes32) {
+    function _getRollupVK(
+        uint256 rollupId
+    ) internal view returns (bytes32) {
         (, bytes32 vk,,) = rollups.rollups(rollupId);
         return vk;
     }
 
-    function _getRollupEtherBalance(uint256 rollupId) internal view returns (uint256) {
+    function _getRollupEtherBalance(
+        uint256 rollupId
+    ) internal view returns (uint256) {
         (,,, uint256 etherBalance) = rollups.rollups(rollupId);
         return etherBalance;
     }
 
     /// @notice Directly sets a rollup's ether balance and funds the contract
-    function _fundRollup(uint256 rollupId, uint256 amount) internal {
+    function _fundRollup(
+        uint256 rollupId,
+        uint256 amount
+    ) internal {
         // Storage slot: rollupCounter=slot0, rollups mapping=slot1 (immutables/constants don't use storage)
         // etherBalance is the 4th field (index 3) in RollupConfig struct
         bytes32 slot = bytes32(uint256(keccak256(abi.encode(rollupId, uint256(1)))) + 3);
@@ -104,13 +130,14 @@ contract RollupsTest is Test {
     }
 
     /// @notice Helper to build an immediate state update entry (actionHash == 0)
-    function _immediateEntry(uint256 rollupId, bytes32 currentState, bytes32 newState)
-        internal
-        pure
-        returns (ExecutionEntry memory entry)
-    {
+    function _immediateEntry(
+        uint256 rollupId,
+        bytes32 currentState,
+        bytes32 newState
+    ) internal pure returns (ExecutionEntry memory entry) {
         StateDelta[] memory deltas = new StateDelta[](1);
-        deltas[0] = StateDelta({rollupId: rollupId, currentState: currentState, newState: newState, etherDelta: 0});
+        deltas[0] =
+            StateDelta({rollupId: rollupId, currentState: currentState, newState: newState, etherDelta: 0});
         entry.stateDeltas = deltas;
         entry.actionHash = bytes32(0);
         entry.nextAction = Action({
@@ -128,7 +155,9 @@ contract RollupsTest is Test {
 
     /// @notice Helper to build the RESULT action that _processCallAtScope creates
     /// after a successful executeOnBehalf call to a void function
-    function _buildResultAction(uint256 rollupId) internal pure returns (Action memory) {
+    function _buildResultAction(
+        uint256 rollupId
+    ) internal pure returns (Action memory) {
         return Action({
             actionType: ActionType.RESULT,
             rollupId: rollupId,
@@ -143,7 +172,9 @@ contract RollupsTest is Test {
     }
 
     /// @notice Helper to build a REVERT_CONTINUE action for a given rollupId
-    function _buildRevertContinue(uint256 rollupId) internal pure returns (Action memory) {
+    function _buildRevertContinue(
+        uint256 rollupId
+    ) internal pure returns (Action memory) {
         return Action({
             actionType: ActionType.REVERT_CONTINUE,
             rollupId: rollupId,
@@ -211,7 +242,7 @@ contract RollupsTest is Test {
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         entries[0] = _immediateEntry(rollupId, bytes32(0), newState);
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         assertEq(_getRollupState(rollupId), newState);
     }
@@ -226,7 +257,7 @@ contract RollupsTest is Test {
         entries[0] = _immediateEntry(rollupId1, bytes32(0), newState1);
         entries[1] = _immediateEntry(rollupId2, bytes32(0), newState2);
 
-        rollups.postBatch(entries, 0, "shared data", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "shared data", "proof");
 
         assertEq(_getRollupState(rollupId1), newState1);
         assertEq(_getRollupState(rollupId2), newState2);
@@ -242,7 +273,7 @@ contract RollupsTest is Test {
         verifier.setVerifyResult(false);
 
         vm.expectRevert(Rollups.InvalidProof.selector);
-        rollups.postBatch(entries, 0, "", "bad proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "bad proof");
     }
 
     function test_PostBatch_AfterL2ExecutionSameBlockReverts() public {
@@ -271,14 +302,15 @@ contract RollupsTest is Test {
         Action memory resultAction = _emptyAction();
 
         StateDelta[] memory stateDeltas = new StateDelta[](1);
-        stateDeltas[0] = StateDelta({rollupId: rollupId, currentState: currentState, newState: newState, etherDelta: 0});
+        stateDeltas[0] =
+            StateDelta({rollupId: rollupId, currentState: currentState, newState: newState, etherDelta: 0});
 
         // Load execution via postBatch (deferred entry)
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         entries[0].stateDeltas = stateDeltas;
         entries[0].actionHash = keccak256(abi.encode(action));
         entries[0].nextAction = resultAction;
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         // Execute L2 via proxy fallback
         (bool success,) = proxyAddr.call(callData);
@@ -290,7 +322,7 @@ contract RollupsTest is Test {
         entries2[0] = _immediateEntry(rollupId, newState, keccak256("another state"));
 
         vm.expectRevert(Rollups.StateAlreadyUpdatedThisBlock.selector);
-        rollups.postBatch(entries2, 0, "", "proof");
+        rollups.postBatch(entries2, new StaticCall[](0), 0, "", "proof");
 
         assertEq(_getRollupState(rollupId), newState);
     }
@@ -375,14 +407,15 @@ contract RollupsTest is Test {
         Action memory resultAction = _emptyAction();
 
         StateDelta[] memory stateDeltas = new StateDelta[](1);
-        stateDeltas[0] = StateDelta({rollupId: rollupId, currentState: currentState, newState: newState, etherDelta: 0});
+        stateDeltas[0] =
+            StateDelta({rollupId: rollupId, currentState: currentState, newState: newState, etherDelta: 0});
 
         // Load execution
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         entries[0].stateDeltas = stateDeltas;
         entries[0].actionHash = keccak256(abi.encode(action));
         entries[0].nextAction = resultAction;
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         // Execute via proxy fallback
         (bool success,) = proxyAddr.call(callData);
@@ -395,7 +428,7 @@ contract RollupsTest is Test {
         rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
 
         // Call executeCrossChainCall directly (not from a proxy)
-        vm.expectRevert(Rollups.UnauthorizedProxy.selector);
+        vm.expectRevert(ICrossChainManager.UnauthorizedProxy.selector);
         rollups.executeCrossChainCall(alice, "");
     }
 
@@ -405,7 +438,7 @@ contract RollupsTest is Test {
 
         // Call via proxy without loading execution
         bytes memory callData = abi.encodeCall(TestTarget.setValue, (999));
-        vm.expectRevert(Rollups.ExecutionNotFound.selector);
+        vm.expectRevert(ICrossChainManager.ExecutionNotFound.selector);
         (bool success,) = proxyAddr.call(callData);
         success;
     }
@@ -416,34 +449,19 @@ contract RollupsTest is Test {
         bytes32 currentState = bytes32(0);
         bytes32 newState = keccak256("state1");
 
-        bytes memory rlpTx = hex"deadbeef";
-
-        // Build L2TX action
-        Action memory action = Action({
-            actionType: ActionType.L2TX,
-            rollupId: rollupId,
-            destination: address(0),
-            value: 0,
-            data: rlpTx,
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-
         Action memory resultAction = _emptyAction();
 
         StateDelta[] memory stateDeltas = new StateDelta[](1);
-        stateDeltas[0] = StateDelta({rollupId: rollupId, currentState: currentState, newState: newState, etherDelta: 0});
+        stateDeltas[0] =
+            StateDelta({rollupId: rollupId, currentState: currentState, newState: newState, etherDelta: 0});
 
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         entries[0].stateDeltas = stateDeltas;
-        entries[0].actionHash = keccak256(abi.encode(action));
+        entries[0].actionHash = bytes32(0);
         entries[0].nextAction = resultAction;
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
-        rollups.executeL2TX(rollupId, rlpTx);
-
+        // executeL2TX is auto-consumed by postBatch
         assertEq(_getRollupState(rollupId), newState);
     }
 
@@ -501,15 +519,16 @@ contract RollupsTest is Test {
         deltas[0] = StateDelta({
             rollupId: rollupId1, currentState: bytes32(0), newState: keccak256("s1"), etherDelta: -2 ether
         });
-        deltas[1] =
-            StateDelta({rollupId: rollupId2, currentState: bytes32(0), newState: keccak256("s2"), etherDelta: 2 ether});
+        deltas[1] = StateDelta({
+            rollupId: rollupId2, currentState: bytes32(0), newState: keccak256("s2"), etherDelta: 2 ether
+        });
 
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         entries[0].stateDeltas = deltas;
         entries[0].actionHash = bytes32(0);
         entries[0].nextAction = _emptyAction();
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         assertEq(_getRollupEtherBalance(rollupId1), 3 ether);
         assertEq(_getRollupEtherBalance(rollupId2), 2 ether);
@@ -520,8 +539,9 @@ contract RollupsTest is Test {
         _fundRollup(rollupId, 5 ether);
 
         StateDelta[] memory deltas = new StateDelta[](1);
-        deltas[0] =
-            StateDelta({rollupId: rollupId, currentState: bytes32(0), newState: keccak256("s1"), etherDelta: 1 ether});
+        deltas[0] = StateDelta({
+            rollupId: rollupId, currentState: bytes32(0), newState: keccak256("s1"), etherDelta: 1 ether
+        });
 
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         entries[0].stateDeltas = deltas;
@@ -529,7 +549,7 @@ contract RollupsTest is Test {
         entries[0].nextAction = _emptyAction();
 
         vm.expectRevert(Rollups.EtherDeltaMismatch.selector);
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
     }
 
     function test_PostBatch_InsufficientRollupBalanceReverts() public {
@@ -537,8 +557,9 @@ contract RollupsTest is Test {
         // No deposit - balance is 0
 
         StateDelta[] memory deltas = new StateDelta[](1);
-        deltas[0] =
-            StateDelta({rollupId: rollupId, currentState: bytes32(0), newState: keccak256("s1"), etherDelta: -1 ether});
+        deltas[0] = StateDelta({
+            rollupId: rollupId, currentState: bytes32(0), newState: keccak256("s1"), etherDelta: -1 ether
+        });
 
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         entries[0].stateDeltas = deltas;
@@ -546,7 +567,7 @@ contract RollupsTest is Test {
         entries[0].nextAction = _emptyAction();
 
         vm.expectRevert(Rollups.InsufficientRollupBalance.selector);
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
     }
 
     function test_PostBatch_MixedImmediateAndDeferred() public {
@@ -578,12 +599,13 @@ contract RollupsTest is Test {
 
         // Deferred entry (needs state1 as currentState since immediate applies first)
         StateDelta[] memory deferredDeltas = new StateDelta[](1);
-        deferredDeltas[0] = StateDelta({rollupId: rollupId, currentState: state1, newState: state2, etherDelta: 0});
+        deferredDeltas[0] =
+            StateDelta({rollupId: rollupId, currentState: state1, newState: state2, etherDelta: 0});
         entries[1].stateDeltas = deferredDeltas;
         entries[1].actionHash = keccak256(abi.encode(callAction));
         entries[1].nextAction = _emptyAction();
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         // Immediate was applied
         assertEq(_getRollupState(rollupId), state1);
@@ -600,7 +622,7 @@ contract RollupsTest is Test {
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         entries[0] = _immediateEntry(rollupId, bytes32(0), keccak256("s"));
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         assertEq(rollups.lastStateUpdateBlock(), block.number);
     }
@@ -622,7 +644,7 @@ contract RollupsTest is Test {
         Action memory action = _emptyAction();
 
         vm.prank(alice);
-        vm.expectRevert(Rollups.UnauthorizedProxy.selector);
+        vm.expectRevert(ICrossChainManager.OnlySelf.selector);
         rollups.newScope(scope, action);
     }
 
@@ -665,28 +687,13 @@ contract RollupsTest is Test {
 
         Action memory finalResult = _emptyAction();
 
-        // Build L2TX to trigger the flow
-        bytes memory rlpTx = hex"01";
-        Action memory l2tx = Action({
-            actionType: ActionType.L2TX,
-            rollupId: rollupId,
-            destination: address(0),
-            value: 0,
-            data: rlpTx,
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-        bytes32 l2txHash = keccak256(abi.encode(l2tx));
-
         ExecutionEntry[] memory entries = new ExecutionEntry[](2);
 
         // Entry 1: L2TX -> scoped CALL
         StateDelta[] memory d1 = new StateDelta[](1);
         d1[0] = StateDelta({rollupId: rollupId, currentState: bytes32(0), newState: state1, etherDelta: 0});
         entries[0].stateDeltas = d1;
-        entries[0].actionHash = l2txHash;
+        entries[0].actionHash = bytes32(0);
         entries[0].nextAction = scopedCall;
 
         // Entry 2: RESULT from executeOnBehalf -> final RESULT
@@ -696,9 +703,9 @@ contract RollupsTest is Test {
         entries[1].actionHash = resultHash;
         entries[1].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
-        rollups.executeL2TX(rollupId, rlpTx);
+        // executeL2TX is auto-consumed by postBatch
         assertEq(_getRollupState(rollupId), state2);
         assertEq(target.value(), 42);
     }
@@ -737,26 +744,12 @@ contract RollupsTest is Test {
         bytes32 resultHash = keccak256(abi.encode(expectedResult));
         Action memory finalResult = _emptyAction();
 
-        bytes memory rlpTx = hex"02";
-        Action memory l2tx = Action({
-            actionType: ActionType.L2TX,
-            rollupId: rollupId,
-            destination: address(0),
-            value: 0,
-            data: rlpTx,
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-        bytes32 l2txHash = keccak256(abi.encode(l2tx));
-
         ExecutionEntry[] memory entries = new ExecutionEntry[](2);
 
         StateDelta[] memory d1 = new StateDelta[](1);
         d1[0] = StateDelta({rollupId: rollupId, currentState: bytes32(0), newState: state1, etherDelta: 0});
         entries[0].stateDeltas = d1;
-        entries[0].actionHash = l2txHash;
+        entries[0].actionHash = bytes32(0);
         entries[0].nextAction = deepCall;
 
         StateDelta[] memory d2 = new StateDelta[](1);
@@ -765,9 +758,9 @@ contract RollupsTest is Test {
         entries[1].actionHash = resultHash;
         entries[1].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
-        rollups.executeL2TX(rollupId, rlpTx);
+        // executeL2TX is auto-consumed by postBatch
         assertEq(_getRollupState(rollupId), state2);
         assertEq(target.value(), 99);
     }
@@ -804,26 +797,12 @@ contract RollupsTest is Test {
         bytes32 resultHash = keccak256(abi.encode(expectedResult));
         Action memory finalResult = _emptyAction();
 
-        bytes memory rlpTx = hex"03";
-        Action memory l2tx = Action({
-            actionType: ActionType.L2TX,
-            rollupId: rollupId,
-            destination: address(0),
-            value: 0,
-            data: rlpTx,
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-        bytes32 l2txHash = keccak256(abi.encode(l2tx));
-
         ExecutionEntry[] memory entries = new ExecutionEntry[](2);
 
         StateDelta[] memory d1 = new StateDelta[](1);
         d1[0] = StateDelta({rollupId: rollupId, currentState: bytes32(0), newState: state1, etherDelta: 0});
         entries[0].stateDeltas = d1;
-        entries[0].actionHash = l2txHash;
+        entries[0].actionHash = bytes32(0);
         entries[0].nextAction = scopedCall;
 
         StateDelta[] memory d2 = new StateDelta[](1);
@@ -832,10 +811,9 @@ contract RollupsTest is Test {
         entries[1].actionHash = resultHash;
         entries[1].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
-        rollups.executeL2TX(rollupId, rlpTx);
-
+        // executeL2TX is auto-consumed by postBatch
         // Verify proxy was auto-created
         (address origAddr,) = rollups.authorizedProxies(expectedProxy);
         assertEq(origAddr, alice);
@@ -877,40 +855,27 @@ contract RollupsTest is Test {
         bytes32 resultHash = keccak256(abi.encode(expectedResult));
         Action memory finalResult = _emptyAction();
 
-        bytes memory rlpTx = hex"04";
-        Action memory l2tx = Action({
-            actionType: ActionType.L2TX,
-            rollupId: rollupId,
-            destination: address(0),
-            value: 0,
-            data: rlpTx,
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-        bytes32 l2txHash = keccak256(abi.encode(l2tx));
-
         ExecutionEntry[] memory entries = new ExecutionEntry[](2);
 
         // First entry: L2TX lookup. No ETH has flowed yet, so ether deltas must sum to 0.
         StateDelta[] memory d1 = new StateDelta[](1);
         d1[0] = StateDelta({rollupId: rollupId, currentState: bytes32(0), newState: state1, etherDelta: 0});
         entries[0].stateDeltas = d1;
-        entries[0].actionHash = l2txHash;
+        entries[0].actionHash = bytes32(0);
         entries[0].nextAction = scopedCall;
 
         // Second entry: RESULT after executeOnBehalf sent 1 ether out. _etherDelta = -1 ether.
         StateDelta[] memory d2 = new StateDelta[](2);
         d2[0] = StateDelta({rollupId: rollupId, currentState: state1, newState: state2, etherDelta: 0});
-        d2[1] = StateDelta({rollupId: 0, currentState: bytes32(0), newState: bytes32(0), etherDelta: -1 ether});
+        d2[1] =
+            StateDelta({rollupId: 0, currentState: bytes32(0), newState: bytes32(0), etherDelta: -1 ether});
         entries[1].stateDeltas = d2;
         entries[1].actionHash = resultHash;
         entries[1].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
-        rollups.executeL2TX(rollupId, rlpTx);
+        // executeL2TX is auto-consumed by postBatch
         assertEq(_getRollupState(rollupId), state2);
         assertEq(_getRollupEtherBalance(0), 9 ether);
     }
@@ -925,8 +890,9 @@ contract RollupsTest is Test {
 
         // Try to apply a state delta with negative etherDelta → InsufficientRollupBalance
         StateDelta[] memory deltas = new StateDelta[](1);
-        deltas[0] =
-            StateDelta({rollupId: rollupId, currentState: bytes32(0), newState: keccak256("s1"), etherDelta: -1 ether});
+        deltas[0] = StateDelta({
+            rollupId: rollupId, currentState: bytes32(0), newState: keccak256("s1"), etherDelta: -1 ether
+        });
 
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         entries[0].stateDeltas = deltas;
@@ -934,7 +900,7 @@ contract RollupsTest is Test {
         entries[0].nextAction = _emptyAction();
 
         vm.expectRevert(Rollups.InsufficientRollupBalance.selector);
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
     }
 
     // ──────────────────────────────────────────────
@@ -958,31 +924,16 @@ contract RollupsTest is Test {
             scope: new uint256[](0)
         });
 
-        bytes memory rlpTx = hex"06";
-        Action memory l2tx = Action({
-            actionType: ActionType.L2TX,
-            rollupId: rollupId,
-            destination: address(0),
-            value: 0,
-            data: rlpTx,
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-        bytes32 l2txHash = keccak256(abi.encode(l2tx));
-
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         StateDelta[] memory d = new StateDelta[](1);
         d[0] = StateDelta({rollupId: rollupId, currentState: bytes32(0), newState: state1, etherDelta: 0});
         entries[0].stateDeltas = d;
-        entries[0].actionHash = l2txHash;
+        entries[0].actionHash = bytes32(0);
         entries[0].nextAction = failedResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
-
-        vm.expectRevert(Rollups.CallExecutionFailed.selector);
-        rollups.executeL2TX(rollupId, rlpTx);
+        // The failed RESULT has empty data, so _resolveScopes does a raw assembly revert with empty data
+        vm.expectRevert(bytes(""));
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
     }
 
     // ──────────────────────────────────────────────
@@ -1007,35 +958,19 @@ contract RollupsTest is Test {
             scope: new uint256[](0)
         });
 
-        bytes memory rlpTx = hex"07";
-        Action memory l2tx = Action({
-            actionType: ActionType.L2TX,
-            rollupId: rollupId,
-            destination: address(0),
-            value: 0,
-            data: rlpTx,
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-        bytes32 l2txHash = keccak256(abi.encode(l2tx));
-
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         StateDelta[] memory d = new StateDelta[](1);
         d[0] = StateDelta({rollupId: rollupId, currentState: bytes32(0), newState: state1, etherDelta: 0});
         entries[0].stateDeltas = d;
-        entries[0].actionHash = l2txHash;
+        entries[0].actionHash = bytes32(0);
         entries[0].nextAction = nonResultAction;
 
-        rollups.postBatch(entries, 0, "", "proof");
-
-        vm.expectRevert(Rollups.CallExecutionFailed.selector);
-        rollups.executeL2TX(rollupId, rlpTx);
+        vm.expectRevert(ICrossChainManager.CallExecutionFailed.selector);
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
     }
 
     // ──────────────────────────────────────────────
-    //  _findAndApplyExecution: swap-and-pop (lines 500-501)
+    //  _findAndApplyExecution: forward skip-scan consumes first matching entry
     // ──────────────────────────────────────────────
 
     function test_FindAndApplyExecution_SwapAndPop() public {
@@ -1063,8 +998,7 @@ contract RollupsTest is Test {
         // Two entries with same actionHash:
         // Entry 0: matches (currentState = bytes32(0))
         // Entry 1: doesn't match (currentState = state2)
-        // Search goes from last to first: entry 1 checked first (no match),
-        // then entry 0 (match). Since matched index (0) != lastIndex (1), swap-and-pop fires.
+        // Forward scan from executionIndex=0: entry 0 checked first, hash+state matches → consumed.
 
         ExecutionEntry[] memory entries = new ExecutionEntry[](2);
 
@@ -1075,12 +1009,13 @@ contract RollupsTest is Test {
         entries[0].nextAction = _emptyAction();
 
         StateDelta[] memory d1 = new StateDelta[](1);
-        d1[0] = StateDelta({rollupId: rollupId, currentState: state2, newState: keccak256("sp3"), etherDelta: 0});
+        d1[0] =
+            StateDelta({rollupId: rollupId, currentState: state2, newState: keccak256("sp3"), etherDelta: 0});
         entries[1].stateDeltas = d1;
         entries[1].actionHash = actionHash;
         entries[1].nextAction = _emptyAction();
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         (bool success,) = proxyAddr.call(callData);
         assertTrue(success);
@@ -1113,15 +1048,18 @@ contract RollupsTest is Test {
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         StateDelta[] memory d = new StateDelta[](1);
         d[0] = StateDelta({
-            rollupId: rollupId, currentState: keccak256("wrong state"), newState: keccak256("new"), etherDelta: 0
+            rollupId: rollupId,
+            currentState: keccak256("wrong state"),
+            newState: keccak256("new"),
+            etherDelta: 0
         });
         entries[0].stateDeltas = d;
         entries[0].actionHash = actionHash;
         entries[0].nextAction = _emptyAction();
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
-        vm.expectRevert(Rollups.ExecutionNotFound.selector);
+        vm.expectRevert(Rollups.StateRootMismatch.selector);
         (bool success,) = proxyAddr.call(callData);
         success;
     }
@@ -1183,27 +1121,13 @@ contract RollupsTest is Test {
 
         Action memory finalResult = _emptyAction();
 
-        bytes memory rlpTx = hex"08";
-        Action memory l2tx = Action({
-            actionType: ActionType.L2TX,
-            rollupId: rollupId,
-            destination: address(0),
-            value: 0,
-            data: rlpTx,
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-        bytes32 l2txHash = keccak256(abi.encode(l2tx));
-
         ExecutionEntry[] memory entries = new ExecutionEntry[](3);
 
         // Entry 1: L2TX -> scoped CALL at [0]
         StateDelta[] memory d1 = new StateDelta[](1);
         d1[0] = StateDelta({rollupId: rollupId, currentState: bytes32(0), newState: state1, etherDelta: 0});
         entries[0].stateDeltas = d1;
-        entries[0].actionHash = l2txHash;
+        entries[0].actionHash = bytes32(0);
         entries[0].nextAction = scopedCall;
 
         // Entry 2: RESULT -> REVERT at [0]
@@ -1226,9 +1150,9 @@ contract RollupsTest is Test {
         entries[2].actionHash = revertContHash;
         entries[2].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
-        rollups.executeL2TX(rollupId, rlpTx);
+        // executeL2TX is auto-consumed by postBatch
         // State is state2 because state changes from the reverted newScope call are rolled back
         // and _handleScopeRevert restores to the captured state (state2)
         assertEq(_getRollupState(rollupId), state2);
@@ -1284,27 +1208,13 @@ contract RollupsTest is Test {
 
         Action memory finalResult = _emptyAction();
 
-        bytes memory rlpTx = hex"09";
-        Action memory l2tx = Action({
-            actionType: ActionType.L2TX,
-            rollupId: rollupId,
-            destination: address(0),
-            value: 0,
-            data: rlpTx,
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-        bytes32 l2txHash = keccak256(abi.encode(l2tx));
-
         ExecutionEntry[] memory entries = new ExecutionEntry[](3);
 
         // L2TX -> CALL [0]
         StateDelta[] memory d1 = new StateDelta[](1);
         d1[0] = StateDelta({rollupId: rollupId, currentState: bytes32(0), newState: state1, etherDelta: 0});
         entries[0].stateDeltas = d1;
-        entries[0].actionHash = l2txHash;
+        entries[0].actionHash = bytes32(0);
         entries[0].nextAction = call0;
 
         // RESULT (from call0) -> CALL [1]
@@ -1321,9 +1231,9 @@ contract RollupsTest is Test {
         entries[2].actionHash = resultHash;
         entries[2].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
-        rollups.executeL2TX(rollupId, rlpTx);
+        // executeL2TX is auto-consumed by postBatch
         assertEq(_getRollupState(rollupId), state3);
         assertEq(target.value(), 200);
     }
@@ -1381,27 +1291,13 @@ contract RollupsTest is Test {
         bytes32 revertContHash = keccak256(abi.encode(revertCont));
         Action memory finalResult = _emptyAction();
 
-        bytes memory rlpTx = hex"0a";
-        Action memory l2tx = Action({
-            actionType: ActionType.L2TX,
-            rollupId: rollupId,
-            destination: address(0),
-            value: 0,
-            data: rlpTx,
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-        bytes32 l2txHash = keccak256(abi.encode(l2tx));
-
         ExecutionEntry[] memory entries = new ExecutionEntry[](3);
 
         // L2TX -> CALL at [0]
         StateDelta[] memory d1 = new StateDelta[](1);
         d1[0] = StateDelta({rollupId: rollupId, currentState: bytes32(0), newState: state1, etherDelta: 0});
         entries[0].stateDeltas = d1;
-        entries[0].actionHash = l2txHash;
+        entries[0].actionHash = bytes32(0);
         entries[0].nextAction = call0;
 
         // RESULT -> REVERT at []
@@ -1419,9 +1315,9 @@ contract RollupsTest is Test {
         entries[2].actionHash = revertContHash;
         entries[2].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
-        rollups.executeL2TX(rollupId, rlpTx);
+        // executeL2TX is auto-consumed by postBatch
         // State changes inside reverted newScope call are rolled back.
         // _handleScopeRevert restores state to state2 (captured at revert time).
         assertEq(_getRollupState(rollupId), state2);
@@ -1477,27 +1373,13 @@ contract RollupsTest is Test {
         bytes32 revertContHash = keccak256(abi.encode(revertCont));
         Action memory finalResult = _emptyAction();
 
-        bytes memory rlpTx = hex"0b";
-        Action memory l2tx = Action({
-            actionType: ActionType.L2TX,
-            rollupId: rollupId,
-            destination: address(0),
-            value: 0,
-            data: rlpTx,
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-        bytes32 l2txHash = keccak256(abi.encode(l2tx));
-
         ExecutionEntry[] memory entries = new ExecutionEntry[](3);
 
         // L2TX -> CALL at []
         StateDelta[] memory d1 = new StateDelta[](1);
         d1[0] = StateDelta({rollupId: rollupId, currentState: bytes32(0), newState: state1, etherDelta: 0});
         entries[0].stateDeltas = d1;
-        entries[0].actionHash = l2txHash;
+        entries[0].actionHash = bytes32(0);
         entries[0].nextAction = callAtEmpty;
 
         // RESULT -> REVERT at []
@@ -1510,14 +1392,15 @@ contract RollupsTest is Test {
         // REVERT_CONTINUE -> final RESULT
         // _getRevertContinuation runs inside the reverted call. At that point state=state2.
         StateDelta[] memory d3 = new StateDelta[](1);
-        d3[0] = StateDelta({rollupId: rollupId, currentState: state2, newState: stateAfterRevert, etherDelta: 0});
+        d3[0] =
+            StateDelta({rollupId: rollupId, currentState: state2, newState: stateAfterRevert, etherDelta: 0});
         entries[2].stateDeltas = d3;
         entries[2].actionHash = revertContHash;
         entries[2].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
-        rollups.executeL2TX(rollupId, rlpTx);
+        // executeL2TX is auto-consumed by postBatch
         // State changes inside reverted newScope call are rolled back.
         // _handleScopeRevert restores state to state2 (captured at revert time).
         assertEq(_getRollupState(rollupId), state2);
@@ -1529,7 +1412,7 @@ contract RollupsTest is Test {
 
     function test_PostBatch_EmptyEntries() public {
         ExecutionEntry[] memory entries = new ExecutionEntry[](0);
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
     }
 
     // ──────────────────────────────────────────────
@@ -1543,13 +1426,13 @@ contract RollupsTest is Test {
 
         ExecutionEntry[] memory entries1 = new ExecutionEntry[](1);
         entries1[0] = _immediateEntry(rollupId, bytes32(0), state1);
-        rollups.postBatch(entries1, 0, "", "proof");
+        rollups.postBatch(entries1, new StaticCall[](0), 0, "", "proof");
 
         vm.roll(block.number + 1);
 
         ExecutionEntry[] memory entries2 = new ExecutionEntry[](1);
         entries2[0] = _immediateEntry(rollupId, state1, state2);
-        rollups.postBatch(entries2, 0, "", "proof");
+        rollups.postBatch(entries2, new StaticCall[](0), 0, "", "proof");
 
         assertEq(_getRollupState(rollupId), state2);
     }
@@ -1620,7 +1503,7 @@ contract RollupsTest is Test {
         entries[1].actionHash = resultHash;
         entries[1].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         (bool success,) = proxyAddr.call(callData);
         assertTrue(success);
@@ -1680,26 +1563,12 @@ contract RollupsTest is Test {
         // After the failed result, return a successful RESULT
         Action memory finalResult = _emptyAction();
 
-        bytes memory rlpTx = hex"0d";
-        Action memory l2tx = Action({
-            actionType: ActionType.L2TX,
-            rollupId: rollupId,
-            destination: address(0),
-            value: 0,
-            data: rlpTx,
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-        bytes32 l2txHash = keccak256(abi.encode(l2tx));
-
         ExecutionEntry[] memory entries = new ExecutionEntry[](2);
 
         StateDelta[] memory d1 = new StateDelta[](1);
         d1[0] = StateDelta({rollupId: rollupId, currentState: bytes32(0), newState: state1, etherDelta: 0});
         entries[0].stateDeltas = d1;
-        entries[0].actionHash = l2txHash;
+        entries[0].actionHash = bytes32(0);
         entries[0].nextAction = scopedCall;
 
         StateDelta[] memory d2 = new StateDelta[](1);
@@ -1708,9 +1577,9 @@ contract RollupsTest is Test {
         entries[1].actionHash = failedResultHash;
         entries[1].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
-        rollups.executeL2TX(rollupId, rlpTx);
+        // executeL2TX is auto-consumed by postBatch
         assertEq(_getRollupState(rollupId), state2);
     }
 
@@ -1728,15 +1597,16 @@ contract RollupsTest is Test {
         deltas[0] = StateDelta({
             rollupId: rollupId1, currentState: bytes32(0), newState: keccak256("s1"), etherDelta: -3 ether
         });
-        deltas[1] =
-            StateDelta({rollupId: rollupId2, currentState: bytes32(0), newState: keccak256("s2"), etherDelta: 3 ether});
+        deltas[1] = StateDelta({
+            rollupId: rollupId2, currentState: bytes32(0), newState: keccak256("s2"), etherDelta: 3 ether
+        });
 
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         entries[0].stateDeltas = deltas;
         entries[0].actionHash = bytes32(0);
         entries[0].nextAction = _emptyAction();
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         assertEq(_getRollupEtherBalance(rollupId1), 7 ether);
         assertEq(_getRollupEtherBalance(rollupId2), 3 ether);
@@ -1800,27 +1670,13 @@ contract RollupsTest is Test {
 
         Action memory finalResult = _emptyAction();
 
-        bytes memory rlpTx = hex"0e";
-        Action memory l2tx = Action({
-            actionType: ActionType.L2TX,
-            rollupId: rollupId,
-            destination: address(0),
-            value: 0,
-            data: rlpTx,
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-        bytes32 l2txHash = keccak256(abi.encode(l2tx));
-
         ExecutionEntry[] memory entries = new ExecutionEntry[](3);
 
         // L2TX -> CALL at [0, 1]
         StateDelta[] memory d1 = new StateDelta[](1);
         d1[0] = StateDelta({rollupId: rollupId, currentState: bytes32(0), newState: state1, etherDelta: 0});
         entries[0].stateDeltas = d1;
-        entries[0].actionHash = l2txHash;
+        entries[0].actionHash = bytes32(0);
         entries[0].nextAction = call01;
 
         // RESULT (from call01) -> CALL at [1, 0] (prefix mismatch with [0])
@@ -1837,9 +1693,9 @@ contract RollupsTest is Test {
         entries[2].actionHash = resultHash;
         entries[2].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
-        rollups.executeL2TX(rollupId, rlpTx);
+        // executeL2TX is auto-consumed by postBatch
         assertEq(_getRollupState(rollupId), state3);
     }
 
@@ -1852,15 +1708,19 @@ contract RollupsTest is Test {
         uint256 r2 = rollups.createRollup(keccak256("b"), DEFAULT_VK, bob);
 
         StateDelta[] memory deltas = new StateDelta[](2);
-        deltas[0] = StateDelta({rollupId: r1, currentState: keccak256("a"), newState: keccak256("a2"), etherDelta: 0});
-        deltas[1] = StateDelta({rollupId: r2, currentState: keccak256("b"), newState: keccak256("b2"), etherDelta: 0});
+        deltas[0] = StateDelta({
+            rollupId: r1, currentState: keccak256("a"), newState: keccak256("a2"), etherDelta: 0
+        });
+        deltas[1] = StateDelta({
+            rollupId: r2, currentState: keccak256("b"), newState: keccak256("b2"), etherDelta: 0
+        });
 
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         entries[0].stateDeltas = deltas;
         entries[0].actionHash = bytes32(0);
         entries[0].nextAction = _emptyAction();
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         assertEq(_getRollupState(r1), keccak256("a2"));
         assertEq(_getRollupState(r2), keccak256("b2"));
@@ -1895,14 +1755,15 @@ contract RollupsTest is Test {
 
         // State delta must reflect the +1 ether from msg.value
         StateDelta[] memory deltas = new StateDelta[](1);
-        deltas[0] = StateDelta({rollupId: rollupId, currentState: bytes32(0), newState: state1, etherDelta: 1 ether});
+        deltas[0] =
+            StateDelta({rollupId: rollupId, currentState: bytes32(0), newState: state1, etherDelta: 1 ether});
 
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         entries[0].stateDeltas = deltas;
         entries[0].actionHash = keccak256(abi.encode(callAction));
         entries[0].nextAction = resultAction;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         // Call the proxy with 1 ether value
         (bool success,) = proxyAddr.call{value: 1 ether}(callData);
@@ -1935,14 +1796,15 @@ contract RollupsTest is Test {
 
         // State delta has etherDelta = 1 ether but no ETH flows (_etherDelta = 0)
         StateDelta[] memory deltas = new StateDelta[](1);
-        deltas[0] = StateDelta({rollupId: rollupId, currentState: bytes32(0), newState: state1, etherDelta: 1 ether});
+        deltas[0] =
+            StateDelta({rollupId: rollupId, currentState: bytes32(0), newState: state1, etherDelta: 1 ether});
 
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         entries[0].stateDeltas = deltas;
         entries[0].actionHash = keccak256(abi.encode(callAction));
         entries[0].nextAction = _emptyAction();
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         vm.expectRevert(Rollups.EtherDeltaMismatch.selector);
         (bool success,) = proxyAddr.call(callData);
@@ -1980,33 +1842,17 @@ contract RollupsTest is Test {
             scope: callScope
         });
 
-        bytes memory rlpTx = hex"0f";
-        Action memory l2tx = Action({
-            actionType: ActionType.L2TX,
-            rollupId: rollupId,
-            destination: address(0),
-            value: 0,
-            data: rlpTx,
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-        bytes32 l2txHash = keccak256(abi.encode(l2tx));
-
         // Only load the L2TX entry, NOT the result entry
         // So the result lookup inside _processCallAtScope will revert with ExecutionNotFound
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         StateDelta[] memory d = new StateDelta[](1);
         d[0] = StateDelta({rollupId: rollupId, currentState: bytes32(0), newState: state1, etherDelta: 0});
         entries[0].stateDeltas = d;
-        entries[0].actionHash = l2txHash;
+        entries[0].actionHash = bytes32(0);
         entries[0].nextAction = scopedCall;
 
-        rollups.postBatch(entries, 0, "", "proof");
-
-        vm.expectRevert(Rollups.InvalidRevertData.selector);
-        rollups.executeL2TX(rollupId, rlpTx);
+        vm.expectRevert(ICrossChainManager.InvalidRevertData.selector);
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
     }
 
     // ──────────────────────────────────────────────
@@ -2098,7 +1944,7 @@ contract RollupsTest is Test {
         entries[2].actionHash = revertContHash;
         entries[2].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         (bool success,) = proxyAddr.call(callData);
         assertTrue(success);
@@ -2123,7 +1969,7 @@ contract RollupsTest is Test {
         assembly {
             selector := mload(add(retData, 32))
         }
-        assertEq(selector, Rollups.ExecutionNotInCurrentBlock.selector);
+        assertEq(selector, ICrossChainManager.ExecutionNotInCurrentBlock.selector);
     }
 
     // ──────────────────────────────────────────────
@@ -2138,10 +1984,9 @@ contract RollupsTest is Test {
         // Non-manager callers are routed through _fallback() (cross-chain path),
         // which calls executeCrossChainCall and reverts with ExecutionNotInCurrentBlock
         vm.prank(alice);
-        vm.expectRevert(Rollups.ExecutionNotInCurrentBlock.selector);
+        vm.expectRevert(ICrossChainManager.ExecutionNotInCurrentBlock.selector);
         proxy.executeOnBehalf(address(target), abi.encodeCall(TestTarget.setValue, (42)));
     }
-
 
     // ──────────────────────────────────────────────
     //  newScope: child scope catch path (lines 340-342)
@@ -2196,27 +2041,13 @@ contract RollupsTest is Test {
         bytes32 revertContHash = keccak256(abi.encode(revertCont));
         Action memory finalResult = _emptyAction();
 
-        bytes memory rlpTx = hex"11";
-        Action memory l2tx = Action({
-            actionType: ActionType.L2TX,
-            rollupId: rollupId,
-            destination: address(0),
-            value: 0,
-            data: rlpTx,
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-        bytes32 l2txHash = keccak256(abi.encode(l2tx));
-
         ExecutionEntry[] memory entries = new ExecutionEntry[](3);
 
         // L2TX -> CALL at [0, 0]
         StateDelta[] memory d1 = new StateDelta[](1);
         d1[0] = StateDelta({rollupId: rollupId, currentState: bytes32(0), newState: state1, etherDelta: 0});
         entries[0].stateDeltas = d1;
-        entries[0].actionHash = l2txHash;
+        entries[0].actionHash = bytes32(0);
         entries[0].nextAction = deepCall;
 
         // RESULT -> REVERT at [0, 0]
@@ -2233,9 +2064,9 @@ contract RollupsTest is Test {
         entries[2].actionHash = revertContHash;
         entries[2].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
-        rollups.executeL2TX(rollupId, rlpTx);
+        // executeL2TX is auto-consumed by postBatch
         // ScopeReverted at [0,0] is caught by newScope([0]) (child scope catch path)
         // Then caught by newScope([]) which calls _handleScopeRevert
         assertEq(_getRollupState(rollupId), state2);
@@ -2266,15 +2097,19 @@ contract RollupsTest is Test {
 
         // Both deltas must match current state for execution to be found
         StateDelta[] memory deltas = new StateDelta[](2);
-        deltas[0] = StateDelta({rollupId: r1, currentState: keccak256("x"), newState: keccak256("x2"), etherDelta: 0});
-        deltas[1] = StateDelta({rollupId: r2, currentState: keccak256("y"), newState: keccak256("y2"), etherDelta: 0});
+        deltas[0] = StateDelta({
+            rollupId: r1, currentState: keccak256("x"), newState: keccak256("x2"), etherDelta: 0
+        });
+        deltas[1] = StateDelta({
+            rollupId: r2, currentState: keccak256("y"), newState: keccak256("y2"), etherDelta: 0
+        });
 
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         entries[0].stateDeltas = deltas;
         entries[0].actionHash = actionHash;
         entries[0].nextAction = _emptyAction();
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         (bool success,) = proxyAddr.call(callData);
         assertTrue(success);
@@ -2307,18 +2142,21 @@ contract RollupsTest is Test {
 
         // First delta matches but second doesn't
         StateDelta[] memory deltas = new StateDelta[](2);
-        deltas[0] = StateDelta({rollupId: r1, currentState: keccak256("a"), newState: keccak256("a2"), etherDelta: 0});
-        deltas[1] =
-            StateDelta({rollupId: r2, currentState: keccak256("wrong"), newState: keccak256("b2"), etherDelta: 0});
+        deltas[0] = StateDelta({
+            rollupId: r1, currentState: keccak256("a"), newState: keccak256("a2"), etherDelta: 0
+        });
+        deltas[1] = StateDelta({
+            rollupId: r2, currentState: keccak256("wrong"), newState: keccak256("b2"), etherDelta: 0
+        });
 
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         entries[0].stateDeltas = deltas;
         entries[0].actionHash = actionHash;
         entries[0].nextAction = _emptyAction();
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
-        vm.expectRevert(Rollups.ExecutionNotFound.selector);
+        vm.expectRevert(Rollups.StateRootMismatch.selector);
         (bool success,) = proxyAddr.call(callData);
         success;
     }
@@ -2344,7 +2182,9 @@ contract RollupsTest is Test {
         bytes32 actionHash = keccak256(abi.encode(callAction));
 
         StateDelta[] memory deltas = new StateDelta[](1);
-        deltas[0] = StateDelta({rollupId: rollupId, currentState: bytes32(0), newState: keccak256("d1"), etherDelta: 0});
+        deltas[0] = StateDelta({
+            rollupId: rollupId, currentState: bytes32(0), newState: keccak256("d1"), etherDelta: 0
+        });
 
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         entries[0].stateDeltas = deltas;
@@ -2353,7 +2193,7 @@ contract RollupsTest is Test {
 
         // Deferred entries do NOT have their ether deltas summed
         // (only immediate entries do), so this should pass
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         // State should NOT have changed (deferred entry)
         assertEq(_getRollupState(rollupId), bytes32(0));
@@ -2380,14 +2220,16 @@ contract RollupsTest is Test {
         _fundRollup(rollupId, 5 ether);
 
         StateDelta[] memory deltas = new StateDelta[](1);
-        deltas[0] = StateDelta({rollupId: rollupId, currentState: bytes32(0), newState: keccak256("zd"), etherDelta: 0});
+        deltas[0] = StateDelta({
+            rollupId: rollupId, currentState: bytes32(0), newState: keccak256("zd"), etherDelta: 0
+        });
 
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         entries[0].stateDeltas = deltas;
         entries[0].actionHash = bytes32(0);
         entries[0].nextAction = _emptyAction();
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         assertEq(_getRollupEtherBalance(rollupId), 5 ether);
         assertEq(_getRollupState(rollupId), keccak256("zd"));
@@ -2414,7 +2256,7 @@ contract RollupsTest is Test {
         entries[0] = _immediateEntry(rollupId, bytes32(0), keccak256("blobState"));
 
         // blobCount=2 makes the contract read blobhash(0) and blobhash(1)
-        rollups.postBatch(entries, 2, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 2, "", "proof");
 
         assertEq(_getRollupState(rollupId), keccak256("blobState"));
     }
@@ -2522,26 +2364,12 @@ contract RollupsTest is Test {
             scope: new uint256[](0)
         });
 
-        bytes memory rlpTx = hex"20";
-        Action memory l2tx = Action({
-            actionType: ActionType.L2TX,
-            rollupId: rollupId,
-            destination: address(0),
-            value: 0,
-            data: rlpTx,
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-        bytes32 l2txHash = keccak256(abi.encode(l2tx));
-
         ExecutionEntry[] memory entries = new ExecutionEntry[](2);
 
         StateDelta[] memory d1 = new StateDelta[](1);
         d1[0] = StateDelta({rollupId: rollupId, currentState: bytes32(0), newState: state1, etherDelta: 0});
         entries[0].stateDeltas = d1;
-        entries[0].actionHash = l2txHash;
+        entries[0].actionHash = bytes32(0);
         entries[0].nextAction = scopedCall;
 
         StateDelta[] memory d2 = new StateDelta[](1);
@@ -2550,11 +2378,9 @@ contract RollupsTest is Test {
         entries[1].actionHash = resultHash;
         entries[1].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
-        bytes memory result = rollups.executeL2TX(rollupId, rlpTx);
-        uint256 decoded = abi.decode(result, (uint256));
-        assertEq(decoded, 0);
+        // executeL2TX is auto-consumed by postBatch (result is discarded)
         assertEq(_getRollupState(rollupId), state2);
     }
 
@@ -2563,10 +2389,14 @@ contract RollupsTest is Test {
     // ══════════════════════════════════════════════
 
     function _batchPostedSelector() internal pure returns (bytes32) {
-        return keccak256("BatchPosted((uint256,bytes32,bytes32,int256)[],bytes32,(uint8,uint256,address,uint256,bytes,bool,address,uint256,uint256[]))[],bytes32)");
+        return keccak256(
+            "BatchPosted((uint256,bytes32,bytes32,int256)[],bytes32,(uint8,uint256,address,uint256,bytes,bool,address,uint256,uint256[]))[],bytes32)"
+        );
     }
 
-    function _findBatchPostedLog(Vm.Log[] memory logs) internal view returns (bool found, uint256 idx) {
+    function _findBatchPostedLog(
+        Vm.Log[] memory logs
+    ) internal view returns (bool found, uint256 idx) {
         bytes32 sel = Rollups.BatchPosted.selector;
         for (uint256 i = 0; i < logs.length; i++) {
             if (logs[i].topics[0] == sel) {
@@ -2584,13 +2414,14 @@ contract RollupsTest is Test {
         entries[0] = _immediateEntry(rollupId, bytes32(0), newState);
 
         vm.recordLogs();
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         Vm.Log[] memory logs = vm.getRecordedLogs();
         (bool found, uint256 idx) = _findBatchPostedLog(logs);
         assertTrue(found, "BatchPosted event not found");
 
-        (ExecutionEntry[] memory emitted, bytes32 pubHash) = abi.decode(logs[idx].data, (ExecutionEntry[], bytes32));
+        (ExecutionEntry[] memory emitted, bytes32 pubHash) =
+            abi.decode(logs[idx].data, (ExecutionEntry[], bytes32));
         assertEq(emitted.length, 1);
         assertEq(emitted[0].actionHash, bytes32(0));
         assertEq(emitted[0].stateDeltas.length, 1);
@@ -2617,7 +2448,9 @@ contract RollupsTest is Test {
         bytes32 actionHash = keccak256(abi.encode(action));
 
         StateDelta[] memory stateDeltas = new StateDelta[](1);
-        stateDeltas[0] = StateDelta({rollupId: rollupId, currentState: bytes32(0), newState: keccak256("s"), etherDelta: 0});
+        stateDeltas[0] = StateDelta({
+            rollupId: rollupId, currentState: bytes32(0), newState: keccak256("s"), etherDelta: 0
+        });
 
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         entries[0].stateDeltas = stateDeltas;
@@ -2625,7 +2458,7 @@ contract RollupsTest is Test {
         entries[0].nextAction = _emptyAction();
 
         vm.recordLogs();
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         Vm.Log[] memory logs = vm.getRecordedLogs();
         (bool found, uint256 idx) = _findBatchPostedLog(logs);
@@ -2659,13 +2492,14 @@ contract RollupsTest is Test {
         ExecutionEntry[] memory entries = new ExecutionEntry[](2);
         entries[0] = _immediateEntry(rollupId, bytes32(0), state1);
         StateDelta[] memory deferredDeltas = new StateDelta[](1);
-        deferredDeltas[0] = StateDelta({rollupId: rollupId, currentState: state1, newState: keccak256("s2"), etherDelta: 0});
+        deferredDeltas[0] =
+            StateDelta({rollupId: rollupId, currentState: state1, newState: keccak256("s2"), etherDelta: 0});
         entries[1].stateDeltas = deferredDeltas;
         entries[1].actionHash = deferredHash;
         entries[1].nextAction = _emptyAction();
 
         vm.recordLogs();
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         Vm.Log[] memory logs = vm.getRecordedLogs();
         (bool found, uint256 idx) = _findBatchPostedLog(logs);
@@ -2706,13 +2540,14 @@ contract RollupsTest is Test {
         bytes32 actionHash = keccak256(abi.encode(action));
 
         StateDelta[] memory stateDeltas = new StateDelta[](1);
-        stateDeltas[0] = StateDelta({rollupId: rollupId, currentState: currentState, newState: newState, etherDelta: 0});
+        stateDeltas[0] =
+            StateDelta({rollupId: rollupId, currentState: currentState, newState: newState, etherDelta: 0});
 
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         entries[0].stateDeltas = stateDeltas;
         entries[0].actionHash = actionHash;
         entries[0].nextAction = _emptyAction();
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         vm.recordLogs();
         (bool success,) = proxyAddr.call(callData);
@@ -2725,7 +2560,8 @@ contract RollupsTest is Test {
             if (logs[i].topics[0] == sel) {
                 assertEq(logs[i].topics[1], actionHash);
                 assertEq(address(uint160(uint256(logs[i].topics[2]))), proxyAddr);
-                (address src, bytes memory cd, uint256 val) = abi.decode(logs[i].data, (address, bytes, uint256));
+                (address src, bytes memory cd, uint256 val) =
+                    abi.decode(logs[i].data, (address, bytes, uint256));
                 assertEq(src, address(this));
                 assertEq(cd, callData);
                 assertEq(val, 0);
@@ -2745,42 +2581,24 @@ contract RollupsTest is Test {
 
         bytes32 currentState = bytes32(0);
         bytes32 newState = keccak256("state1");
-        bytes memory rlpTx = hex"deadbeef";
-
-        Action memory action = Action({
-            actionType: ActionType.L2TX,
-            rollupId: rollupId,
-            destination: address(0),
-            value: 0,
-            data: rlpTx,
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-        bytes32 actionHash = keccak256(abi.encode(action));
 
         StateDelta[] memory stateDeltas = new StateDelta[](1);
-        stateDeltas[0] = StateDelta({rollupId: rollupId, currentState: currentState, newState: newState, etherDelta: 0});
+        stateDeltas[0] =
+            StateDelta({rollupId: rollupId, currentState: currentState, newState: newState, etherDelta: 0});
 
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         entries[0].stateDeltas = stateDeltas;
-        entries[0].actionHash = actionHash;
+        entries[0].actionHash = bytes32(0);
         entries[0].nextAction = _emptyAction();
-        rollups.postBatch(entries, 0, "", "proof");
 
         vm.recordLogs();
-        rollups.executeL2TX(rollupId, rlpTx);
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         Vm.Log[] memory logs = vm.getRecordedLogs();
         bytes32 sel = Rollups.L2TXExecuted.selector;
         bool found = false;
         for (uint256 i = 0; i < logs.length; i++) {
-            if (logs[i].topics[0] == sel) {
-                assertEq(logs[i].topics[1], actionHash);
-                assertEq(uint256(logs[i].topics[2]), rollupId);
-                (bytes memory emittedRlp) = abi.decode(logs[i].data, (bytes));
-                assertEq(emittedRlp, rlpTx);
+            if (logs[i].topics.length > 0 && logs[i].topics[0] == sel) {
                 found = true;
                 break;
             }

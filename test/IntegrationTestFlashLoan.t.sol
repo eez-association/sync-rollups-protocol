@@ -5,7 +5,14 @@ import {Test, console} from "forge-std/Test.sol";
 import {Rollups, RollupConfig} from "../src/Rollups.sol";
 import {CrossChainManagerL2} from "../src/CrossChainManagerL2.sol";
 import {CrossChainProxy} from "../src/CrossChainProxy.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta, ProxyInfo} from "../src/ICrossChainManager.sol";
+import {
+    Action,
+    ActionType,
+    ExecutionEntry,
+    StateDelta,
+    ProxyInfo,
+    StaticCall
+} from "../src/ICrossChainManager.sol";
 import {IZKVerifier} from "../src/IZKVerifier.sol";
 import {Bridge} from "../src/periphery/Bridge.sol";
 import {WrappedToken} from "../src/periphery/WrappedToken.sol";
@@ -15,7 +22,10 @@ import {FlashLoanersNFT} from "../src/periphery/defiMock/FlashLoanersNFT.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 contract MockZKVerifier is IZKVerifier {
-    function verify(bytes calldata, bytes32) external pure override returns (bool) {
+    function verify(
+        bytes calldata,
+        bytes32
+    ) external pure override returns (bool) {
         return true;
     }
 }
@@ -110,21 +120,23 @@ contract IntegrationTestFlashLoan is Test {
         // ── Executor on L2 (receives wrapped tokens, claims NFT, bridges back) ──
         // Constructor args unused by claimAndBridgeBack — all params passed as function args
         executorL2 = new FlashLoanBridgeExecutor(
-            address(0), address(0), address(0), address(0),
-            address(0), address(0), address(0), 0, address(0)
+            address(0), address(0), address(0), address(0), address(0), address(0), address(0), 0, address(0)
         );
 
         // ── Pre-compute WrappedToken address on L2 (CREATE2 from Bridge_L2) ──
         bytes32 wrappedSalt = keccak256(abi.encodePacked(address(token), MAINNET_ROLLUP_ID));
         bytes32 wrappedBytecodeHash = keccak256(
             abi.encodePacked(
-                type(WrappedToken).creationCode,
-                abi.encode("Test Token", "TT", uint8(18), address(bridgeL2))
+                type(WrappedToken).creationCode, abi.encode("Test Token", "TT", uint8(18), address(bridgeL2))
             )
         );
         wrappedTokenL2 = address(
             uint160(
-                uint256(keccak256(abi.encodePacked(bytes1(0xff), address(bridgeL2), wrappedSalt, wrappedBytecodeHash)))
+                uint256(
+                    keccak256(
+                        abi.encodePacked(bytes1(0xff), address(bridgeL2), wrappedSalt, wrappedBytecodeHash)
+                    )
+                )
             )
         );
 
@@ -148,7 +160,9 @@ contract IntegrationTestFlashLoan is Test {
         );
     }
 
-    function _getRollupState(uint256 rollupId) internal view returns (bytes32) {
+    function _getRollupState(
+        uint256 rollupId
+    ) internal view returns (bytes32) {
         (,, bytes32 stateRoot,) = rollups.rollups(rollupId);
         return stateRoot;
     }
@@ -177,19 +191,44 @@ contract IntegrationTestFlashLoan is Test {
         // Forward receiveTokens: L1 → L2, mint wrapped tokens to executorL2
         bytes memory fwdReceiveTokensCalldata = abi.encodeCall(
             Bridge.receiveTokens,
-            (address(token), MAINNET_ROLLUP_ID, address(executorL2), 10_000e18, "Test Token", "TT", 18, MAINNET_ROLLUP_ID)
+            (
+                address(token),
+                MAINNET_ROLLUP_ID,
+                address(executorL2),
+                10_000e18,
+                "Test Token",
+                "TT",
+                18,
+                MAINNET_ROLLUP_ID
+            )
         );
 
         // claimAndBridgeBack: called on executorL2 via proxy
         bytes memory claimAndBridgeBackCalldata = abi.encodeCall(
             FlashLoanBridgeExecutor.claimAndBridgeBack,
-            (wrappedTokenL2, address(flashLoanersNFT), address(bridgeL2), MAINNET_ROLLUP_ID, address(executor), alice)
+            (
+                wrappedTokenL2,
+                address(flashLoanersNFT),
+                address(bridgeL2),
+                MAINNET_ROLLUP_ID,
+                address(executor),
+                alice
+            )
         );
 
         // Return receiveTokens: L2 → L1, release native tokens to executor
         bytes memory retReceiveTokensCalldata = abi.encodeCall(
             Bridge.receiveTokens,
-            (address(token), MAINNET_ROLLUP_ID, address(executor), 10_000e18, "Test Token", "TT", 18, L2_ROLLUP_ID)
+            (
+                address(token),
+                MAINNET_ROLLUP_ID,
+                address(executor),
+                10_000e18,
+                "Test Token",
+                "TT",
+                18,
+                L2_ROLLUP_ID
+            )
         );
 
         // ── Define shared action templates ──
@@ -281,7 +320,7 @@ contract IntegrationTestFlashLoan is Test {
             l2Entries[2].nextAction = result_L2_void;
 
             vm.prank(SYSTEM_ADDRESS);
-            managerL2.loadExecutionTable(l2Entries);
+            managerL2.loadExecutionTable(l2Entries, new StaticCall[](0));
         }
 
         // Single system call: receiveTokens on Bridge_L2, then claimAndBridgeBack on executorL2
@@ -291,12 +330,12 @@ contract IntegrationTestFlashLoan is Test {
         //     → claim NFT, burn wrapped, bridge back → RESULT consumed → terminal
         vm.prank(SYSTEM_ADDRESS);
         managerL2.executeIncomingCrossChainCall(
-            address(bridgeL2),        // dest = Bridge_L2
-            0,                        // value = 0
+            address(bridgeL2), // dest = Bridge_L2
+            0, // value = 0
             fwdReceiveTokensCalldata, // data = receiveTokens(...)
-            address(bridgeL1),        // source = Bridge_L1
-            MAINNET_ROLLUP_ID,        // sourceRollup = MAINNET
-            new uint256[](0)          // scope = [] (root)
+            address(bridgeL1), // source = Bridge_L1
+            MAINNET_ROLLUP_ID, // sourceRollup = MAINNET
+            new uint256[](0) // scope = [] (root)
         );
 
         // Verify wrapped token deployed, NFT claimed, wrapped tokens burned
@@ -393,7 +432,7 @@ contract IntegrationTestFlashLoan is Test {
             entries[2].actionHash = keccak256(abi.encode(result_MAINNET_void));
             entries[2].nextAction = result_L2_void;
 
-            rollups.postBatch(entries, 0, "", "proof");
+            rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
         }
 
         // Alice triggers the flash loan → full cross-chain flow
@@ -403,7 +442,9 @@ contract IntegrationTestFlashLoan is Test {
         // ── Assertions ──
         assertTrue(flashLoanersNFT.hasClaimed(address(executorL2)), "executorL2 has claimed NFT");
         assertEq(flashLoanersNFT.nextTokenId(), 1, "One NFT minted (tokenId=0)");
-        assertEq(token.balanceOf(address(flashLoanL1)), 10_000e18, "FlashLoan_L1 balance unchanged (loan repaid)");
+        assertEq(
+            token.balanceOf(address(flashLoanL1)), 10_000e18, "FlashLoan_L1 balance unchanged (loan repaid)"
+        );
         assertEq(token.balanceOf(address(executor)), 0, "Executor has no tokens remaining");
         assertEq(token.balanceOf(address(bridgeL1)), 0, "Bridge_L1 has no locked tokens (released back)");
         assertEq(_getRollupState(L2_ROLLUP_ID), s3, "L2 rollup state updated after all phases");

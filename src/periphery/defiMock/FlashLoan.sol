@@ -6,13 +6,19 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 interface IFlashLoanReceiver {
-    function onFlashLoan(address token, uint256 amount) external;
+    function onFlashLoan(
+        address token,
+        uint256 amount
+    ) external;
 }
 
 contract FlashLoan is ReentrancyGuard {
     using SafeERC20 for IERC20;
 
-    function flashLoan(address token, uint256 amount) external nonReentrant {
+    function flashLoan(
+        address token,
+        uint256 amount
+    ) external nonReentrant {
         uint256 balanceBefore = IERC20(token).balanceOf(address(this));
         require(balanceBefore >= amount, "Not enough liquidity");
 

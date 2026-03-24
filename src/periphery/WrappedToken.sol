@@ -32,11 +32,17 @@ contract WrappedToken is ERC20, ERC20Permit {
         return _tokenDecimals;
     }
 
-    function mint(address to, uint256 amount) external onlyBridge {
+    function mint(
+        address to,
+        uint256 amount
+    ) external onlyBridge {
         _mint(to, amount);
     }
 
-    function burn(address from, uint256 amount) external onlyBridge {
+    function burn(
+        address from,
+        uint256 amount
+    ) external onlyBridge {
         _burn(from, amount);
     }
 }

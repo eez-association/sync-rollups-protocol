@@ -10,10 +10,12 @@ import {Vm} from "forge-std/Vm.sol";
 /// @dev Usage:
 ///   forge script script/DecodeExecutions.s.sol:DecodeExecutions --rpc-url <RPC> --sig "runBlock(uint256,address)" <BLOCK> <CONTRACT>
 contract DecodeExecutions is Script {
-    bytes32 constant SIG_CROSSCHAIN_CALL = keccak256("CrossChainCallExecuted(bytes32,address,address,bytes,uint256)");
-    bytes32 constant SIG_EXECUTION_CONSUMED =
-        keccak256("ExecutionConsumed(bytes32,(uint8,uint256,address,uint256,bytes,bool,address,uint256,uint256[]))");
-    bytes32 constant SIG_L2TX_EXECUTED = keccak256("L2TXExecuted(bytes32,uint256,bytes)");
+    bytes32 constant SIG_CROSSCHAIN_CALL =
+        keccak256("CrossChainCallExecuted(bytes32,address,address,bytes,uint256)");
+    bytes32 constant SIG_EXECUTION_CONSUMED = keccak256(
+        "ExecutionConsumed(bytes32,(uint8,uint256,address,uint256,bytes,bool,address,uint256,uint256[]))"
+    );
+    bytes32 constant SIG_L2TX_EXECUTED = keccak256("L2TXExecuted()");
     bytes32 constant SIG_L2_EXECUTION_PERFORMED = keccak256("L2ExecutionPerformed(uint256,bytes32,bytes32)");
     bytes32 constant SIG_BATCH_POSTED = keccak256(
         "BatchPosted(((uint256,bytes32,bytes32,int256)[],bytes32,(uint8,uint256,address,uint256,bytes,bool,address,uint256,uint256[]))[],bytes32)"
@@ -42,7 +44,10 @@ contract DecodeExecutions is Script {
 
     // ──────────────────── Entry point ────────────────────
 
-    function runBlock(uint256 blockNumber, address target) external view {
+    function runBlock(
+        uint256 blockNumber,
+        address target
+    ) external view {
         bytes32[] memory topics = new bytes32[](0);
         Vm.EthGetLogs[] memory logs = vm.eth_getLogs(blockNumber, blockNumber, target, topics);
 
@@ -54,7 +59,9 @@ contract DecodeExecutions is Script {
         _processBlock(logs);
     }
 
-    function decodeRecordedLogs(Vm.Log[] memory logs) external view {
+    function decodeRecordedLogs(
+        Vm.Log[] memory logs
+    ) external view {
         // Convert Vm.Log[] to a common format and process
         console.log("================================================================");
         console.log("RECORDED LOGS | %s logs", logs.length);
@@ -90,9 +97,6 @@ contract DecodeExecutions is Script {
                 consumedCount++;
             } else if (t0 == SIG_L2TX_EXECUTED) {
                 hasL2TX = true;
-                l2txActionHash = logs[i].topics[1];
-                l2txRollupId = uint256(logs[i].topics[2]);
-                l2txRlpData = abi.decode(logs[i].data, (bytes));
             } else if (t0 == SIG_CROSSCHAIN_CALL) {
                 hasCCCall = true;
                 ccActionHash = logs[i].topics[1];
@@ -102,17 +106,43 @@ contract DecodeExecutions is Script {
         }
 
         // Print full detail
-        _printFullDetail(batchEntries, consumed, consumedHashes, consumedCount, hasL2TX, l2txRollupId, l2txRlpData,
-            l2txActionHash, hasCCCall, ccProxy, ccSource, ccCallData, ccValue, ccActionHash);
+        _printFullDetail(
+            batchEntries,
+            consumed,
+            consumedHashes,
+            consumedCount,
+            hasL2TX,
+            l2txRollupId,
+            l2txRlpData,
+            l2txActionHash,
+            hasCCCall,
+            ccProxy,
+            ccSource,
+            ccCallData,
+            ccValue,
+            ccActionHash
+        );
 
         // Print flow
-        _printFlow(batchEntries, consumed, consumedHashes, consumedCount, hasL2TX, l2txRollupId, l2txRlpData,
-            hasCCCall, ccSource, ccCallData);
+        _printFlow(
+            batchEntries,
+            consumed,
+            consumedHashes,
+            consumedCount,
+            hasL2TX,
+            l2txRollupId,
+            l2txRlpData,
+            hasCCCall,
+            ccSource,
+            ccCallData
+        );
     }
 
     // ──────────────────── Block processing ────────────────────
 
-    function _processBlock(Vm.EthGetLogs[] memory logs) internal view {
+    function _processBlock(
+        Vm.EthGetLogs[] memory logs
+    ) internal view {
         if (logs.length == 0) {
             console.log("  (no events)");
             return;
@@ -153,7 +183,13 @@ contract DecodeExecutions is Script {
         }
     }
 
-    function _processTxLogs(bytes32 txHash, Vm.EthGetLogs[] memory logs, uint256 from, uint256 to, ExecutionEntry[] memory allBatchEntries) internal view {
+    function _processTxLogs(
+        bytes32 txHash,
+        Vm.EthGetLogs[] memory logs,
+        uint256 from,
+        uint256 to,
+        ExecutionEntry[] memory allBatchEntries
+    ) internal view {
         // Collect data from this tx's logs
         ExecutionEntry[] memory localBatchEntries;
         Action[] memory consumed = new Action[](to - from);
@@ -181,9 +217,6 @@ contract DecodeExecutions is Script {
                 consumedCount++;
             } else if (t0 == SIG_L2TX_EXECUTED) {
                 hasL2TX = true;
-                l2txActionHash = logs[i].topics[1];
-                l2txRollupId = uint256(logs[i].topics[2]);
-                l2txRlpData = abi.decode(logs[i].data, (bytes));
             } else if (t0 == SIG_CROSSCHAIN_CALL) {
                 hasCCCall = true;
                 ccActionHash = logs[i].topics[1];
@@ -198,12 +231,36 @@ contract DecodeExecutions is Script {
         console.log("========================================");
 
         // Full detail uses local batch entries (what was posted in THIS tx)
-        _printFullDetail(localBatchEntries, consumed, consumedHashes, consumedCount, hasL2TX, l2txRollupId, l2txRlpData,
-            l2txActionHash, hasCCCall, ccProxy, ccSource, ccCallData, ccValue, ccActionHash);
+        _printFullDetail(
+            localBatchEntries,
+            consumed,
+            consumedHashes,
+            consumedCount,
+            hasL2TX,
+            l2txRollupId,
+            l2txRlpData,
+            l2txActionHash,
+            hasCCCall,
+            ccProxy,
+            ccSource,
+            ccCallData,
+            ccValue,
+            ccActionHash
+        );
 
         // Flow/summary uses ALL batch entries from the block (cross-tx lookup)
-        _printFlow(allBatchEntries, consumed, consumedHashes, consumedCount, hasL2TX, l2txRollupId, l2txRlpData,
-            hasCCCall, ccSource, ccCallData);
+        _printFlow(
+            allBatchEntries,
+            consumed,
+            consumedHashes,
+            consumedCount,
+            hasL2TX,
+            l2txRollupId,
+            l2txRlpData,
+            hasCCCall,
+            ccSource,
+            ccCallData
+        );
     }
 
     // ──────────────────── Full detail section ────────────────────
@@ -320,49 +377,81 @@ contract DecodeExecutions is Script {
 
         // One-liner summary
         console.log("");
-        console.log("  SUMMARY: %s", _buildSummaryLine(consumed, consumedHashes, consumedCount, batchEntries, hasL2TX, l2txRollupId, l2txRlpData, hasCCCall, ccSource, ccCallData));
+        console.log(
+            "  SUMMARY: %s",
+            _buildSummaryLine(
+                consumed,
+                consumedHashes,
+                consumedCount,
+                batchEntries,
+                hasL2TX,
+                l2txRollupId,
+                l2txRlpData,
+                hasCCCall,
+                ccSource,
+                ccCallData
+            )
+        );
         console.log("");
     }
 
     // ──────────────────── Flow formatting helpers ────────────────────
 
-    function _formatActionOneLiner(Action memory a) internal pure returns (string memory) {
+    function _formatActionOneLiner(
+        Action memory a
+    ) internal pure returns (string memory) {
         string memory typeName = _actionTypeName(a.actionType);
 
         if (a.actionType == ActionType.CALL) {
             string memory valStr = a.value > 0 ? string.concat(", val=", vm.toString(a.value)) : "";
             return string.concat(
-                typeName, "(rollup ", vm.toString(a.rollupId),
-                ", ", _shortAddr(a.destination),
-                ".", _selectorName(a.data),
-                ", from ", _shortAddr(a.sourceAddress),
-                valStr, ")"
+                typeName,
+                "(rollup ",
+                vm.toString(a.rollupId),
+                ", ",
+                _shortAddr(a.destination),
+                ".",
+                _selectorName(a.data),
+                ", from ",
+                _shortAddr(a.sourceAddress),
+                valStr,
+                ")"
             );
         } else if (a.actionType == ActionType.RESULT) {
             return string.concat(
-                typeName, "(rollup ", vm.toString(a.rollupId),
+                typeName,
+                "(rollup ",
+                vm.toString(a.rollupId),
                 a.failed ? ", FAILED" : ", ok",
-                ", data=", _shortBytes(a.data),
+                ", data=",
+                _shortBytes(a.data),
                 ")"
             );
         } else if (a.actionType == ActionType.L2TX) {
-            return string.concat(
-                typeName, "(rollup ", vm.toString(a.rollupId),
-                ", data=", _shortBytes(a.data), ")"
-            );
+            return
+                string.concat(
+                    typeName, "(rollup ", vm.toString(a.rollupId), ", data=", _shortBytes(a.data), ")"
+                );
         } else if (a.actionType == ActionType.REVERT || a.actionType == ActionType.REVERT_CONTINUE) {
             return string.concat(typeName, "(rollup ", vm.toString(a.rollupId), ")");
         }
         return typeName;
     }
 
-    function _formatDeltas(StateDelta[] memory deltas) internal pure returns (string memory) {
+    function _formatDeltas(
+        StateDelta[] memory deltas
+    ) internal pure returns (string memory) {
         string memory s = "[";
         for (uint256 i = 0; i < deltas.length; i++) {
             if (i > 0) s = string.concat(s, ", ");
-            s = string.concat(s,
-                "r", vm.toString(deltas[i].rollupId), ":",
-                _shortHash(deltas[i].currentState), "->", _shortHash(deltas[i].newState)
+            s = string.concat(
+                s,
+                "r",
+                vm.toString(deltas[i].rollupId),
+                ":",
+                _shortHash(deltas[i].currentState),
+                "->",
+                _shortHash(deltas[i].newState)
             );
         }
         return string.concat(s, "]");
@@ -394,17 +483,21 @@ contract DecodeExecutions is Script {
             }
 
             // Find next action from batch
-            (bool found, ExecutionEntry memory entry) = _findBatchEntry(batchEntries, keccak256(abi.encode(consumed[c])));
+            (bool found, ExecutionEntry memory entry) =
+                _findBatchEntry(batchEntries, keccak256(abi.encode(consumed[c])));
             if (found) {
                 // If nextAction is a CALL (L1 execution) and the next consumed is its RESULT, merge on same arrow
-                if (entry.nextAction.actionType == ActionType.CALL
-                    && c + 1 < consumedCount
-                    && consumed[c + 1].actionType == ActionType.RESULT)
-                {
-                    line = string.concat(line, " -> ", _tinyAction(entry.nextAction), " - ", _tinyAction(consumed[c + 1]));
+                if (
+                    entry.nextAction.actionType == ActionType.CALL && c + 1 < consumedCount
+                        && consumed[c + 1].actionType == ActionType.RESULT
+                ) {
+                    line = string.concat(
+                        line, " -> ", _tinyAction(entry.nextAction), " - ", _tinyAction(consumed[c + 1])
+                    );
                     c++; // skip the RESULT, already shown
                     // Also show the next action after the RESULT if available
-                    (bool found2, ExecutionEntry memory entry2) = _findBatchEntry(batchEntries, keccak256(abi.encode(consumed[c])));
+                    (bool found2, ExecutionEntry memory entry2) =
+                        _findBatchEntry(batchEntries, keccak256(abi.encode(consumed[c])));
                     if (found2) {
                         line = string.concat(line, " -> ", _tinyAction(entry2.nextAction));
                     }
@@ -417,7 +510,9 @@ contract DecodeExecutions is Script {
         return line;
     }
 
-    function _tinyAction(Action memory a) internal pure returns (string memory) {
+    function _tinyAction(
+        Action memory a
+    ) internal pure returns (string memory) {
         if (a.actionType == ActionType.CALL) {
             string memory valStr = a.value > 0 ? string.concat(",val=", vm.toString(a.value)) : "";
             return string.concat("CALL(", _shortAddr(a.destination), ".", _selectorName(a.data), valStr, ")");
@@ -435,11 +530,10 @@ contract DecodeExecutions is Script {
 
     // ──────────────────── Batch lookup ────────────────────
 
-    function _findBatchEntry(ExecutionEntry[] memory entries, bytes32 actionHash)
-        internal
-        pure
-        returns (bool, ExecutionEntry memory)
-    {
+    function _findBatchEntry(
+        ExecutionEntry[] memory entries,
+        bytes32 actionHash
+    ) internal pure returns (bool, ExecutionEntry memory) {
         for (uint256 i = 0; i < entries.length; i++) {
             if (entries[i].actionHash == actionHash) return (true, entries[i]);
         }
@@ -449,36 +543,75 @@ contract DecodeExecutions is Script {
 
     // ──────────────────── Detail formatters ────────────────────
 
-    function _logBatchEntry(uint256 e, ExecutionEntry memory entry) internal pure {
+    function _logBatchEntry(
+        uint256 e,
+        ExecutionEntry memory entry
+    ) internal pure {
         bool immediate = entry.actionHash == bytes32(0);
-        console.log("    [%s] %s  actionHash: %s", e, immediate ? "IMMEDIATE" : "DEFERRED", vm.toString(entry.actionHash));
+        console.log(
+            "    [%s] %s  actionHash: %s",
+            e,
+            immediate ? "IMMEDIATE" : "DEFERRED",
+            vm.toString(entry.actionHash)
+        );
         for (uint256 d = 0; d < entry.stateDeltas.length; d++) {
             StateDelta memory delta = entry.stateDeltas[d];
-            console.log(string.concat("        stateDelta: rollup ", vm.toString(delta.rollupId),
-                "  ", _shortHash(delta.currentState), " -> ", _shortHash(delta.newState),
-                "  ether: ", vm.toString(delta.etherDelta)));
+            console.log(
+                string.concat(
+                    "        stateDelta: rollup ",
+                    vm.toString(delta.rollupId),
+                    "  ",
+                    _shortHash(delta.currentState),
+                    " -> ",
+                    _shortHash(delta.newState),
+                    "  ether: ",
+                    vm.toString(delta.etherDelta)
+                )
+            );
         }
         if (!immediate) {
             console.log("        nextAction: %s", _formatActionOneLiner(entry.nextAction));
         }
     }
 
-    function _logAction(Action memory a, string memory p) internal pure {
-        console.log(string.concat(p, _actionTypeName(a.actionType),
-            " | rollup=", vm.toString(a.rollupId),
-            " dest=", _shortAddr(a.destination),
-            " val=", vm.toString(a.value)));
+    function _logAction(
+        Action memory a,
+        string memory p
+    ) internal pure {
+        console.log(
+            string.concat(
+                p,
+                _actionTypeName(a.actionType),
+                " | rollup=",
+                vm.toString(a.rollupId),
+                " dest=",
+                _shortAddr(a.destination),
+                " val=",
+                vm.toString(a.value)
+            )
+        );
         console.log(string.concat(p, "data=", vm.toString(a.data)));
-        console.log(string.concat(p, "failed=", a.failed ? "true" : "false",
-            " src=", _shortAddr(a.sourceAddress),
-            " srcRollup=", vm.toString(a.sourceRollup),
-            " scope=", _scopeToString(a.scope)));
+        console.log(
+            string.concat(
+                p,
+                "failed=",
+                a.failed ? "true" : "false",
+                " src=",
+                _shortAddr(a.sourceAddress),
+                " srcRollup=",
+                vm.toString(a.sourceRollup),
+                " scope=",
+                _scopeToString(a.scope)
+            )
+        );
         _logSelector(a.data, p);
     }
 
     // ──────────────────── String helpers ────────────────────
 
-    function _actionTypeName(ActionType t) internal pure returns (string memory) {
+    function _actionTypeName(
+        ActionType t
+    ) internal pure returns (string memory) {
         if (t == ActionType.CALL) return "CALL";
         if (t == ActionType.RESULT) return "RESULT";
         if (t == ActionType.L2TX) return "L2TX";
@@ -487,28 +620,35 @@ contract DecodeExecutions is Script {
         return "UNKNOWN";
     }
 
-    function _shortAddr(address a) internal pure returns (string memory) {
+    function _shortAddr(
+        address a
+    ) internal pure returns (string memory) {
         if (a == address(0)) return "0x0";
         string memory full = vm.toString(a);
         // Return 0x1234...5678 (first 6 + last 4)
-        return string.concat(
-            _substring(full, 0, 6), "..", _substring(full, 38, 42)
-        );
+        return string.concat(_substring(full, 0, 6), "..", _substring(full, 38, 42));
     }
 
-    function _shortHash(bytes32 h) internal pure returns (string memory) {
+    function _shortHash(
+        bytes32 h
+    ) internal pure returns (string memory) {
         string memory full = vm.toString(h);
         return string.concat(_substring(full, 0, 6), "..", _substring(full, 62, 66));
     }
 
-    function _shortBytes(bytes memory b) internal pure returns (string memory) {
+    function _shortBytes(
+        bytes memory b
+    ) internal pure returns (string memory) {
         if (b.length == 0) return "0x";
         return vm.toString(b);
     }
 
-    function _selectorName(bytes memory data) internal pure returns (string memory) {
+    function _selectorName(
+        bytes memory data
+    ) internal pure returns (string memory) {
         if (data.length < 4) return "()";
-        bytes4 sel = bytes4(data[0]) | (bytes4(data[1]) >> 8) | (bytes4(data[2]) >> 16) | (bytes4(data[3]) >> 24);
+        bytes4 sel =
+            bytes4(data[0]) | (bytes4(data[1]) >> 8) | (bytes4(data[2]) >> 16) | (bytes4(data[3]) >> 24);
         if (sel == bytes4(keccak256("increment()"))) return "increment()";
         if (sel == bytes4(keccak256("decrement()"))) return "decrement()";
         if (sel == bytes4(keccak256("setNumber(uint256)"))) return "setNumber()";
@@ -518,15 +658,21 @@ contract DecodeExecutions is Script {
         return full;
     }
 
-    function _logSelector(bytes memory data, string memory p) internal pure {
+    function _logSelector(
+        bytes memory data,
+        string memory p
+    ) internal pure {
         if (data.length < 4) return;
         string memory name = _selectorName(data);
-        if (bytes(name).length > 10) { // Not a raw selector
+        if (bytes(name).length > 10) {
+            // Not a raw selector
             console.log(string.concat(p, "-> ", name));
         }
     }
 
-    function _scopeToString(uint256[] memory scope) internal pure returns (string memory) {
+    function _scopeToString(
+        uint256[] memory scope
+    ) internal pure returns (string memory) {
         string memory s = "[";
         for (uint256 i = 0; i < scope.length; i++) {
             if (i > 0) s = string.concat(s, ",");
@@ -535,7 +681,11 @@ contract DecodeExecutions is Script {
         return string.concat(s, "]");
     }
 
-    function _substring(string memory str, uint256 startIndex, uint256 endIndex) internal pure returns (string memory) {
+    function _substring(
+        string memory str,
+        uint256 startIndex,
+        uint256 endIndex
+    ) internal pure returns (string memory) {
         bytes memory strBytes = bytes(str);
         if (endIndex > strBytes.length) endIndex = strBytes.length;
         if (startIndex >= endIndex) return "";

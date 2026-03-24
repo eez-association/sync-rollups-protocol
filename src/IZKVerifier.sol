@@ -9,5 +9,8 @@ interface IZKVerifier {
     /// @param proof The ZK proof bytes
     /// @param publicInputsHash Hash of all public inputs for the proof
     /// @return valid True if the proof is valid, false otherwise
-    function verify(bytes calldata proof, bytes32 publicInputsHash) external view returns (bool valid);
+    function verify(
+        bytes calldata proof,
+        bytes32 publicInputsHash
+    ) external view returns (bool valid);
 }

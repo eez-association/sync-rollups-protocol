@@ -3,7 +3,16 @@ pragma solidity ^0.8.24;
 
 import {IZKVerifier} from "./IZKVerifier.sol";
 import {CrossChainProxy} from "./CrossChainProxy.sol";
-import {ICrossChainManager, ActionType, Action, StateDelta, ExecutionEntry, ProxyInfo} from "./ICrossChainManager.sol";
+import {
+    ICrossChainManager,
+    ActionType,
+    Action,
+    StateDelta,
+    ExecutionEntry,
+    StaticCall,
+    StaticSubCall,
+    ProxyInfo
+} from "./ICrossChainManager.sol";
 
 /// @notice Rollup configuration
 struct RollupConfig {
@@ -37,6 +46,12 @@ contract Rollups is ICrossChainManager {
     /// @notice Array of pre-computed executions
     ExecutionEntry[] public executions;
 
+    /// @notice Index of the next execution entry to consume
+    uint256 public executionIndex;
+
+    /// @notice Array of pre-computed static call results
+    StaticCall[] public staticCalls;
+
     /// @notice Mapping of authorized CrossChainProxy contracts to their identity
     mapping(address proxy => ProxyInfo info) public authorizedProxies;
 
@@ -50,7 +65,9 @@ contract Rollups is ICrossChainManager {
     int256 private transient _etherDelta;
 
     /// @notice Emitted when a new rollup is created
-    event RollupCreated(uint256 indexed rollupId, address indexed owner, bytes32 verificationKey, bytes32 initialState);
+    event RollupCreated(
+        uint256 indexed rollupId, address indexed owner, bytes32 verificationKey, bytes32 initialState
+    );
 
     /// @notice Emitted when a rollup state is updated
     event StateUpdated(uint256 indexed rollupId, bytes32 newStateRoot);
@@ -59,10 +76,14 @@ contract Rollups is ICrossChainManager {
     event VerificationKeyUpdated(uint256 indexed rollupId, bytes32 newVerificationKey);
 
     /// @notice Emitted when a rollup owner is transferred
-    event OwnershipTransferred(uint256 indexed rollupId, address indexed previousOwner, address indexed newOwner);
+    event OwnershipTransferred(
+        uint256 indexed rollupId, address indexed previousOwner, address indexed newOwner
+    );
 
     /// @notice Emitted when a new CrossChainProxy is created
-    event CrossChainProxyCreated(address indexed proxy, address indexed originalAddress, uint256 indexed originalRollupId);
+    event CrossChainProxyCreated(
+        address indexed proxy, address indexed originalAddress, uint256 indexed originalRollupId
+    );
 
     /// @notice Emitted when an L2 execution is performed
     event L2ExecutionPerformed(uint256 indexed rollupId, bytes32 currentState, bytes32 newState);
@@ -71,22 +92,22 @@ contract Rollups is ICrossChainManager {
     event ExecutionConsumed(bytes32 indexed actionHash, Action action);
 
     /// @notice Emitted when a cross-chain call is executed via proxy
-    event CrossChainCallExecuted(bytes32 indexed actionHash, address indexed proxy, address sourceAddress, bytes callData, uint256 value);
+    event CrossChainCallExecuted(
+        bytes32 indexed actionHash,
+        address indexed proxy,
+        address sourceAddress,
+        bytes callData,
+        uint256 value
+    );
 
     /// @notice Emitted when a precomputed L2 transaction is executed
-    event L2TXExecuted(bytes32 indexed actionHash, uint256 indexed rollupId, bytes rlpEncodedTx);
+    event L2TXExecuted();
 
     /// @notice Emitted when a batch is posted via postBatch
     event BatchPosted(ExecutionEntry[] entries, bytes32 publicInputsHash);
 
     /// @notice Error when proof verification fails
     error InvalidProof();
-
-    /// @notice Error when caller is not an authorized proxy
-    error UnauthorizedProxy();
-
-    /// @notice Error when execution is not found
-    error ExecutionNotFound();
 
     /// @notice Error when caller is not the rollup owner
     error NotRollupOwner();
@@ -97,20 +118,11 @@ contract Rollups is ICrossChainManager {
     /// @notice Error when a rollup would have negative ether balance
     error InsufficientRollupBalance();
 
-    /// @notice Error when a call execution fails
-    error CallExecutionFailed();
-
-    /// @notice Error when revert data from a child scope is too short to decode
-    error InvalidRevertData();
-
     /// @notice Error when the ether delta from state deltas doesn't match actual ETH flow
     error EtherDeltaMismatch();
 
     /// @notice Error when a state delta's currentState doesn't match the rollup's current state root
     error StateRootMismatch();
-
-    /// @notice Error when execution is attempted in a different block than the last state update
-    error ExecutionNotInCurrentBlock();
 
     /// @notice Error when a scope reverts, carrying the next action to continue with
     /// @param nextAction The ABI-encoded next action to continue with
@@ -120,7 +132,10 @@ contract Rollups is ICrossChainManager {
 
     /// @param _zkVerifier The ZK verifier contract address
     /// @param startingRollupId The starting ID for rollup numbering
-    constructor(address _zkVerifier, uint256 startingRollupId) {
+    constructor(
+        address _zkVerifier,
+        uint256 startingRollupId
+    ) {
         ZK_VERIFIER = IZKVerifier(_zkVerifier);
         rollupCounter = startingRollupId;
     }
@@ -129,7 +144,9 @@ contract Rollups is ICrossChainManager {
     //  Modifiers
     // ──────────────────────────────────────────────
 
-    modifier onlyRollupOwner(uint256 rollupId) {
+    modifier onlyRollupOwner(
+        uint256 rollupId
+    ) {
         if (rollups[rollupId].owner != msg.sender) {
             revert NotRollupOwner();
         }
@@ -152,10 +169,7 @@ contract Rollups is ICrossChainManager {
     ) external returns (uint256 rollupId) {
         rollupId = rollupCounter++;
         rollups[rollupId] = RollupConfig({
-            owner: owner,
-            verificationKey: verificationKey,
-            stateRoot: initialState,
-            etherBalance: 0
+            owner: owner, verificationKey: verificationKey, stateRoot: initialState, etherBalance: 0
         });
         emit RollupCreated(rollupId, owner, verificationKey, initialState);
     }
@@ -165,14 +179,16 @@ contract Rollups is ICrossChainManager {
     // ──────────────────────────────────────────────
 
     /// @notice Posts a batch of execution entries with a single ZK proof
-    /// @dev Entries with actionHash == bytes32(0) are applied immediately (state commitments)
-    /// @dev Entries with actionHash != bytes32(0) are stored in the execution table for later consumption
+    /// @dev Leading entries with actionHash == 0 are applied immediately (state commitments).
+    ///      Remaining entries are stored in the execution table for later consumption.
     /// @param entries The execution entries to process
+    /// @param _staticCalls Pre-computed static call results for read-only cross-chain calls
     /// @param blobCount Number of blobs containing shared data
     /// @param callData Shared data passed via calldata
     /// @param proof The ZK proof covering all entries
     function postBatch(
         ExecutionEntry[] calldata entries,
+        StaticCall[] calldata _staticCalls,
         uint256 blobCount,
         bytes calldata callData,
         bytes calldata proof
@@ -181,7 +197,40 @@ contract Rollups is ICrossChainManager {
             revert StateAlreadyUpdatedThisBlock();
         }
 
-        // --- Build public inputs ---
+        // Build public inputs in helper to avoid stack-too-deep (6 calldata params)
+        bytes32 publicInputsHash = _buildPublicInputsHash(entries, _staticCalls, blobCount, callData);
+        _verifyProof(proof, publicInputsHash);
+
+        // Delete previous tables
+        delete executions;
+        delete staticCalls;
+        executionIndex = 0;
+
+        // --- Store all entries and static calls ---
+        for (uint256 i = 0; i < entries.length; i++) {
+            executions.push(entries[i]);
+        }
+        for (uint256 i = 0; i < _staticCalls.length; i++) {
+            staticCalls.push(_staticCalls[i]);
+        }
+
+        lastStateUpdateBlock = block.number;
+
+        // --- Apply immediate entries: consume while next entry has actionHash == 0 ---
+        while (executionIndex < executions.length && executions[executionIndex].actionHash == bytes32(0)) {
+            executeL2TX();
+        }
+
+        emit BatchPosted(entries, publicInputsHash);
+    }
+
+    /// @dev Extracted to avoid stack-too-deep in postBatch.
+    function _buildPublicInputsHash(
+        ExecutionEntry[] calldata entries,
+        StaticCall[] calldata _staticCalls,
+        uint256 blobCount,
+        bytes calldata callData
+    ) internal view returns (bytes32) {
         bytes32[] memory entryHashes = new bytes32[](entries.length);
         for (uint256 i = 0; i < entries.length; i++) {
             // Gather verification keys for each delta's rollup
@@ -205,44 +254,23 @@ contract Rollups is ICrossChainManager {
             blobHashes[i] = blobhash(i);
         }
 
-        bytes32 publicInputsHash = keccak256(
+        return keccak256(
             abi.encodePacked(
                 blockhash(block.number - 1),
                 block.timestamp,
                 abi.encode(entryHashes),
                 abi.encode(blobHashes),
-                keccak256(callData)
+                keccak256(callData),
+                keccak256(abi.encode(_staticCalls))
             )
         );
-
-        _verifyProof(proof, publicInputsHash);
-
-        // Delete previous execution table
-        delete executions;
-
-        // --- Process entries ---
-        for (uint256 i = 0; i < entries.length; i++) {
-            if (entries[i].actionHash == bytes32(0)) {
-                // verify state roots match current state, then apply deltas
-                for (uint256 j = 0; j < entries[i].stateDeltas.length; j++) {
-                    StateDelta memory delta = entries[i].stateDeltas[j];
-                    if (rollups[delta.rollupId].stateRoot != delta.currentState) {
-                        revert StateRootMismatch();
-                    }
-                }
-                _applyStateDeltas(entries[i].stateDeltas);
-            } else {
-                // Deferred: store in execution table
-                executions.push(entries[i]);
-            }
-        }
-
-        emit BatchPosted(entries, publicInputsHash);
-        lastStateUpdateBlock = block.number;
     }
 
     /// @notice Verifies a ZK proof against the computed public inputs hash
-    function _verifyProof(bytes calldata proof, bytes32 publicInputsHash) internal view {
+    function _verifyProof(
+        bytes calldata proof,
+        bytes32 publicInputsHash
+    ) internal view {
         if (!ZK_VERIFIER.verify(proof, publicInputsHash)) {
             revert InvalidProof();
         }
@@ -257,7 +285,10 @@ contract Rollups is ICrossChainManager {
     /// @param sourceAddress The original caller address (msg.sender as seen by the proxy)
     /// @param callData The original calldata sent to the proxy
     /// @return result The return data from the execution
-    function executeCrossChainCall(address sourceAddress, bytes calldata callData) external payable returns (bytes memory result) {
+    function executeCrossChainCall(
+        address sourceAddress,
+        bytes calldata callData
+    ) external payable returns (bytes memory result) {
         ProxyInfo storage proxyInfo = authorizedProxies[msg.sender];
         if (proxyInfo.originalAddress == address(0)) {
             revert UnauthorizedProxy();
@@ -293,40 +324,24 @@ contract Rollups is ICrossChainManager {
         emit CrossChainCallExecuted(actionHash, msg.sender, sourceAddress, callData, msg.value);
         Action memory nextAction = _findAndApplyExecution(actionHash, action);
 
-       return _resolveScopes(nextAction);
+        return _resolveScopes(nextAction);
     }
 
     // ──────────────────────────────────────────────
     //  Execute precomputed L2 transaction
     // ──────────────────────────────────────────────
 
-    /// @notice Executes a precomputed L2 transaction
-    /// @param rollupId The rollup ID for the transaction
-    /// @param rlpEncodedTx The RLP-encoded transaction data
+    /// @notice Executes the next precomputed L2 transaction from the execution table
+    /// @dev Parameterless — consumes the next entry with actionHash == 0.
     /// @return result The result data from the execution
-    function executeL2TX(uint256 rollupId, bytes calldata rlpEncodedTx) external returns (bytes memory result) {
-        // Executions can only be consumed in the same block they were posted
+    function executeL2TX() public returns (bytes memory result) {
         if (lastStateUpdateBlock != block.number) {
             revert ExecutionNotInCurrentBlock();
         }
 
-        // Build the L2TX action
-        Action memory action = Action({
-            actionType: ActionType.L2TX,
-            rollupId: rollupId,
-            destination: address(0),
-            value: 0,
-            data: rlpEncodedTx,
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: MAINNET_ROLLUP_ID,
-            scope: new uint256[](0)
-        });
+        Action memory nextAction = _findAndApplyExecution(bytes32(0), _l2TxAction());
 
-        bytes32 currentActionHash = keccak256(abi.encode(action));
-        emit L2TXExecuted(currentActionHash, rollupId, rlpEncodedTx);
-        Action memory nextAction = _findAndApplyExecution(currentActionHash, action);
-
+        emit L2TXExecuted();
         return _resolveScopes(nextAction);
     }
 
@@ -342,9 +357,9 @@ contract Rollups is ICrossChainManager {
         uint256[] memory scope,
         Action memory action
     ) external returns (Action memory nextAction) {
-        // Only Rollups contract (self) or authorized proxies can call
+        // Only self-calls allowed (recursive scope navigation)
         if (msg.sender != address(this)) {
-            revert UnauthorizedProxy();
+            revert OnlySelf();
         }
 
         nextAction = action;
@@ -404,19 +419,16 @@ contract Rollups is ICrossChainManager {
         Action memory action
     ) internal returns (uint256[] memory scope, Action memory nextAction) {
         // Execute the CALL through source proxy
-        address sourceProxy = computeCrossChainProxyAddress(
-            action.sourceAddress,
-            action.sourceRollup
-        );
+        address sourceProxy = computeCrossChainProxyAddress(action.sourceAddress, action.sourceRollup);
 
         if (authorizedProxies[sourceProxy].originalAddress == address(0)) {
             _createCrossChainProxyInternal(action.sourceAddress, action.sourceRollup);
         }
 
-
-        (bool success, bytes memory returnData) = address(sourceProxy).call{value: action.value}(
-            abi.encodeCall(CrossChainProxy.executeOnBehalf, (action.destination, action.data))
-        );
+        (bool success, bytes memory returnData) = address(sourceProxy)
+        .call{
+            value: action.value
+        }(abi.encodeCall(CrossChainProxy.executeOnBehalf, (action.destination, action.data)));
 
         // Track ETH sent out from this contract (state deltas handle rollup balance changes)
         if (action.value > 0 && success) {
@@ -444,49 +456,49 @@ contract Rollups is ICrossChainManager {
     }
 
     /// @notice Finds a matching execution for the given action hash, applies state deltas, and returns the next action
-    /// @dev Matches by checking that all deltas' currentState match their rollup's on-chain stateRoot
+    /// @dev Scans forward from executionIndex. Failed entries with non-matching hashes are skipped (skip-scan).
+    ///      When a matching actionHash is found, state roots are verified (hard revert on mismatch).
     /// @param actionHash The action hash to look up
     /// @return nextAction The next action to perform
-    function _findAndApplyExecution(bytes32 actionHash, Action memory action) internal returns (Action memory nextAction) {
-        // Search the flat executions array for a matching entry
-        for (uint256 i = 0; i < executions.length; i++) {
+    function _findAndApplyExecution(
+        bytes32 actionHash,
+        Action memory action
+    ) internal returns (Action memory nextAction) {
+        for (uint256 i = executionIndex; i < executions.length; i++) {
             ExecutionEntry storage execution = executions[i];
 
-            if (execution.actionHash != actionHash) continue;
+            if (execution.actionHash != actionHash) {
+                // failed/reverted entries can be skipped
+                if (execution.nextAction.failed) {
+                    continue;
+                } else {
+                    revert ExecutionNotFound();
+                }
+            }
 
-            // Check if all state deltas match current rollup states
-            bool allMatch = true;
+            // Matching hash found — state roots must match (hard revert if not)
             for (uint256 j = 0; j < execution.stateDeltas.length; j++) {
                 StateDelta storage delta = execution.stateDeltas[j];
                 if (rollups[delta.rollupId].stateRoot != delta.currentState) {
-                    allMatch = false;
-                    break;
+                    revert StateRootMismatch();
                 }
             }
 
-            if (allMatch) {
-                // Found matching execution - apply all state deltas and ether deltas
-                _applyStateDeltas(execution.stateDeltas);
-                // Copy nextAction to memory before removing from storage
-                nextAction = execution.nextAction;
+            _applyStateDeltas(execution.stateDeltas);
+            nextAction = execution.nextAction;
+            executionIndex = i + 1;
 
-                // Remove the execution from storage (swap-and-pop)
-                uint256 lastIndex = executions.length - 1;
-                if (i != lastIndex) {
-                    executions[i] = executions[lastIndex];
-                }
-                executions.pop();
-
-                emit ExecutionConsumed(actionHash, action);
-                return nextAction;
-            }
+            emit ExecutionConsumed(actionHash, action);
+            return nextAction;
         }
 
         revert ExecutionNotFound();
     }
 
     /// @notice Applies state deltas, ether balance changes, and verifies ether accounting against _etherDelta
-    function _applyStateDeltas(StateDelta[] memory deltas) internal {
+    function _applyStateDeltas(
+        StateDelta[] memory deltas
+    ) internal {
         int256 totalEtherDelta;
 
         for (uint256 i = 0; i < deltas.length; i++) {
@@ -515,13 +527,14 @@ contract Rollups is ICrossChainManager {
 
         // reset _etherDelta
         _etherDelta = 0;
-
     }
 
     /// @notice Handles scope navigation and returns the final RESULT, reverting if execution fails
     /// @param nextAction The action to resolve (CALL triggers scope navigation, RESULT returns directly)
     /// @return result The return data from the resolved execution
-    function _resolveScopes(Action memory nextAction) internal returns (bytes memory result) {
+    function _resolveScopes(
+        Action memory nextAction
+    ) internal returns (bytes memory result) {
         if (nextAction.actionType == ActionType.CALL) {
             // Start with empty scope, action.scope contains target
             uint256[] memory emptyScope = new uint256[](0);
@@ -533,9 +546,15 @@ contract Rollups is ICrossChainManager {
             }
         }
 
-        // At this point nextAction should be a successful RESULT
-        if (nextAction.actionType != ActionType.RESULT || nextAction.failed) {
+        // At this point nextAction should be a RESULT
+        if (nextAction.actionType != ActionType.RESULT) {
             revert CallExecutionFailed();
+        }
+        if (nextAction.failed) {
+            bytes memory returnData = nextAction.data;
+            assembly {
+                revert(add(returnData, 0x20), mload(returnData))
+            }
         }
         return nextAction.data;
     }
@@ -543,7 +562,9 @@ contract Rollups is ICrossChainManager {
     /// @notice Handles a ScopeReverted exception by decoding the action and restoring rollup state
     /// @param revertData The raw revert data (includes 4-byte selector)
     /// @return nextAction The decoded continuation action
-    function _handleScopeRevert(bytes memory revertData) internal returns (Action memory nextAction) {
+    function _handleScopeRevert(
+        bytes memory revertData
+    ) internal returns (Action memory nextAction) {
         if (revertData.length <= 4) revert InvalidRevertData();
 
         // Strip 4-byte selector by advancing the memory pointer
@@ -553,7 +574,8 @@ contract Rollups is ICrossChainManager {
             mstore(revertData, sub(len, 4))
         }
 
-        (bytes memory actionBytes, bytes32 stateRoot, uint256 rollupId) = abi.decode(revertData, (bytes, bytes32, uint256));
+        (bytes memory actionBytes, bytes32 stateRoot, uint256 rollupId) =
+            abi.decode(revertData, (bytes, bytes32, uint256));
         rollups[rollupId].stateRoot = stateRoot;
         return abi.decode(actionBytes, (Action));
     }
@@ -561,7 +583,9 @@ contract Rollups is ICrossChainManager {
     /// @notice Gets the continuation action after a revert at the current scope
     /// @param rollupId The rollup ID for the REVERT_CONTINUE action
     /// @return nextAction The next action from REVERT_CONTINUE lookup
-    function _getRevertContinuation(uint256 rollupId) internal returns (Action memory nextAction) {
+    function _getRevertContinuation(
+        uint256 rollupId
+    ) internal returns (Action memory nextAction) {
         // Build REVERT_CONTINUE action (empty data)
         Action memory revertContinueAction = Action({
             actionType: ActionType.REVERT_CONTINUE,
@@ -580,11 +604,29 @@ contract Rollups is ICrossChainManager {
         return _findAndApplyExecution(revertHash, revertContinueAction);
     }
 
+    /// @notice Returns an L2TX action with all fields zeroed except actionType
+    function _l2TxAction() internal pure returns (Action memory) {
+        return Action({
+            actionType: ActionType.L2TX,
+            rollupId: 0,
+            destination: address(0),
+            value: 0,
+            data: "",
+            failed: false,
+            sourceAddress: address(0),
+            sourceRollup: 0,
+            scope: new uint256[](0)
+        });
+    }
+
     /// @notice Appends an element to a scope array
     /// @param scope The original scope array
     /// @param element The element to append
     /// @return The new scope array with the element appended
-    function _appendToScope(uint256[] memory scope, uint256 element) internal pure returns (uint256[] memory) {
+    function _appendToScope(
+        uint256[] memory scope,
+        uint256 element
+    ) internal pure returns (uint256[] memory) {
         uint256[] memory result = new uint256[](scope.length + 1);
         for (uint256 i = 0; i < scope.length; i++) {
             result[i] = scope[i];
@@ -597,7 +639,10 @@ contract Rollups is ICrossChainManager {
     /// @param a First scope array
     /// @param b Second scope array
     /// @return True if scopes match exactly
-    function _scopesMatch(uint256[] memory a, uint256[] memory b) internal pure returns (bool) {
+    function _scopesMatch(
+        uint256[] memory a,
+        uint256[] memory b
+    ) internal pure returns (bool) {
         if (a.length != b.length) return false;
         for (uint256 i = 0; i < a.length; i++) {
             if (a[i] != b[i]) return false;
@@ -609,7 +654,10 @@ contract Rollups is ICrossChainManager {
     /// @param currentScope The current scope to check against
     /// @param targetScope The target scope to check
     /// @return True if targetScope is a child of currentScope
-    function _isChildScope(uint256[] memory currentScope, uint256[] memory targetScope) internal pure returns (bool) {
+    function _isChildScope(
+        uint256[] memory currentScope,
+        uint256[] memory targetScope
+    ) internal pure returns (bool) {
         if (targetScope.length <= currentScope.length) return false;
         for (uint256 i = 0; i < currentScope.length; i++) {
             if (currentScope[i] != targetScope[i]) return false;
@@ -625,12 +673,18 @@ contract Rollups is ICrossChainManager {
     /// @param originalAddress The original address this proxy represents
     /// @param originalRollupId The original rollup ID
     /// @return proxy The address of the deployed CrossChainProxy
-    function createCrossChainProxy(address originalAddress, uint256 originalRollupId) external returns (address proxy) {
+    function createCrossChainProxy(
+        address originalAddress,
+        uint256 originalRollupId
+    ) external returns (address proxy) {
         return _createCrossChainProxyInternal(originalAddress, originalRollupId);
     }
 
     /// @notice Deploys a CrossChainProxy via CREATE2 and registers it as authorized
-    function _createCrossChainProxyInternal(address originalAddress, uint256 originalRollupId) internal returns (address proxy) {
+    function _createCrossChainProxyInternal(
+        address originalAddress,
+        uint256 originalRollupId
+    ) internal returns (address proxy) {
         bytes32 salt = keccak256(abi.encodePacked(originalRollupId, originalAddress));
 
         proxy = address(new CrossChainProxy{salt: salt}(address(this), originalAddress, originalRollupId));
@@ -645,19 +699,28 @@ contract Rollups is ICrossChainManager {
     // ──────────────────────────────────────────────
 
     /// @notice Updates the state root for a rollup (owner only, no proof required)
-    function setStateByOwner(uint256 rollupId, bytes32 newStateRoot) external onlyRollupOwner(rollupId) {
+    function setStateByOwner(
+        uint256 rollupId,
+        bytes32 newStateRoot
+    ) external onlyRollupOwner(rollupId) {
         rollups[rollupId].stateRoot = newStateRoot;
         emit StateUpdated(rollupId, newStateRoot);
     }
 
     /// @notice Updates the verification key for a rollup (owner only)
-    function setVerificationKey(uint256 rollupId, bytes32 newVerificationKey) external onlyRollupOwner(rollupId) {
+    function setVerificationKey(
+        uint256 rollupId,
+        bytes32 newVerificationKey
+    ) external onlyRollupOwner(rollupId) {
         rollups[rollupId].verificationKey = newVerificationKey;
         emit VerificationKeyUpdated(rollupId, newVerificationKey);
     }
 
     /// @notice Transfers ownership of a rollup to a new owner
-    function transferRollupOwnership(uint256 rollupId, address newOwner) external onlyRollupOwner(rollupId) {
+    function transferRollupOwnership(
+        uint256 rollupId,
+        address newOwner
+    ) external onlyRollupOwner(rollupId) {
         address previousOwner = rollups[rollupId].owner;
         rollups[rollupId].owner = newOwner;
         emit OwnershipTransferred(rollupId, previousOwner, newOwner);
@@ -667,11 +730,101 @@ contract Rollups is ICrossChainManager {
     //  Views
     // ──────────────────────────────────────────────
 
+    /// @notice Looks up a pre-computed result for a static (read-only) cross-chain call
+    /// @dev Called by CrossChainProxy when it detects a STATICCALL context.
+    ///      msg.sender must be an authorized proxy. Matches by actionHash + executionIndex.
+    ///      If the entry has sub-calls, executes them in static context and verifies the rolling hash.
+    ///      If the entry is marked as failed, reverts with the pre-computed returnData.
+    /// @param sourceAddress The original caller address (msg.sender as seen by the proxy)
+    /// @param callData The original calldata sent to the proxy
+    /// @return result The pre-computed return data
+    function staticCallLookup(
+        address sourceAddress,
+        bytes calldata callData
+    ) external view returns (bytes memory result) {
+        if (lastStateUpdateBlock != block.number) {
+            revert ExecutionNotInCurrentBlock();
+        }
+
+        ProxyInfo storage proxyInfo = authorizedProxies[msg.sender];
+        if (proxyInfo.originalAddress == address(0)) {
+            revert UnauthorizedProxy();
+        }
+
+        Action memory action = Action({
+            actionType: ActionType.CALL,
+            rollupId: proxyInfo.originalRollupId,
+            destination: proxyInfo.originalAddress,
+            value: 0,
+            data: callData,
+            failed: false,
+            sourceAddress: sourceAddress,
+            sourceRollup: MAINNET_ROLLUP_ID,
+            scope: new uint256[](0)
+        });
+
+        bytes32 actionHash = keccak256(abi.encode(action));
+        uint256 currentExecIdx = executionIndex;
+
+        for (uint256 i = 0; i < staticCalls.length; i++) {
+            StaticCall storage sc = staticCalls[i];
+            if (sc.actionHash == actionHash && sc.executionIndex == currentExecIdx) {
+                // Verify sub-call rolling hash if calls are present
+                if (sc.calls.length > 0) {
+                    bytes32 computedHash = _processNStaticCalls(sc.calls);
+                    if (computedHash != sc.rollingHash) revert RollingHashMismatch();
+                }
+                // Failed static calls replay the revert
+                if (sc.failed) {
+                    bytes memory returnData = sc.returnData;
+                    assembly {
+                        revert(add(returnData, 0x20), mload(returnData))
+                    }
+                }
+                return sc.returnData;
+            }
+        }
+
+        revert StaticCallNotFound();
+    }
+
+    /// @notice Executes sub-calls in static context and computes a rolling hash of results
+    /// @dev Replays each sub-call through its source proxy's `executeOnBehalf` in static context.
+    ///      The rolling hash chains `keccak256(prevHash ++ success ++ returnData)` over all calls,
+    ///      starting from `bytes32(0)`. The caller compares the final hash against the stored
+    ///      `rollingHash` to verify that on-chain sub-call results match the off-chain proof.
+    ///      Reverts with `ProxyNotDeployed` if any referenced proxy has no code (cannot CREATE2
+    ///      in static context, so all proxies must be deployed before this is called).
+    function _processNStaticCalls(
+        StaticSubCall[] storage calls
+    ) internal view returns (bytes32 computedHash) {
+        for (uint256 i = 0; i < calls.length; i++) {
+            StaticSubCall storage cc = calls[i];
+
+            // Compute the CREATE2 address for the source proxy and verify it's deployed
+            address sourceProxy = computeCrossChainProxyAddress(cc.sourceAddress, cc.sourceRollup);
+            if (sourceProxy.code.length == 0) revert ProxyNotDeployed();
+
+            // Execute the sub-call in static context through the proxy.
+            // executeOnBehalf (called by manager) forwards to destination.call{value:0}(data),
+            // which is allowed in STATICCALL context and propagates the static flag.
+            (bool success, bytes memory retData) = sourceProxy.staticcall(
+                abi.encodeCall(CrossChainProxy.executeOnBehalf, (cc.destination, cc.data))
+            );
+
+            // Chain into rolling hash: H_i = keccak256(H_{i-1} ++ success ++ retData)
+            computedHash = keccak256(abi.encodePacked(computedHash, success, retData));
+        }
+    }
+
     /// @notice Computes the deterministic CREATE2 address for a CrossChainProxy
     /// @param originalAddress The original address this proxy represents
     /// @param originalRollupId The original rollup ID
     /// @return The computed proxy address
-    function computeCrossChainProxyAddress(address originalAddress, uint256 originalRollupId) public view returns (address) {
+    function computeCrossChainProxyAddress(
+        address originalAddress,
+        uint256 originalRollupId
+    ) public view returns (address) {
         bytes32 salt = keccak256(abi.encodePacked(originalRollupId, originalAddress));
         bytes32 bytecodeHash = keccak256(
             abi.encodePacked(
@@ -679,6 +832,8 @@ contract Rollups is ICrossChainManager {
                 abi.encode(address(this), originalAddress, originalRollupId)
             )
         );
-        return address(uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), address(this), salt, bytecodeHash)))));
+        return address(
+            uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), address(this), salt, bytecodeHash))))
+        );
     }
 }

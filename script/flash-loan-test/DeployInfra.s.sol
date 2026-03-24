@@ -7,7 +7,10 @@ import {CrossChainManagerL2} from "../../src/CrossChainManagerL2.sol";
 import {IZKVerifier} from "../../src/IZKVerifier.sol";
 
 contract MockZKVerifier is IZKVerifier {
-    function verify(bytes calldata, bytes32) external pure override returns (bool) {
+    function verify(
+        bytes calldata,
+        bytes32
+    ) external pure override returns (bool) {
         return true;
     }
 }
@@ -37,7 +40,10 @@ contract DeployRollupsL1 is Script {
 ///     --rpc-url $L2_RPC --broadcast --private-key $PK \
 ///     --sig "run(uint256,address)" $L2_ROLLUP_ID $SYSTEM_ADDRESS
 contract DeployManagerL2 is Script {
-    function run(uint256 rollupId, address systemAddress) external {
+    function run(
+        uint256 rollupId,
+        address systemAddress
+    ) external {
         vm.startBroadcast();
 
         CrossChainManagerL2 manager = new CrossChainManagerL2(rollupId, systemAddress);

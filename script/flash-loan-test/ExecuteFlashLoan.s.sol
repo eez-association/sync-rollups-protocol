@@ -7,7 +7,7 @@ import {CrossChainManagerL2} from "../../src/CrossChainManagerL2.sol";
 import {Bridge} from "../../src/periphery/Bridge.sol";
 import {FlashLoan} from "../../src/periphery/defiMock/FlashLoan.sol";
 import {FlashLoanBridgeExecutor} from "../../src/periphery/defiMock/FlashLoanBridgeExecutor.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta} from "../../src/ICrossChainManager.sol";
+import {Action, ActionType, ExecutionEntry, StaticCall, StateDelta} from "../../src/ICrossChainManager.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
@@ -121,17 +121,12 @@ contract ExecuteFlashLoanL2 is Script {
         l2Entries[2].actionHash = keccak256(abi.encode(result_L2_void));
         l2Entries[2].nextAction = result_L2_void;
 
-        manager.loadExecutionTable(l2Entries);
+        manager.loadExecutionTable(l2Entries, new StaticCall[](0));
         console.log("L2 execution table loaded (3 entries)");
 
         // Single system call: receiveTokens + claimAndBridgeBack (chained)
         manager.executeIncomingCrossChainCall(
-            bridgeL2,
-            0,
-            fwdReceiveTokensCalldata,
-            bridgeL1,
-            MAINNET_ROLLUP_ID,
-            new uint256[](0)
+            bridgeL2, 0, fwdReceiveTokensCalldata, bridgeL1, MAINNET_ROLLUP_ID, new uint256[](0)
         );
         console.log("L2 execution complete");
 
@@ -146,7 +141,7 @@ contract FlashLoanBatcher {
         ExecutionEntry[] calldata entries,
         FlashLoanBridgeExecutor executor
     ) external {
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
         executor.execute();
     }
 }
