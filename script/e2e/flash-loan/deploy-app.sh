@@ -6,7 +6,7 @@
 #   - Private key with ETH on both chains
 #
 # Usage:
-#   bash script/flash-loan-test/deploy.sh \
+#   bash script/e2e/flash-loan/deploy-app.sh \
 #     --l1-rpc <L1_RPC> \
 #     --l2-rpc <L2_RPC> \
 #     --pk <PRIVATE_KEY> \
@@ -17,7 +17,8 @@
 set -euo pipefail
 export FOUNDRY_DISABLE_NIGHTLY_WARNING=1
 
-SCRIPT_DIR="script/flash-loan-test"
+SCRIPT_DIR="script/e2e/flash-loan"
+SHARED_DIR="script/e2e/shared"
 
 # ── Parse args ──
 SALT="0x$(printf '%-64s' "$(echo -n 'sync-rollups-bridge-v1' | xxd -p)" | tr ' ' '0')"

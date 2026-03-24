@@ -2,70 +2,35 @@
 # End-to-end: start 2 anvils, deploy everything, execute flash loan, decode events.
 #
 # Run from project root:
-#   bash script/flash-loan-test/e2e.sh
-set -euo pipefail
-export FOUNDRY_DISABLE_NIGHTLY_WARNING=1
+#   bash script/e2e/flash-loan/run-local.sh
+source "$(dirname "$0")/../shared/E2EBase.sh"
 
-SCRIPT_DIR="script/flash-loan-test"
+SCRIPT_DIR="script/e2e/flash-loan"
 L1_PORT=8545
 L2_PORT=8546
 L1_RPC="http://localhost:$L1_PORT"
 L2_RPC="http://localhost:$L2_PORT"
-PK="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 L2_ROLLUP_ID=1
 # On anvil the deployer is also the system address
 SYSTEM_ADDRESS="0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 
-cleanup() {
-    [[ -n "${L1_PID:-}" ]] && kill "$L1_PID" 2>/dev/null || true
-    [[ -n "${L2_PID:-}" ]] && kill "$L2_PID" 2>/dev/null || true
-}
-trap cleanup EXIT
-
-extract() { echo "$1" | grep "$2=" | sed "s/.*$2=//" | awk '{print $1}'; }
-
 # ══════════════════════════════════════════════
 #  Start 2 anvils
 # ══════════════════════════════════════════════
-echo "Starting anvil L1 (port $L1_PORT)..."
-anvil --port "$L1_PORT" --silent &
-L1_PID=$!
-
-echo "Starting anvil L2 (port $L2_PORT)..."
-anvil --port "$L2_PORT" --silent &
-L2_PID=$!
-
-sleep 1
-echo "Anvil L1 running (PID $L1_PID)"
-echo "Anvil L2 running (PID $L2_PID)"
+start_anvil "$L1_PORT" L1_PID
+start_anvil "$L2_PORT" L2_PID
 
 # ══════════════════════════════════════════════
-#  Deploy Rollups on L1
+#  Deploy infrastructure
 # ══════════════════════════════════════════════
-echo ""
-echo "====== Deploy Rollups (L1) ======"
-ROLLUPS_OUTPUT=$(forge script "$SCRIPT_DIR/DeployInfra.s.sol:DeployRollupsL1" \
-    --rpc-url "$L1_RPC" --broadcast --private-key "$PK" 2>&1)
-ROLLUPS=$(extract "$ROLLUPS_OUTPUT" "ROLLUPS")
-echo "ROLLUPS=$ROLLUPS"
+deploy_infra "$L1_RPC" "$PK" "$L2_RPC" "$L2_ROLLUP_ID" "$SYSTEM_ADDRESS"
 
 # ══════════════════════════════════════════════
-#  Deploy CrossChainManagerL2 on L2
-# ══════════════════════════════════════════════
-echo ""
-echo "====== Deploy CrossChainManagerL2 (L2) ======"
-MANAGER_OUTPUT=$(forge script "$SCRIPT_DIR/DeployInfra.s.sol:DeployManagerL2" \
-    --rpc-url "$L2_RPC" --broadcast --private-key "$PK" \
-    --sig "run(uint256,address)" "$L2_ROLLUP_ID" "$SYSTEM_ADDRESS" 2>&1)
-MANAGER_L2=$(extract "$MANAGER_OUTPUT" "MANAGER_L2")
-echo "MANAGER_L2=$MANAGER_L2"
-
-# ══════════════════════════════════════════════
-#  Run deploy.sh (Bridge + FlashLoan contracts)
+#  Run deploy-app.sh (Bridge + FlashLoan contracts)
 # ══════════════════════════════════════════════
 echo ""
 echo "====== Deploy Bridge + FlashLoan ======"
-DEPLOY_OUTPUT=$(bash "$SCRIPT_DIR/deploy.sh" \
+DEPLOY_OUTPUT=$(bash "$SCRIPT_DIR/deploy-app.sh" \
     --l1-rpc "$L1_RPC" \
     --l2-rpc "$L2_RPC" \
     --pk "$PK" \
@@ -123,26 +88,10 @@ L1_BLOCK=$(cast block-number --rpc-url "$L1_RPC")
 echo "L1 execution at block $L1_BLOCK"
 
 # ══════════════════════════════════════════════
-#  Decode L2 executions
+#  Decode executions
 # ══════════════════════════════════════════════
-echo ""
-echo "====== DecodeExecutions L2 (block $L2_BLOCK, manager $MANAGER_L2) ======"
-echo ""
-forge script script/DecodeExecutions.s.sol:DecodeExecutions \
-    --rpc-url "$L2_RPC" \
-    --sig "runBlock(uint256,address)" "$L2_BLOCK" "$MANAGER_L2" 2>&1 \
-    | sed -n '/^  /p'
-
-# ══════════════════════════════════════════════
-#  Decode L1 executions
-# ══════════════════════════════════════════════
-echo ""
-echo "====== DecodeExecutions L1 (block $L1_BLOCK, rollups $ROLLUPS) ======"
-echo ""
-forge script script/DecodeExecutions.s.sol:DecodeExecutions \
-    --rpc-url "$L1_RPC" \
-    --sig "runBlock(uint256,address)" "$L1_BLOCK" "$ROLLUPS" 2>&1 \
-    | sed -n '/^  /p'
+decode_block "$L2_RPC" "$L2_BLOCK" "$MANAGER_L2" "L2 "
+decode_block "$L1_RPC" "$L1_BLOCK" "$ROLLUPS" "L1 "
 
 echo ""
 echo "====== Done ======"

@@ -2,15 +2,15 @@
 pragma solidity ^0.8.24;
 
 import {Script, console} from "forge-std/Script.sol";
-import {Bridge} from "../../src/periphery/Bridge.sol";
-import {WrappedToken} from "../../src/periphery/WrappedToken.sol";
-import {FlashLoan} from "../../src/periphery/defiMock/FlashLoan.sol";
-import {FlashLoanBridgeExecutor} from "../../src/periphery/defiMock/FlashLoanBridgeExecutor.sol";
-import {FlashLoanersNFT} from "../../src/periphery/defiMock/FlashLoanersNFT.sol";
-import {Rollups} from "../../src/Rollups.sol";
+import {Bridge} from "../../../src/periphery/Bridge.sol";
+import {WrappedToken} from "../../../src/periphery/WrappedToken.sol";
+import {FlashLoan} from "../../../src/periphery/defiMock/FlashLoan.sol";
+import {FlashLoanBridgeExecutor} from "../../../src/periphery/defiMock/FlashLoanBridgeExecutor.sol";
+import {FlashLoanersNFT} from "../../../src/periphery/defiMock/FlashLoanersNFT.sol";
+import {Rollups} from "../../../src/Rollups.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import {_deployBridge, _computeBridgeAddress} from "../DeployBridge.s.sol";
+import {_deployBridge, _computeBridgeAddress} from "../../DeployBridge.s.sol";
 
 /// @dev Simple test token deployed on L1
 contract TestToken is ERC20 {
@@ -21,7 +21,7 @@ contract TestToken is ERC20 {
 
 /// @title DeployTokenAndBridgeL1 — Deploy ERC20 token + Bridge on L1
 /// @dev Usage:
-///   forge script script/flash-loan-test/DeployFlashLoan.s.sol:DeployTokenAndBridgeL1 \
+///   forge script script/e2e/flash-loan/DeployFlashLoan.s.sol:DeployTokenAndBridgeL1 \
 ///     --rpc-url $L1_RPC --broadcast --private-key $PK \
 ///     --sig "run(address,bytes32)" $ROLLUPS $SALT
 contract DeployTokenAndBridgeL1 is Script {
@@ -43,7 +43,7 @@ contract DeployTokenAndBridgeL1 is Script {
 
 /// @title DeployBridgeL2 — Deploy Bridge on L2
 /// @dev Usage:
-///   forge script script/flash-loan-test/DeployFlashLoan.s.sol:DeployBridgeL2 \
+///   forge script script/e2e/flash-loan/DeployFlashLoan.s.sol:DeployBridgeL2 \
 ///     --rpc-url $L2_RPC --broadcast --private-key $PK \
 ///     --sig "run(address,uint256,bytes32)" $MANAGER_L2 $L2_ROLLUP_ID $SALT
 contract DeployBridgeL2 is Script {
@@ -60,7 +60,7 @@ contract DeployBridgeL2 is Script {
 
 /// @title ComputeWrappedTokenAddress — Pre-compute WrappedToken CREATE2 address
 /// @dev Run against L1 RPC (where the token lives) to read name/symbol/decimals.
-///   forge script script/flash-loan-test/DeployFlashLoan.s.sol:ComputeWrappedTokenAddress \
+///   forge script script/e2e/flash-loan/DeployFlashLoan.s.sol:ComputeWrappedTokenAddress \
 ///     --rpc-url $L1_RPC \
 ///     --sig "run(address,address,uint256)" $BRIDGE_L2 $TOKEN $TOKEN_ORIGIN_ROLLUP_ID
 contract ComputeWrappedTokenAddress is Script {
@@ -87,7 +87,7 @@ contract ComputeWrappedTokenAddress is Script {
 
 /// @title DeployFlashLoanL2 — Deploy L2-side contracts (executorL2, FlashLoanersNFT)
 /// @dev Usage:
-///   forge script script/flash-loan-test/DeployFlashLoan.s.sol:DeployFlashLoanL2 \
+///   forge script script/e2e/flash-loan/DeployFlashLoan.s.sol:DeployFlashLoanL2 \
 ///     --rpc-url $L2_RPC --broadcast --private-key $PK \
 ///     --sig "run(address)" $WRAPPED_TOKEN_L2
 contract DeployFlashLoanL2 is Script {
@@ -111,7 +111,7 @@ contract DeployFlashLoanL2 is Script {
 
 /// @title DeployFlashLoanL1 — Deploy L1-side contracts (FlashLoan pool, executor, fund pool)
 /// @dev Usage:
-///   forge script script/flash-loan-test/DeployFlashLoan.s.sol:DeployFlashLoanL1 \
+///   forge script script/e2e/flash-loan/DeployFlashLoan.s.sol:DeployFlashLoanL1 \
 ///     --rpc-url $L1_RPC --broadcast --private-key $PK \
 ///     --sig "run(address,address,address,address,address,address,uint256,address)" \
 ///     $ROLLUPS $BRIDGE_L1 $EXECUTOR_L2 $WRAPPED_TOKEN_L2 $FLASH_LOANERS_NFT $BRIDGE_L2 $L2_ROLLUP_ID $TOKEN
