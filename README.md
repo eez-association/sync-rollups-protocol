@@ -14,7 +14,8 @@ This restores the synchronous execution semantics that DeFi protocols depend on�
 - **Cross-Rollup Flash Loans**: Borrow on Rollup A, use on Rollup B, repay on A—all atomic
 - **Unified Liquidity**: AMMs can source liquidity from multiple rollups
 - **ZK-Verified State Transitions**: All executions are verified with ZK proofs
-- **Gas-Efficient Proxies**: Shared implementation pattern reduces proxy deployment cost by ~50%
+- **Scope-Based Nested Calls**: Hierarchical scope mechanism for nested cross-chain calls with revert handling
+- **L1 + L2 Contracts**: L1 `Rollups` contract manages state and proofs; L2 `CrossChainManagerL2` handles execution without ZK overhead
 - **ETH Balance Tracking**: Per-rollup ETH accounting with conservation guarantees
 
 ## Architecture
@@ -23,18 +24,26 @@ This restores the synchronous execution semantics that DeFi protocols depend on�
 
 | Contract | Description |
 |----------|-------------|
-| `Rollups.sol` | Main contract managing rollup state roots and L2 execution transitions |
-| `L2Proxy.sol` | Implementation contract for L2 proxy functionality |
-| `Proxy.sol` | Minimal proxy contract that delegates to L2Proxy implementation |
+| `Rollups.sol` | L1 contract managing rollup state roots, ZK-proven execution tables, and cross-chain call execution |
+| `CrossChainProxy.sol` | Proxy contract deployed via CREATE2 for each (address, rollupId) pair. Forwards calls to the manager and executes on behalf of cross-chain callers |
+| `CrossChainManagerL2.sol` | L2-side contract for cross-chain execution via pre-computed execution tables loaded by a system address (no ZK proofs on L2) |
 | `IZKVerifier.sol` | Interface for ZK proof verification |
 
 ### Data Types
 
 ```solidity
-struct Execution {
-    StateDelta[] stateDeltas;  // Can affect multiple rollups atomically
-    bytes32 actionHash;         // Hash of the triggering action
-    Action nextAction;          // What happens next (call or result)
+enum ActionType { CALL, RESULT, L2TX, REVERT, REVERT_CONTINUE }
+
+struct Action {
+    ActionType actionType;
+    uint256 rollupId;
+    address destination;    // for CALL
+    uint256 value;          // for CALL
+    bytes data;             // callData/returnData/rlpEncodedTx
+    bool failed;            // for RESULT
+    address sourceAddress;  // for CALL - immediate caller address
+    uint256 sourceRollup;   // for CALL - immediate caller's rollup ID
+    uint256[] scope;        // hierarchical scope for nested call navigation
 }
 
 struct StateDelta {
@@ -44,58 +53,65 @@ struct StateDelta {
     int256 etherDelta;      // Change in ETH balance for this rollup
 }
 
-struct Action {
-    ActionType actionType;  // CALL, RESULT, or L2TX
-    uint256 rollupId;
-    address destination;    // for CALL
-    uint256 value;          // for CALL
-    bytes data;             // callData/returnData/rlpEncodedTx
-    bool failed;            // for RESULT
-    address sourceAddress;  // for CALL - immediate caller address
-    uint256 sourceRollup;   // for CALL - immediate caller's rollup ID
+struct ExecutionEntry {
+    StateDelta[] stateDeltas;
+    bytes32 actionHash;     // bytes32(0) = immediate state commitment, otherwise deferred
+    Action nextAction;
 }
 
-struct StateCommitment {
-    uint256 rollupId;
-    bytes32 newState;
-    int256 etherIncrement;  // ETH change (can be negative, sum must be zero)
+struct ProxyInfo {
+    address originalAddress;
+    uint64 originalRollupId;
+}
+
+struct RollupConfig {
+    address owner;
+    bytes32 verificationKey;
+    bytes32 stateRoot;
+    uint256 etherBalance;
 }
 ```
 
 ### Execution Flow
 
-1. **Load Phase**: Off-chain provers compute valid executions and submit them with a ZK proof via `loadL2Executions()`
-2. **Execute Phase**: Users call L2Proxy contracts, which trigger pre-loaded executions via `executeL2Execution()`
-3. **State Update**: State deltas are applied atomically across all affected rollups
-4. **Cleanup**: Used executions are removed from storage to reclaim gas
+1. **Load Phase**: Off-chain provers compute valid executions and submit them via `postBatch()` with a ZK proof. Entries with `actionHash == bytes32(0)` are applied immediately as state commitments; entries with a non-zero `actionHash` are stored in the execution table for later consumption.
+2. **Execute Phase**: Users call `CrossChainProxy` contracts, which trigger `executeL2Call()` on the manager. The manager builds a CALL action, looks up the matching execution, applies state deltas, and returns the next action.
+3. **Scope Navigation**: If the next action is a CALL at a deeper scope, `newScope()` recursively navigates the scope tree, executing calls through source proxies via `executeOnBehalf()`. Reverts at any scope are caught and handled via `ScopeReverted`.
+4. **Cleanup**: Used executions are removed from storage (swap-and-pop).
 
 ```
-User calls L2Proxy.someFunction()
-    └─> L2Proxy computes actionHash = keccak256(CALL action)
-        └─> Rollups.executeL2Execution(actionHash)
-            └─> Find execution matching current states
-            └─> Apply state deltas atomically
-            └─> Return nextAction (another CALL or final RESULT)
+User calls CrossChainProxy.someFunction()
+    |-> CrossChainProxy forwards to manager.executeL2Call(sender, calldata)
+        |-> Build CALL action, hash it
+        |-> _findAndApplyExecution(actionHash)
+            |-> Match execution by current rollup states
+            |-> Apply state deltas atomically
+            |-> Return nextAction
+        |-> If nextAction is CALL: enter scope navigation
+            |-> newScope() recursively processes nested calls
+            |-> Calls executed through source proxy.executeOnBehalf()
+            |-> REVERT actions trigger ScopeReverted with state rollback
+        |-> Return final RESULT to caller
 ```
+
+### L2 Execution (CrossChainManagerL2)
+
+On L2, the `CrossChainManagerL2` handles cross-chain execution without ZK proofs or rollup state management:
+
+- A **system address** loads execution tables via `loadExecutionTable()`
+- Local proxy calls go through `executeCrossChainCall()`
+- Remote calls from other chains go through `executeRemoteCall()` (system only)
+- Scope navigation and revert handling work the same as on L1
 
 ### ETH Balance Tracking
 
 Each rollup maintains an ETH balance held by the Rollups contract. This enables cross-rollup value transfers while maintaining conservation guarantees.
 
 **Key Properties:**
-- ETH received by L2Proxy is automatically deposited to the rollup's balance
-- Cross-rollup transfers require the sum of ether increments to be zero in `postBatch()`
+- Cross-rollup transfers require the sum of ether deltas to be zero in `postBatch()` (for immediate entries)
 - Executions can transfer ETH between rollups via `etherDelta` in StateDelta
-- L2Proxy withdraws ETH from rollup balance when making outgoing calls
-
-```
-ETH Flow:
-User sends ETH to L2Proxy
-    └─> L2Proxy.depositEther() to Rollups contract
-        └─> rollups[rollupId].etherBalance += amount
-            └─> On outgoing call: Rollups.withdrawEther()
-                └─> ETH sent to L2Proxy for external call
-```
+- Outgoing CALL actions with value deduct from the source rollup's balance
+- Rollup ETH balances cannot go negative
 
 ## Installation
 
@@ -138,32 +154,41 @@ uint256 rollupId = rollups.createRollup(
 );
 ```
 
-### Creating an L2Proxy
+### Creating a CrossChainProxy
 
 ```solidity
-address proxy = rollups.createL2ProxyContract(
+address proxy = rollups.createCrossChainProxy(
     originalAddress,   // The L2 contract address
     originalRollupId   // The rollup ID
 );
 ```
 
-### Loading Executions
+### Posting a Batch
 
 ```solidity
-Execution[] memory executions = new Execution[](1);
-executions[0] = Execution({
-    stateDeltas: stateDeltas,
+ExecutionEntry[] memory entries = new ExecutionEntry[](2);
+
+// Immediate state commitment (actionHash == 0)
+entries[0] = ExecutionEntry({
+    stateDeltas: immediateDeltas,
+    actionHash: bytes32(0),
+    nextAction: Action(...)  // ignored for immediate entries
+});
+
+// Deferred execution (stored for later consumption)
+entries[1] = ExecutionEntry({
+    stateDeltas: deferredDeltas,
     actionHash: actionHash,
     nextAction: nextAction
 });
 
-rollups.loadL2Executions(executions, zkProof);
+rollups.postBatch(entries, blobCount, callData, zkProof);
 ```
 
 ### Computing Proxy Addresses
 
 ```solidity
-address proxyAddr = rollups.computeL2ProxyAddress(
+address proxyAddr = rollups.computeCrossChainProxyAddress(
     originalAddress,
     originalRollupId,
     domain  // chain ID where proxy will be deployed
@@ -172,42 +197,43 @@ address proxyAddr = rollups.computeL2ProxyAddress(
 
 ## Key Functions
 
+### Rollups (L1)
+
 | Function | Description |
 |----------|-------------|
 | `createRollup()` | Creates a new rollup with initial state, verification key, and owner |
-| `createL2ProxyContract()` | Deploys an L2Proxy via CREATE2 |
-| `postBatch()` | Posts batch of state commitments with ZK proof (async path) |
-| `loadL2Executions()` | Loads pre-computed executions with ZK proof |
-| `executeL2Execution()` | Executes pre-loaded execution (only callable by authorized proxies) |
-| `executeL2TX()` | Executes an L2 transaction (permissionless) |
+| `createCrossChainProxy()` | Deploys a CrossChainProxy via CREATE2 |
+| `postBatch()` | Posts execution entries with ZK proof (immediate + deferred) |
+| `executeL2Call()` | Executes a cross-chain call initiated by an authorized proxy |
+| `executeL2TX()` | Executes a pre-computed L2 transaction (permissionless) |
+| `newScope()` | Navigates scope tree for nested cross-chain calls |
 | `depositEther()` | Deposits ETH to a rollup's balance |
-| `withdrawEther()` | Withdraws ETH from a rollup's balance (authorized proxies only) |
-| `computeL2ProxyAddress()` | Computes deterministic proxy address |
-| `convertAddress()` | Translates addresses between rollup domains |
+| `computeCrossChainProxyAddress()` | Computes deterministic proxy address |
+| `setStateByOwner()` | Updates state root without proof (owner only) |
+| `setVerificationKey()` | Updates verification key (owner only) |
+| `transferRollupOwnership()` | Transfers rollup ownership |
 
-## ZK Proof Structure
+### CrossChainManagerL2 (L2)
 
-Two proof types are supported:
-
-**Type 0x00 - Batch Posts** (async updates):
-```
-publicInputs = hash(0x00, blockhash, commitments, currentStates, verificationKeys, blobHashes, callDataHash)
-```
-
-**Type 0x01 - L2 Executions** (synchronous cross-rollup):
-```
-publicInputs = hash(0x01, executionHashes[])
-```
+| Function | Description |
+|----------|-------------|
+| `loadExecutionTable()` | Loads execution entries (system address only) |
+| `executeCrossChainCall()` | Executes a cross-chain call from a local proxy |
+| `executeRemoteCall()` | Executes a remote call from another chain (system only) |
+| `createCrossChainProxy()` | Deploys a CrossChainProxy via CREATE2 |
+| `computeCrossChainProxyAddress()` | Computes deterministic proxy address |
 
 ## Security Considerations
 
-- Only authorized proxies can execute L2 executions via `executeL2Execution()` and withdraw ETH
+- Only authorized proxies can execute cross-chain calls via `executeL2Call()`
 - `executeL2TX()` is permissionless - anyone can trigger pre-loaded L2 transactions
 - Same-block protection prevents conflicts between async and sync state updates
-- All state transitions are verified with ZK proofs
+- All L1 state transitions are verified with ZK proofs
 - Rollup owners can update verification keys and transfer ownership
-- ETH balance conservation: sum of ether increments in batch must be zero
+- ETH balance conservation: sum of ether deltas in immediate batch entries must be zero
 - Rollup ETH balances cannot go negative (enforced on every state update)
+- Scope reverts restore rollup state roots to pre-scope values
+- On L2, only the system address can load execution tables and trigger remote calls
 
 ## License
 
