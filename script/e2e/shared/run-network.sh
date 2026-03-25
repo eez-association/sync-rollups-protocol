@@ -118,8 +118,9 @@ echo "L2 calls expected: $EXPECTED_L2_CALL_HASHES"
 #       Send tx on L2 via cast send.
 #       The system posts a batch on L1 somewhere in that range.
 # ══════════════════════════════════════════════
-L1_BLOCK=""   # set by range search in step 5
-L2_BLOCK=""   # set by L2 trigger receipt only
+L1_BLOCK=""       # set by range search in step 4
+L2_BLOCK=""       # set by L2 trigger receipt only
+L1_BATCH_TX=""    # set by VerifyL1Batch on PASS
 
 # Helper: run the Execute contract (read-only) to get target/value/calldata,
 # then send via cast send. Returns the tx hash.
