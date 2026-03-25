@@ -284,10 +284,42 @@ bash script/e2e/shared/run-network.sh script/e2e/my-app/E2E.s.sol \
 
 No shell scripts to write — the generic runners handle everything.
 
+## Execution Model
+
+Each e2e scenario produces exactly **1 transaction per chain**. The user triggers one tx, and all cross-chain actions flow from it via execution table chaining.
+
+### L1 trigger (counter, bridge, multi-call-*, flash-loan)
+
+- **L1**: User tx calls a proxy, which triggers `executeCrossChainCall`. The L1 batch (`postBatch`) contains all deferred entries for the entire flow. If multiple cross-chain calls happen (e.g. multi-call), they are consumed sequentially from the same batch within the same tx.
+- **L2**: The system calls `executeIncomingCrossChainCall` **once**. If the flow involves multiple L2 calls, they are **chained** via the execution table — each RESULT leads to the next CALL as the `nextAction`. All chained calls resolve within a single tx via scope resolution.
+
+### L2 trigger (counterL2)
+
+- **L2**: User tx calls a proxy, which triggers `executeCrossChainCall` on L2. The system loads the execution table and the user's call consumes an entry.
+- **L1**: The system calls `executeL2TX` **once**. The L2TX action matches an entry which returns a CALL, and scope resolution handles the rest within a single tx.
+
+### Chaining pattern
+
+For scenarios with multiple cross-chain calls (e.g. call counterA then counterB), the execution tables chain actions:
+
+```
+L1 batch (2 entries, consumed sequentially by executeCrossChainCall):
+  [0] hash(CALL_A) → RESULT(1)           ← first call, returns result
+  [1] hash(CALL_B) → RESULT(1)           ← second call, returns result
+
+L2 table (2 entries, chained in a single executeIncomingCrossChainCall tx):
+  [0] hash(RESULT_1) → CALL(counterB)    ← result of A chains to calling B
+  [1] hash(RESULT_1) → RESULT(1)         ← result of B is terminal
+```
+
+The L2 table entry trigger is always a **RESULT** hash (what the previous call produced), not a CALL hash. The `nextAction` is either a CALL (chaining) or a RESULT (terminal). `EXPECTED_L2_CALL_HASHES` always has exactly **1 entry** — the initial `executeIncomingCrossChainCall` / `executeCrossChainCall`.
+
 ## Key Invariants
 
+- **One execution tx per chain**: Each scenario produces exactly 1 execution tx on L1 and 1 on L2. All cross-chain actions (including nested scoped calls) are chained within those txs. Splitting a single flow into multiple execution txs is a bug. (This does not count the `postBatch`/`loadExecutionTable` txs which are separate setup txs in the same block.)
 - **Same-block execution**: `postBatch`/`loadExecutionTable` and the consuming transaction must be in the same block. Local mode enforces via Batcher; network mode relies on the system.
-- **actionHash matching**: `actionHash` must equal `keccak256(abi.encode(callAction))` where `callAction` matches what `executeCrossChainCall` builds on-chain.
+- **Entry hash matching**: Verification compares `keccak256(abi.encode(actionHash, keccak256(abi.encode(nextAction))))` — both the trigger and the response must match.
 - **State delta chaining**: `newState` of entry N must equal `currentState` of entry N+1 when both touch the same rollup.
 - **L2 entries have no state deltas**: On L2, `stateDeltas` is always empty. Only L1 tracks state roots.
 - **Three verification hash sets**: Every test must output `EXPECTED_L1_HASHES` (L1 batch), `EXPECTED_L2_HASHES` (L2 table), and `EXPECTED_L2_CALL_HASHES` (L2 calls) in `ComputeExpected`.
+- **L2 call hashes are always 1**: `EXPECTED_L2_CALL_HASHES` always has exactly 1 entry (the initial cross-chain call). All subsequent calls are chained internally.

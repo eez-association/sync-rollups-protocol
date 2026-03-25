@@ -368,7 +368,7 @@ contract ComputeExpected is ComputeExpectedBase {
         // ── Human-readable: L2 execution table (1 entry) ──
         console.log("");
         console.log("=== EXPECTED L2 EXECUTION TABLE (1 entry) ===");
-        _logL2Entry(0, l2h0, _fmtCall(callAction), _fmtResult(resultAction, "uint256(1)"));
+        _logL2Entry(0, l2eh0, _fmtCall(callAction), _fmtResult(resultAction, "uint256(1)"));
 
         // ── Human-readable: L2 calls (1 call) ──
         console.log("");
