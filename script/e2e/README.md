@@ -9,78 +9,83 @@ script/e2e/
 ├── shared/
 │   ├── DeployInfra.s.sol     # Rollups (L1) + CrossChainManagerL2 (L2)
 │   ├── E2EBase.sh            # Shared bash utilities
-│   └── Verify.s.sol          # Post-facto verification of block events
+│   ├── Verify.s.sol          # Post-facto verification of block events
+│   ├── run-local.sh          # Generic local mode runner
+│   └── run-network.sh        # Generic network mode runner
 ├── counter/                  # Simplest e2e — use as template
-│   ├── CounterE2E.s.sol
-│   ├── run-local.sh
-│   └── run-network.sh
+│   └── E2E.s.sol
 ├── bridge/                   # Bridge ETH e2e (uses CREATE2)
-│   ├── BridgeE2E.s.sol
-│   ├── run-local.sh
-│   └── run-network.sh
+│   └── E2E.s.sol
+├── multi-call-twice/         # Multi-call: same proxy called twice
+│   └── E2E.s.sol
+├── multi-call-two-diff/      # Multi-call: two different proxies
+│   └── E2E.s.sol
+├── multi-call/               # Multi-call (original, manual use only)
+│   └── E2E.s.sol
 └── flash-loan/               # Multi-chain flash loan e2e
-    ├── DeployFlashLoan.s.sol
-    ├── ExecuteFlashLoan.s.sol
-    ├── deploy-app.sh
-    ├── run-local.sh
-    └── run-network.sh
+    └── E2E.s.sol
+
+script/deployment/
+└── flash-loan/               # Multi-chain deployment scripts
+    ├── DeployFlashLoan.s.sol  # Deploy contracts (used by deploy-app.sh)
+    ├── deploy-app.sh          # Multi-step cross-chain deployment
+    └── README.md
 ```
+
+Each test has only `E2E.s.sol`. No per-test shell scripts. Multi-chain tests (flash-loan) have a `deploy-app.sh` in `script/deployment/<test-name>/`.
 
 ## Two Modes
 
-### Local Mode (`run-local.sh`)
+### Local Mode
 
-Deploys everything on local anvil. Uses a **Batcher** contract to ensure `postBatch` + user transaction land in the same block (required by the `ExecutionNotInCurrentBlock` invariant).
+Starts anvil(s), deploys infra + app, executes via Batcher, decodes events.
 
-```
-Start anvil → Deploy infra → Deploy app → Execute via Batcher → Decode events
-```
-
-Run from project root:
 ```bash
-bash script/e2e/counter/run-local.sh
-bash script/e2e/bridge/run-local.sh
-bash script/e2e/flash-loan/run-local.sh
+bash script/e2e/shared/run-local.sh script/e2e/counter/E2E.s.sol
+bash script/e2e/shared/run-local.sh script/e2e/bridge/E2E.s.sol
+bash script/e2e/shared/run-local.sh script/e2e/multi-call-twice/E2E.s.sol
+bash script/e2e/shared/run-local.sh script/e2e/multi-call-two-diff/E2E.s.sol
+bash script/e2e/shared/run-local.sh script/e2e/flash-loan/E2E.s.sol   # auto-detects multi-chain
 ```
 
-### Network Mode (`run-network.sh`)
+Multi-chain is auto-detected when `deploy-app.sh` exists in `script/deployment/<test-name>/`. In that case, two anvils are started and infra is deployed on both chains.
 
-Connects to an existing network where Rollups (and optionally CrossChainManagerL2) are already deployed. Deploys only the app contracts, sends the user transaction, then verifies post-facto that the system posted the expected entries in the same block.
+### Network Mode
 
-**No Batcher needed** — the system/sequencer handles batch posting atomically.
+Connects to an existing network. Deploys only app contracts, sends user transaction, verifies post-facto.
 
+```bash
+# Single-chain
+bash script/e2e/shared/run-network.sh script/e2e/counter/E2E.s.sol \
+    --rpc $RPC --pk $PK --rollups $ROLLUPS
+
+# Multi-chain
+bash script/e2e/shared/run-network.sh script/e2e/flash-loan/E2E.s.sol \
+    --l1-rpc $L1_RPC --l2-rpc $L2_RPC --pk $PK \
+    --rollups $ROLLUPS --manager-l2 $MANAGER_L2
 ```
-Deploy app → Compute expected entries → Execute user tx → Verify block events
-```
 
-The user transaction may revert if run against a network without a system (e.g. plain anvil) — this is expected and reported clearly. The verify step then checks whether the system posted the batch.
+The user transaction may revert if run against a network without a system (e.g. plain anvil) — this is expected and reported clearly. The verify step checks whether the system posted the batch.
 
 On verify failure, prints both:
 - **Actual execution table** — entries found in the block
 - **Expected execution table** — entries the test expected to find
 
-```bash
-bash script/e2e/counter/run-network.sh --rpc $RPC --pk $PK --rollups $ROLLUPS
-bash script/e2e/bridge/run-network.sh  --rpc $RPC --pk $PK --rollups $ROLLUPS
-bash script/e2e/flash-loan/run-network.sh \
-    --l1-rpc $L1_RPC --l2-rpc $L2_RPC --pk $PK \
-    --rollups $ROLLUPS --manager-l2 $MANAGER_L2 --l2-rollup-id 1
-```
-
 ## Shared Utilities
 
 ### E2EBase.sh
 
-Source it in your shell scripts: `source "$(dirname "$0")/../shared/E2EBase.sh"`
+Source it: `source "$(dirname "$0")/E2EBase.sh"`
 
 | Function | Purpose |
 |----------|---------|
 | `extract "$output" KEY` | Parse `KEY=value` from forge script output |
 | `start_anvil PORT PID_VAR` | Start anvil, store PID for cleanup |
-| `deploy_infra L1_RPC PK [L2_RPC] [L2_ROLLUP_ID] [SYSTEM_ADDR]` | Deploy Rollups on L1 + optional CCManagerL2 on L2. Sets `$ROLLUPS` and `$MANAGER_L2` |
+| `deploy_infra L1_RPC PK [L2_RPC] [L2_ROLLUP_ID] [SYSTEM_ADDR]` | Deploy Rollups + optional CCManagerL2. Sets `$ROLLUPS`, `$MANAGER_L2` |
 | `decode_block RPC BLOCK TARGET [LABEL]` | Run DecodeExecutions on a block |
 | `ensure_create2_factory RPC LABEL PK` | Deploy CREATE2 factory if missing |
 | `strip_traces` | Pipe filter: strips forge EVM traces, keeps only `console.log` output |
+| `_export_outputs "$output"` | Auto-export `KEY=VALUE` lines from forge output as env vars |
 
 ### DeployInfra.s.sol
 
@@ -94,52 +99,53 @@ Source it in your shell scripts: `source "$(dirname "$0")/../shared/E2EBase.sh"`
 | Contract | Args | Checks |
 |----------|------|--------|
 | `VerifyL1Batch` | `(uint256 block, address rollups, bytes32[] expectedHashes)` | `BatchPosted` events contain expected entries (subset match) |
-| `VerifyL2Table` | `(uint256 block, address managerL2, bytes32[] expectedHashes)` | `ExecutionTableLoaded` events contain expected entries (subset match) |
+| `ExtractL2Blocks` | `(uint256 block, address rollups)` | Reads postBatch tx callData, outputs L2 block numbers |
+| `VerifyL2Blocks` | `(uint256[] l2Blocks, address managerL2, bytes32[] expectedHashes)` | Tries each L2 block for `ExecutionTableLoaded` events containing expected entries |
 
-Both verify with **subset matching** — the block can contain additional entries from other users and the test still passes. On failure, they print the full actual execution table before reverting.
+All verify with **subset matching** — the block can contain additional entries and the test still passes. On failure, they print the full actual execution table before reverting.
 
-## Anatomy of an E2E Test
+## Standard Contract Names
 
-Each e2e test has one `.s.sol` file with these contracts:
+Each `E2E.s.sol` has these contracts, all using `function run() external` with args from env vars:
 
 | Contract | Purpose | Used in |
 |----------|---------|---------|
-| **Batcher** | Wraps `postBatch` + user tx in a single call (same-block guarantee) | Local mode only |
-| **Deploy** | Deploys app contracts, takes Rollups address as arg | Both modes |
-| **Execute** | Constructs `ExecutionEntry[]`, deploys Batcher, executes atomically | Local mode only |
-| **ExecuteNetwork** | Sends only the user transaction (no Batcher) | Network mode only |
-| **ComputeExpected** | Computes expected actionHashes + prints expected entries table | Network mode only |
+| **Batcher** | Wraps `postBatch` + user tx in a single call (same-block guarantee) | Local mode |
+| **Deploy** | Deploys app contracts. Reads `ROLLUPS`. Outputs `KEY=VALUE` via console.log | Both modes |
+| **Execute** | Constructs `ExecutionEntry[]`, deploys Batcher, executes atomically | Local mode |
+| **ExecuteNetwork** | Sends only the user transaction (no Batcher) | Network mode |
+| **ComputeExpected** | Outputs `EXPECTED_HASHES=[...]` + human-readable expected table | Network mode |
+
+Multi-chain tests additionally have **ExecuteL2** (local L2 execution).
+
+Env vars are set automatically: the generic scripts export `ROLLUPS`, `MANAGER_L2`, and all `KEY=VALUE` outputs from the Deploy step via `_export_outputs`.
 
 ### How an ExecutionEntry is Built
 
 ```solidity
-// 1. Build the CALL action (what executeCrossChainCall will construct on-chain)
+// 1. Build the CALL action (must match what executeCrossChainCall builds on-chain)
 Action memory callAction = Action({
     actionType: ActionType.CALL,
     rollupId: 1,                    // destination rollup
-    destination: targetContract,     // contract being called on the other chain
-    value: 0,                       // ETH value
-    data: abi.encodeWithSelector(...), // calldata
+    destination: targetContract,     // contract on the other chain
+    value: 0,
+    data: abi.encodeWithSelector(MyContract.myFunction.selector),
     failed: false,
     sourceAddress: callerContract,   // msg.sender as seen by the proxy
-    sourceRollup: 0,                // caller's rollup
-    scope: new uint256[](0)         // [] for root scope
-});
-
-// 2. Build the next action (what happens after the CALL is consumed)
-Action memory resultAction = Action({
-    actionType: ActionType.RESULT,
-    rollupId: 1,
-    destination: address(0),
-    value: 0,
-    data: abi.encode(expectedReturnValue),
-    failed: false,
-    sourceAddress: address(0),
     sourceRollup: 0,
     scope: new uint256[](0)
 });
 
-// 3. Build state deltas (L1 only — L2 uses empty deltas)
+// 2. Build the next action
+Action memory resultAction = Action({
+    actionType: ActionType.RESULT,
+    rollupId: 1, destination: address(0), value: 0,
+    data: abi.encode(expectedReturnValue),
+    failed: false, sourceAddress: address(0), sourceRollup: 0,
+    scope: new uint256[](0)
+});
+
+// 3. State deltas (L1 only — L2 uses empty deltas)
 StateDelta[] memory deltas = new StateDelta[](1);
 deltas[0] = StateDelta({
     rollupId: 1,
@@ -148,37 +154,35 @@ deltas[0] = StateDelta({
     etherDelta: 0
 });
 
-// 4. Assemble the entry
-ExecutionEntry memory entry;
-entry.stateDeltas = deltas;
-entry.actionHash = keccak256(abi.encode(callAction));
-entry.nextAction = resultAction;
+// 4. Assemble
+ExecutionEntry[] memory entries = new ExecutionEntry[](1);
+entries[0].stateDeltas = deltas;
+entries[0].actionHash = keccak256(abi.encode(callAction));
+entries[0].nextAction = resultAction;
 ```
 
-### How the Batcher Pattern Works
+### Batcher Pattern
 
 ```solidity
 contract Batcher {
     function execute(Rollups rollups, ExecutionEntry[] calldata entries, MyApp app) external {
-        rollups.postBatch(entries, 0, "", "proof");  // posts entries to L1
-        app.doSomething();                           // triggers cross-chain call
+        rollups.postBatch(entries, 0, "", "proof");
+        app.doSomething();
     }
 }
 ```
 
-Both calls happen in a single transaction, satisfying the same-block requirement. Deployed inline during the execute script.
+Both calls in a single transaction — satisfies same-block requirement.
 
 ## Adding a New E2E Test
 
-Use the counter test as a template. Here are the steps:
+Use counter as template.
 
-### 1. Create the directory
+### 1. Create directory + `E2E.s.sol`
 
 ```bash
 mkdir script/e2e/my-app
 ```
-
-### 2. Create `MyAppE2E.s.sol`
 
 ```solidity
 // SPDX-License-Identifier: MIT
@@ -187,104 +191,57 @@ pragma solidity ^0.8.24;
 import {Script, console} from "forge-std/Script.sol";
 import {Rollups} from "../../../src/Rollups.sol";
 import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
-// import your app contracts...
 
-// Batcher: wraps postBatch + your user action in one tx
-contract MyAppBatcher {
+contract Batcher {
     function execute(Rollups rollups, ExecutionEntry[] calldata entries, MyApp app) external {
         rollups.postBatch(entries, 0, "", "proof");
         app.doAction();
     }
 }
 
-// Deploy: deploys your app contracts (takes pre-deployed Rollups address)
-contract MyAppDeploy is Script {
-    function run(address rollupsAddr) external {
+/// @dev Env: ROLLUPS. Outputs: MY_CONTRACT
+contract Deploy is Script {
+    function run() external {
+        address rollups = vm.envAddress("ROLLUPS");
         vm.startBroadcast();
-        // Deploy your contracts, create proxies...
-        // console.log("MY_CONTRACT=%s", address(myContract));
+        // deploy contracts, create proxies...
+        console.log("MY_CONTRACT=%s", address(myContract));
         vm.stopBroadcast();
     }
 }
 
-// Execute (local mode): constructs entries + executes via Batcher
-contract MyAppExecute is Script {
-    function run(address rollupsAddr, address myContractAddr) external {
+/// @dev Env: ROLLUPS, MY_CONTRACT
+contract Execute is Script {
+    function run() external {
+        address rollups = vm.envAddress("ROLLUPS");
+        address myContract = vm.envAddress("MY_CONTRACT");
         vm.startBroadcast();
-
-        MyAppBatcher batcher = new MyAppBatcher();
-
-        // Build your CALL action (must match what executeCrossChainCall builds on-chain)
-        Action memory callAction = Action({
-            actionType: ActionType.CALL,
-            rollupId: 1,
-            destination: myContractAddr,
-            value: 0,
-            data: abi.encodeWithSelector(MyContract.myFunction.selector),
-            failed: false,
-            sourceAddress: msg.sender,  // whoever calls the proxy
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-
-        // Build the result action
-        Action memory resultAction = Action({
-            actionType: ActionType.RESULT,
-            rollupId: 1,
-            destination: address(0),
-            value: 0,
-            data: "",  // or abi.encode(returnValue)
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-
-        // Build state deltas
-        StateDelta[] memory deltas = new StateDelta[](1);
-        deltas[0] = StateDelta({
-            rollupId: 1,
-            currentState: keccak256("l2-initial-state"),
-            newState: keccak256("l2-state-after-my-action"),
-            etherDelta: 0
-        });
-
-        // Assemble entry
-        ExecutionEntry[] memory entries = new ExecutionEntry[](1);
-        entries[0].stateDeltas = deltas;
-        entries[0].actionHash = keccak256(abi.encode(callAction));
-        entries[0].nextAction = resultAction;
-
-        // Execute atomically
-        batcher.execute(Rollups(rollupsAddr), entries, MyApp(myContractAddr));
-        console.log("done");
-
-        vm.stopBroadcast();
-    }
-}
-
-// ExecuteNetwork (network mode): only sends the user transaction
-contract MyAppExecuteNetwork is Script {
-    function run(address myContractAddr) external {
-        vm.startBroadcast();
-        MyApp(myContractAddr).doAction();
+        Batcher batcher = new Batcher();
+        // build entries...
+        batcher.execute(Rollups(rollups), entries, MyApp(myContract));
         console.log("done");
         vm.stopBroadcast();
     }
 }
 
-// ComputeExpected: computes expected hashes + prints expected entries
-contract MyAppComputeExpected is Script {
-    function run(address myContractAddr) external pure {
-        // Build the same CALL action as Execute
-        Action memory callAction = Action({ /* ... same as above ... */ });
+/// @dev Env: MY_CONTRACT
+contract ExecuteNetwork is Script {
+    function run() external {
+        address myContract = vm.envAddress("MY_CONTRACT");
+        vm.startBroadcast();
+        MyApp(myContract).doAction();
+        console.log("done");
+        vm.stopBroadcast();
+    }
+}
 
+/// @dev Env: MY_CONTRACT
+contract ComputeExpected is Script {
+    function run() external view {
+        address myContract = vm.envAddress("MY_CONTRACT");
+        // build same CALL action as Execute...
         bytes32 hash = keccak256(abi.encode(callAction));
-
-        // Parseable line (shell scripts extract this)
         console.log("EXPECTED_HASHES=[%s]", vm.toString(hash));
-
-        // Human-readable table (shown on verify failure)
         console.log("");
         console.log("=== EXPECTED EXECUTION TABLE (1 entry) ===");
         console.log("  [0] DEFERRED  actionHash: %s", vm.toString(hash));
@@ -293,88 +250,27 @@ contract MyAppComputeExpected is Script {
 }
 ```
 
-### 3. Create `run-local.sh`
+### 2. Run it
 
 ```bash
-#!/usr/bin/env bash
-source "$(dirname "$0")/../shared/E2EBase.sh"
-
-RPC="http://localhost:8545"
-
-start_anvil 8545 ANVIL_PID
-deploy_infra "$RPC" "$PK"
-
-echo "====== Deploy App ======"
-DEPLOY_OUTPUT=$(forge script script/e2e/my-app/MyAppE2E.s.sol:MyAppDeploy \
-    --rpc-url "$RPC" --broadcast --private-key "$PK" \
-    --sig "run(address)" "$ROLLUPS" 2>&1)
-MY_CONTRACT=$(extract "$DEPLOY_OUTPUT" "MY_CONTRACT")
-
-echo "====== Execute ======"
-forge script script/e2e/my-app/MyAppE2E.s.sol:MyAppExecute \
-    --rpc-url "$RPC" --broadcast --private-key "$PK" \
-    --sig "run(address,address)" "$ROLLUPS" "$MY_CONTRACT" 2>&1
-
-BLOCK=$(cast block-number --rpc-url "$RPC")
-decode_block "$RPC" "$BLOCK" "$ROLLUPS"
-
-echo "====== Done ======"
+bash script/e2e/shared/run-local.sh script/e2e/my-app/E2E.s.sol
+bash script/e2e/shared/run-network.sh script/e2e/my-app/E2E.s.sol --rpc $RPC --pk $PK --rollups $ROLLUPS
 ```
 
-### 4. Create `run-network.sh`
-
-```bash
-#!/usr/bin/env bash
-source "$(dirname "$0")/../shared/E2EBase.sh"
-
-# Parse --rpc, --pk, --rollups args...
-
-# 1. Deploy app
-DEPLOY_OUTPUT=$(forge script script/e2e/my-app/MyAppE2E.s.sol:MyAppDeploy \
-    --rpc-url "$RPC" --broadcast --private-key "$PK" \
-    --sig "run(address)" "$ROLLUPS" 2>&1)
-MY_CONTRACT=$(extract "$DEPLOY_OUTPUT" "MY_CONTRACT")
-
-# 2. Compute expected entries
-COMPUTE_OUTPUT=$(forge script script/e2e/my-app/MyAppE2E.s.sol:MyAppComputeExpected \
-    --sig "run(address)" "$MY_CONTRACT" 2>&1)
-EXPECTED_HASHES=$(extract "$COMPUTE_OUTPUT" "EXPECTED_HASHES")
-
-# 3. Execute user transaction (may revert if no system — that's expected)
-EXEC_OUTPUT=$(forge script script/e2e/my-app/MyAppE2E.s.sol:MyAppExecuteNetwork \
-    --rpc-url "$RPC" --broadcast --private-key "$PK" \
-    --sig "run(address)" "$MY_CONTRACT" 2>&1) \
-    && echo "Transaction succeeded" || echo "Transaction reverted (expected — system posts batch separately)"
-BLOCK=$(cast block-number --rpc-url "$RPC")
-
-# 4. Verify
-VERIFY_OUTPUT=$(forge script script/e2e/shared/Verify.s.sol:VerifyL1Batch \
-    --rpc-url "$RPC" \
-    --sig "run(uint256,address,bytes32[])" "$BLOCK" "$ROLLUPS" "$EXPECTED_HASHES" 2>&1) \
-    && VERIFY_OK=true || VERIFY_OK=false
-
-if $VERIFY_OK; then
-    echo "$VERIFY_OUTPUT" | grep "PASS"
-else
-    # Show actual table (from verify) + expected table (from compute)
-    echo "$VERIFY_OUTPUT" | strip_traces
-    echo "$COMPUTE_OUTPUT" | sed -n '/=== EXPECTED/,$ p'
-    exit 1
-fi
-```
+No shell scripts to write — the generic runners handle everything.
 
 ## Key Invariants
 
-- **Same-block execution**: `postBatch`/`loadExecutionTable` and the consuming transaction must be in the same block. Local mode enforces this via Batcher; network mode relies on the system.
-- **actionHash matching**: The `actionHash` in the `ExecutionEntry` must equal `keccak256(abi.encode(callAction))` where `callAction` is what `executeCrossChainCall` builds on-chain. If these don't match, the execution lookup fails.
-- **State delta chaining**: When multiple entries touch the same rollup, `newState` of entry N must equal `currentState` of entry N+1.
-- **L2 entries have no state deltas**: On L2, `stateDeltas` is always an empty array. Only L1 tracks state roots.
+- **Same-block execution**: `postBatch`/`loadExecutionTable` and the consuming transaction must be in the same block. Local mode enforces via Batcher; network mode relies on the system.
+- **actionHash matching**: `actionHash` must equal `keccak256(abi.encode(callAction))` where `callAction` matches what `executeCrossChainCall` builds on-chain.
+- **State delta chaining**: `newState` of entry N must equal `currentState` of entry N+1 when both touch the same rollup.
+- **L2 entries have no state deltas**: On L2, `stateDeltas` is always empty. Only L1 tracks state roots.
 
-## Multi-Chain E2E (Flash Loan Pattern)
+## Multi-Chain E2E
 
 For tests spanning L1 and L2:
 
-1. Create a `deploy-app.sh` that handles multi-step cross-chain deployment (see flash-loan example)
-2. In `run-local.sh`, start two anvils and call `deploy_infra` with both RPCs
-3. Execute L2 phase first (load tables), then L1 phase (post batch)
-4. In network mode, verify both chains at the **same block number**: call `VerifyL1Batch` against L1 RPC and `VerifyL2Table` against L2 RPC with the same block
+1. Create a `deploy-app.sh` for multi-step cross-chain deployment (see flash-loan). Output all addresses as `KEY=VALUE` lines.
+2. Add `ExecuteL2` contract to `E2E.s.sol` for the L2 execution phase.
+3. The generic scripts auto-detect multi-chain from `deploy-app.sh` and handle L2 execution + verification.
+4. Network mode extracts L2 block numbers from the L1 postBatch callData via `ExtractL2Blocks`, then verifies each L2 block with `VerifyL2Blocks`.

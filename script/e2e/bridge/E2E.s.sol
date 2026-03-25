@@ -7,9 +7,8 @@ import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICros
 import {Bridge} from "../../../src/periphery/Bridge.sol";
 import {_deployBridge} from "../../DeployBridge.s.sol";
 
-/// @notice Helper that executes postBatch + bridgeEther in a single transaction
-/// @dev Needed because executeCrossChainCall requires same block as postBatch
-contract BridgeBatcher {
+/// @notice Batcher: postBatch + bridgeEther in one tx (local mode only)
+contract Batcher {
     function execute(
         Rollups rollups,
         ExecutionEntry[] calldata entries,
@@ -22,36 +21,34 @@ contract BridgeBatcher {
     }
 }
 
-/// @title BridgeDeploy — Deploy Bridge via CREATE2 and initialize with Rollups
-/// @dev Takes an already-deployed Rollups address.
-///   forge script script/e2e/bridge/BridgeE2E.s.sol:BridgeDeploy \
-///     --rpc-url $RPC --broadcast --private-key $PK \
-///     --sig "run(address)" $ROLLUPS
-contract BridgeDeploy is Script {
-    function run(address rollupsAddr) external {
+/// @title Deploy — Deploy bridge app contracts
+/// @dev Env: ROLLUPS
+/// Outputs: BRIDGE
+contract Deploy is Script {
+    function run() external {
+        address rollupsAddr = vm.envAddress("ROLLUPS");
         vm.startBroadcast();
 
         bytes32 salt = keccak256("sync-rollups-bridge-v1");
         address bridgeAddr = _deployBridge(salt);
-        Bridge bridge = Bridge(bridgeAddr);
-        bridge.initialize(rollupsAddr, 0, msg.sender);
+        Bridge(bridgeAddr).initialize(rollupsAddr, 0, msg.sender);
 
-        console.log("BRIDGE=%s", address(bridge));
+        console.log("BRIDGE=%s", bridgeAddr);
 
         vm.stopBroadcast();
     }
 }
 
-/// @title BridgeExecute — postBatch + bridgeEther via BridgeBatcher (single tx, local mode)
-///   forge script script/e2e/bridge/BridgeE2E.s.sol:BridgeExecute \
-///     --rpc-url $RPC --broadcast --private-key $PK \
-///     --sig "run(address,address)" $ROLLUPS $BRIDGE
-contract BridgeExecute is Script {
-    function run(address rollupsAddr, address bridgeAddr) external {
+/// @title Execute — Local mode: postBatch + bridgeEther via Batcher
+/// @dev Env: ROLLUPS, BRIDGE
+contract Execute is Script {
+    function run() external {
+        address rollupsAddr = vm.envAddress("ROLLUPS");
+        address bridgeAddr = vm.envAddress("BRIDGE");
+
         vm.startBroadcast();
 
-        BridgeBatcher batcher = new BridgeBatcher();
-
+        Batcher batcher = new Batcher();
         address destination = msg.sender;
         uint256 L2_ROLLUP_ID = 1;
 
@@ -92,13 +89,7 @@ contract BridgeExecute is Script {
         entries[0].actionHash = keccak256(abi.encode(callAction));
         entries[0].nextAction = resultAction;
 
-        batcher.execute{value: 1 ether}(
-            Rollups(rollupsAddr),
-            entries,
-            Bridge(bridgeAddr),
-            L2_ROLLUP_ID,
-            destination
-        );
+        batcher.execute{value: 1 ether}(Rollups(rollupsAddr), entries, Bridge(bridgeAddr), L2_ROLLUP_ID, destination);
 
         console.log("done");
 
@@ -106,24 +97,26 @@ contract BridgeExecute is Script {
     }
 }
 
-/// @title BridgeExecuteNetwork — Send only the user transaction (network mode, no Batcher)
-///   forge script script/e2e/bridge/BridgeE2E.s.sol:BridgeExecuteNetwork \
-///     --rpc-url $RPC --broadcast --private-key $PK \
-///     --sig "run(address,uint256,address)" $BRIDGE $L2_ROLLUP_ID $DESTINATION
-contract BridgeExecuteNetwork is Script {
-    function run(address bridgeAddr, uint256 rollupId, address destination) external {
+/// @title ExecuteNetwork — Network mode: user transaction only (no Batcher)
+/// @dev Env: BRIDGE, DESTINATION
+contract ExecuteNetwork is Script {
+    function run() external {
+        address bridgeAddr = vm.envAddress("BRIDGE");
+        address destination = vm.envAddress("DESTINATION");
         vm.startBroadcast();
-        Bridge(bridgeAddr).bridgeEther{value: 1 ether}(rollupId, destination);
+        Bridge(bridgeAddr).bridgeEther{value: 1 ether}(1, destination);
         console.log("done");
         vm.stopBroadcast();
     }
 }
 
-/// @title BridgeComputeExpected — Compute expected entries for verification
-///   forge script script/e2e/bridge/BridgeE2E.s.sol:BridgeComputeExpected \
-///     --sig "run(address,address)" $BRIDGE $DESTINATION
-contract BridgeComputeExpected is Script {
-    function run(address bridgeAddr, address destination) external pure {
+/// @title ComputeExpected — Compute expected actionHashes + print expected table
+/// @dev Env: BRIDGE, DESTINATION
+contract ComputeExpected is Script {
+    function run() external view {
+        address bridgeAddr = vm.envAddress("BRIDGE");
+        address destination = vm.envAddress("DESTINATION");
+
         Action memory callAction = Action({
             actionType: ActionType.CALL,
             rollupId: 1,
@@ -146,10 +139,8 @@ contract BridgeComputeExpected is Script {
 
         bytes32 hash = keccak256(abi.encode(callAction));
 
-        // Parseable line for shell scripts
         console.log("EXPECTED_HASHES=[%s]", vm.toString(hash));
 
-        // Human-readable expected table
         console.log("");
         console.log("=== EXPECTED EXECUTION TABLE (1 entry) ===");
         console.log("  [0] DEFERRED  actionHash: %s", vm.toString(hash));

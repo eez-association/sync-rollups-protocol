@@ -80,6 +80,19 @@ decode_block() {
         | sed -n '/^  /p'
 }
 
+# ── Auto-export KEY=VALUE lines from forge script output as env vars ──
+# Usage: _export_outputs "$FORGE_OUTPUT"
+_export_outputs() {
+    local output="$1"
+    local vars
+    vars=$(echo "$output" | sed 's/^[[:space:]]*//' | grep -E '^[A-Z0-9_]+=' | grep -v '^==' || true)
+    if [[ -n "$vars" ]]; then
+        while IFS= read -r line; do
+            export "$line"
+        done <<< "$vars"
+    fi
+}
+
 # ── Strip forge execution traces, keep only console.log output ──
 # Usage: echo "$FORGE_OUTPUT" | strip_traces
 strip_traces() {

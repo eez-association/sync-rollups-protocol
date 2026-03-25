@@ -11,29 +11,26 @@ import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICros
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
-/// @title ExecuteFlashLoanL2 — Load execution table + executeIncomingCrossChainCall on L2
-/// @dev Usage:
-///   forge script script/e2e/flash-loan/ExecuteFlashLoan.s.sol:ExecuteFlashLoanL2 \
-///     --rpc-url $L2_RPC --broadcast --private-key $PK \
-///     --sig "run(address,address,address,address,address,address,address,address,string,string,uint8)" \
-///     $MANAGER_L2 $BRIDGE_L1 $BRIDGE_L2 $EXECUTOR_L1 $EXECUTOR_L2 $FLASH_LOANERS_NFT $TOKEN $WRAPPED_TOKEN_L2 $TOKEN_NAME $TOKEN_SYMBOL $TOKEN_DECIMALS
-contract ExecuteFlashLoanL2 is Script {
+/// @title ExecuteL2 — Load execution table + executeIncomingCrossChainCall on L2
+/// @dev Env: MANAGER_L2, BRIDGE_L1, BRIDGE_L2, EXECUTOR_L1, EXECUTOR_L2,
+///          FLASH_LOANERS_NFT, TOKEN, WRAPPED_TOKEN_L2, TOKEN_NAME, TOKEN_SYMBOL, TOKEN_DECIMALS
+contract ExecuteL2 is Script {
     uint256 constant L2_ROLLUP_ID = 1;
     uint256 constant MAINNET_ROLLUP_ID = 0;
 
-    function run(
-        address managerL2,
-        address bridgeL1,
-        address bridgeL2,
-        address executorL1,
-        address executorL2,
-        address flashLoanersNFT,
-        address token,
-        address wrappedTokenL2,
-        string calldata name,
-        string calldata symbol,
-        uint8 tokenDecimals
-    ) external {
+    function run() external {
+        address managerL2 = vm.envAddress("MANAGER_L2");
+        address bridgeL1 = vm.envAddress("BRIDGE_L1");
+        address bridgeL2 = vm.envAddress("BRIDGE_L2");
+        address executorL1 = vm.envAddress("EXECUTOR_L1");
+        address executorL2 = vm.envAddress("EXECUTOR_L2");
+        address flashLoanersNFT = vm.envAddress("FLASH_LOANERS_NFT");
+        address token = vm.envAddress("TOKEN");
+        address wrappedTokenL2 = vm.envAddress("WRAPPED_TOKEN_L2");
+        string memory name = vm.envString("TOKEN_NAME");
+        string memory symbol = vm.envString("TOKEN_SYMBOL");
+        uint8 tokenDecimals = uint8(vm.envUint("TOKEN_DECIMALS"));
+
         CrossChainManagerL2 manager = CrossChainManagerL2(managerL2);
 
         // Forward receiveTokens: L1 → L2
@@ -139,8 +136,8 @@ contract ExecuteFlashLoanL2 is Script {
     }
 }
 
-/// @title FlashLoanBatcher — postBatch + executor.execute() in single tx
-contract FlashLoanBatcher {
+/// @title Batcher — postBatch + executor.execute() in single tx
+contract Batcher {
     function execute(
         Rollups rollups,
         ExecutionEntry[] calldata entries,
@@ -151,25 +148,32 @@ contract FlashLoanBatcher {
     }
 }
 
-/// @title FlashLoanComputeExpected — Compute expected entries for L1 batch and L2 table
-/// @dev Usage:
-///   forge script script/e2e/flash-loan/ExecuteFlashLoan.s.sol:FlashLoanComputeExpected \
-///     --rpc-url $L1_RPC \
-///     --sig "run(address,address,address,address,address,address,address)" \
-///     $BRIDGE_L1 $BRIDGE_L2 $EXECUTOR_L1 $EXECUTOR_L2 $FLASH_LOANERS_NFT $TOKEN $WRAPPED_TOKEN_L2
-contract FlashLoanComputeExpected is Script {
+/// @title ExecuteNetwork — Network mode L1: user transaction only (no Batcher)
+/// @dev Env: EXECUTOR_L1
+contract ExecuteNetwork is Script {
+    function run() external {
+        address executorL1 = vm.envAddress("EXECUTOR_L1");
+        vm.startBroadcast();
+        FlashLoanBridgeExecutor(executorL1).execute();
+        console.log("done");
+        vm.stopBroadcast();
+    }
+}
+
+/// @title ComputeExpected — Compute expected entries for L1 batch and L2 table
+/// @dev Env: BRIDGE_L1, BRIDGE_L2, EXECUTOR_L1, EXECUTOR_L2, FLASH_LOANERS_NFT, TOKEN, WRAPPED_TOKEN_L2
+contract ComputeExpected is Script {
     uint256 constant L2_ROLLUP_ID = 1;
     uint256 constant MAINNET_ROLLUP_ID = 0;
 
-    function run(
-        address bridgeL1,
-        address bridgeL2,
-        address executorL1,
-        address executorL2,
-        address flashLoanersNFT,
-        address token,
-        address wrappedTokenL2
-    ) external view {
+    function run() external view {
+        address bridgeL1 = vm.envAddress("BRIDGE_L1");
+        address bridgeL2 = vm.envAddress("BRIDGE_L2");
+        address executorL1 = vm.envAddress("EXECUTOR_L1");
+        address executorL2 = vm.envAddress("EXECUTOR_L2");
+        address flashLoanersNFT = vm.envAddress("FLASH_LOANERS_NFT");
+        address token = vm.envAddress("TOKEN");
+        address wrappedTokenL2 = vm.envAddress("WRAPPED_TOKEN_L2");
         string memory name = ERC20(token).name();
         string memory symbol = ERC20(token).symbol();
         uint8 tokenDecimals = ERC20(token).decimals();
@@ -346,26 +350,23 @@ contract FlashLoanComputeExpected is Script {
     }
 }
 
-/// @title ExecuteFlashLoanL1 — Post batch entries + trigger flash loan (same block)
-/// @dev Usage:
-///   forge script script/e2e/flash-loan/ExecuteFlashLoan.s.sol:ExecuteFlashLoanL1 \
-///     --rpc-url $L1_RPC --broadcast --private-key $PK \
-///     --sig "run(address,address,address,address,address,address,address,address)" \
-///     $ROLLUPS $BRIDGE_L1 $BRIDGE_L2 $EXECUTOR_L1 $EXECUTOR_L2 $FLASH_LOANERS_NFT $TOKEN $WRAPPED_TOKEN_L2
-contract ExecuteFlashLoanL1 is Script {
+/// @title Execute — Post batch entries + trigger flash loan (same block, local mode)
+/// @dev Env: ROLLUPS, BRIDGE_L1, BRIDGE_L2, EXECUTOR_L1, EXECUTOR_L2,
+///          FLASH_LOANERS_NFT, TOKEN, WRAPPED_TOKEN_L2
+contract Execute is Script {
     uint256 constant L2_ROLLUP_ID = 1;
     uint256 constant MAINNET_ROLLUP_ID = 0;
 
-    function run(
-        address rollupsAddr,
-        address bridgeL1,
-        address bridgeL2,
-        address executorL1,
-        address executorL2,
-        address flashLoanersNFT,
-        address token,
-        address wrappedTokenL2
-    ) external {
+    function run() external {
+        address rollupsAddr = vm.envAddress("ROLLUPS");
+        address bridgeL1 = vm.envAddress("BRIDGE_L1");
+        address bridgeL2 = vm.envAddress("BRIDGE_L2");
+        address executorL1 = vm.envAddress("EXECUTOR_L1");
+        address executorL2 = vm.envAddress("EXECUTOR_L2");
+        address flashLoanersNFT = vm.envAddress("FLASH_LOANERS_NFT");
+        address token = vm.envAddress("TOKEN");
+        address wrappedTokenL2 = vm.envAddress("WRAPPED_TOKEN_L2");
+
         Rollups rollups = Rollups(rollupsAddr);
 
         string memory name = ERC20(token).name();
@@ -486,7 +487,7 @@ contract ExecuteFlashLoanL1 is Script {
         vm.startBroadcast();
 
         // Batcher ensures postBatch + execute happen in the same block
-        FlashLoanBatcher batcher = new FlashLoanBatcher();
+        Batcher batcher = new Batcher();
         batcher.execute(rollups, entries, FlashLoanBridgeExecutor(executorL1));
 
         console.log("L1 execution complete");

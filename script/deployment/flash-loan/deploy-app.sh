@@ -6,7 +6,7 @@
 #   - Private key with ETH on both chains
 #
 # Usage:
-#   bash script/e2e/flash-loan/deploy-app.sh \
+#   bash script/deployment/flash-loan/deploy-app.sh \
 #     --l1-rpc <L1_RPC> \
 #     --l2-rpc <L2_RPC> \
 #     --pk <PRIVATE_KEY> \
@@ -17,8 +17,7 @@
 set -euo pipefail
 export FOUNDRY_DISABLE_NIGHTLY_WARNING=1
 
-SCRIPT_DIR="script/e2e/flash-loan"
-SHARED_DIR="script/e2e/shared"
+SCRIPT_DIR="script/deployment/flash-loan"
 
 # ── Parse args ──
 SALT="0x$(printf '%-64s' "$(echo -n 'sync-rollups-bridge-v1' | xxd -p)" | tr ' ' '0')"
@@ -151,21 +150,23 @@ echo "EXECUTOR_L1=$EXECUTOR_L1"
 # ══════════════════════════════════════════════
 #  Summary
 # ══════════════════════════════════════════════
+# Read token metadata (needed by ExecuteL2)
+TOKEN_NAME=$(cast call --rpc-url "$L1_RPC" "$TOKEN" "name()(string)" | tr -d '"')
+TOKEN_SYMBOL=$(cast call --rpc-url "$L1_RPC" "$TOKEN" "symbol()(string)" | tr -d '"')
+TOKEN_DECIMALS=$(cast call --rpc-url "$L1_RPC" "$TOKEN" "decimals()(uint8)")
+
 echo ""
 echo "====== Deployment Complete ======"
 echo ""
-echo "L1 Contracts:"
-echo "  TOKEN=$TOKEN"
-echo "  BRIDGE_L1=$BRIDGE_L1"
-echo "  FLASH_LOAN_POOL=$FLASH_LOAN_POOL"
-echo "  EXECUTOR_L1=$EXECUTOR_L1"
-echo "  EXECUTOR_L2_PROXY=$EXECUTOR_L2_PROXY"
-echo ""
-echo "L2 Contracts:"
-echo "  BRIDGE_L2=$BRIDGE_L2"
-echo "  EXECUTOR_L2=$EXECUTOR_L2"
-echo "  FLASH_LOANERS_NFT=$FLASH_LOANERS_NFT"
-echo "  WRAPPED_TOKEN_L2=$WRAPPED_TOKEN_L2 (pre-computed)"
-echo ""
-echo "To trigger the flash loan:"
-echo "  cast send --rpc-url \$L1_RPC --private-key \$PK $EXECUTOR_L1 'execute()'"
+echo "TOKEN=$TOKEN"
+echo "BRIDGE_L1=$BRIDGE_L1"
+echo "BRIDGE_L2=$BRIDGE_L2"
+echo "FLASH_LOAN_POOL=$FLASH_LOAN_POOL"
+echo "EXECUTOR_L1=$EXECUTOR_L1"
+echo "EXECUTOR_L2=$EXECUTOR_L2"
+echo "EXECUTOR_L2_PROXY=$EXECUTOR_L2_PROXY"
+echo "FLASH_LOANERS_NFT=$FLASH_LOANERS_NFT"
+echo "WRAPPED_TOKEN_L2=$WRAPPED_TOKEN_L2"
+echo "TOKEN_NAME=$TOKEN_NAME"
+echo "TOKEN_SYMBOL=$TOKEN_SYMBOL"
+echo "TOKEN_DECIMALS=$TOKEN_DECIMALS"
