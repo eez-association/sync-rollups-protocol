@@ -69,11 +69,13 @@ echo ""
 echo "====== Execute L2 ======"
 EXEC_L2=$(forge script "$SOL:ExecuteL2" --rpc-url "$L2_RPC" --broadcast --private-key "$PK" 2>&1) \
     && echo "L2 transaction succeeded" || echo "L2 transaction reverted (expected - system posts batch separately)"
+trace_failed_txs "$EXEC_L2" "$L2_RPC"
 
 echo ""
 echo "====== Execute L1 ======"
 EXEC_OUT=$(forge script "$SOL:ExecuteNetwork" --rpc-url "$RPC" --broadcast --private-key "$PK" 2>&1) \
     && echo "Transaction succeeded" || echo "Transaction reverted (expected - system posts batch separately)"
+trace_failed_txs "$EXEC_OUT" "$RPC"
 
 L1_BLOCK=$(cast block-number --rpc-url "$RPC")
 echo "L1 block: $L1_BLOCK"

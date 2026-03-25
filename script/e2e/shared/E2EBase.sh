@@ -18,8 +18,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# ── Extract KEY=VALUE from forge script output ──
-extract() { echo "$1" | grep "$2=" | sed "s/.*$2=//" | awk '{print $1}'; }
+# ── Extract KEY=VALUE from forge script output (returns "" if not found) ──
+extract() { echo "$1" | grep "$2=" | sed "s/.*$2=//" | awk '{print $1}' || true; }
 
 # ── Start an anvil instance, return PID via variable name ──
 # Usage: start_anvil PORT PID_VAR
@@ -120,6 +120,57 @@ deploy_contracts() {
 # Usage: echo "$FORGE_OUTPUT" | strip_traces
 strip_traces() {
     grep -v '├─\|└─\|│ \|→ new\|\[staticcall\]\|\[Return\]\|\[Stop\]\|\[Revert\]\|::run(' | sed -n '/^  /p'
+}
+
+# ── Trace failed transactions from forge output ──
+# Usage: trace_failed_txs "$FORGE_OUTPUT" RPC
+trace_failed_txs() {
+    local output="$1"
+    local rpc="$2"
+    local txs
+    txs=$(echo "$output" | grep "Transaction Failure:" | sed 's/.*Transaction Failure: //' | awk '{print $1}' || true)
+    if [[ -n "$txs" ]]; then
+        while IFS= read -r tx; do
+            echo ""
+            echo "--- Tracing failed tx $tx ---"
+            cast run "$tx" --rpc-url "$rpc" 2>&1 || true
+        done <<< "$txs"
+    fi
+}
+
+# ── Execute L2 with same-block guarantee (local mode only) ──
+# Disables automine so forge submits all txs to the mempool, then mines
+# them in a single block. This satisfies the ExecutionNotInCurrentBlock check.
+# Usage: EXEC_L2=$(execute_l2_same_block SOL_FILE L2_RPC PK)
+execute_l2_same_block() {
+    local sol="$1" l2_rpc="$2" pk="$3"
+    local tmpfile
+    tmpfile=$(mktemp)
+
+    # Disable automine — txs go to pending pool instead of being mined immediately
+    cast rpc evm_setAutomine false --rpc-url "$l2_rpc" > /dev/null 2>&1
+
+    # forge --broadcast (without --slow) sends ALL txs before polling for receipts
+    forge script "$sol:ExecuteL2" --rpc-url "$l2_rpc" --broadcast --private-key "$pk" > "$tmpfile" 2>&1 &
+    local forge_pid=$!
+    _E2E_PIDS+=("$forge_pid")
+
+    # Wait for forge to submit all txs to the pending pool
+    sleep 3
+
+    # Mine a single block containing all pending txs
+    cast rpc evm_mine --rpc-url "$l2_rpc" > /dev/null 2>&1
+
+    # Wait for forge to finish (it now gets receipts from the mined block)
+    wait "$forge_pid" 2>/dev/null
+    local exit_code=$?
+
+    # Re-enable automine for subsequent operations
+    cast rpc evm_setAutomine true --rpc-url "$l2_rpc" > /dev/null 2>&1
+
+    cat "$tmpfile"
+    rm -f "$tmpfile"
+    return "$exit_code"
 }
 
 # ── Ensure CREATE2 factory exists on a chain ──

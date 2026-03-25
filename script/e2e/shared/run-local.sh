@@ -52,19 +52,23 @@ deploy_contracts "$SOL" "$L1_RPC" "$L2_RPC" "$PK"
 # ══════════════════════════════════════════════
 #  5. Execute (L2 first, then L1)
 # ══════════════════════════════════════════════
+FAILED=false
+
 echo ""
-echo "====== Execute L2 ======"
-EXEC_L2=$(forge script "$SOL:ExecuteL2" --rpc-url "$L2_RPC" --broadcast --private-key "$PK" 2>&1) \
-    && echo "L2 execution succeeded" || echo "L2 execution failed"
-echo "$EXEC_L2" | grep -E "complete|done|error|Error" || true
+echo "====== Execute L2 (same-block) ======"
+EXEC_L2=$(execute_l2_same_block "$SOL" "$L2_RPC" "$PK") \
+    && echo "L2 execution succeeded" || { echo "L2 execution FAILED"; FAILED=true; }
+echo "$EXEC_L2" | grep -E "complete|done" || true
+trace_failed_txs "$EXEC_L2" "$L2_RPC"
 L2_BLOCK=$(cast block-number --rpc-url "$L2_RPC")
 echo "L2 execution at block $L2_BLOCK"
 
 echo ""
 echo "====== Execute L1 ======"
 EXEC_L1=$(forge script "$SOL:Execute" --rpc-url "$L1_RPC" --broadcast --private-key "$PK" 2>&1) \
-    && echo "L1 execution succeeded" || echo "L1 execution failed"
+    && echo "L1 execution succeeded" || { echo "L1 execution FAILED"; FAILED=true; }
 echo "$EXEC_L1" | grep -E "complete|done|counter" || true
+trace_failed_txs "$EXEC_L1" "$L1_RPC"
 L1_BLOCK=$(cast block-number --rpc-url "$L1_RPC")
 echo "L1 execution at block $L1_BLOCK"
 
@@ -73,6 +77,12 @@ echo "L1 execution at block $L1_BLOCK"
 # ══════════════════════════════════════════════
 decode_block "$L2_RPC" "$L2_BLOCK" "$MANAGER_L2" "L2 "
 decode_block "$L1_RPC" "$L1_BLOCK" "$ROLLUPS" "L1 "
+
+if $FAILED; then
+    echo ""
+    echo "====== FAILED ======"
+    exit 1
+fi
 
 echo ""
 echo "====== Done ======"
