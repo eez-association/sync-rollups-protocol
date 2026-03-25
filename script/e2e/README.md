@@ -20,8 +20,6 @@ script/e2e/
 │   └── E2E.s.sol
 ├── multi-call-two-diff/      # Multi-call: two different proxies
 │   └── E2E.s.sol
-├── multi-call/               # Multi-call (original, manual use only)
-│   └── E2E.s.sol
 └── flash-loan/               # Multi-chain flash loan e2e
     └── E2E.s.sol
 
@@ -38,17 +36,17 @@ Each test has only `E2E.s.sol`. No per-test shell scripts. Multi-chain tests (fl
 
 ### Local Mode
 
-Starts anvil(s), deploys infra + app, executes via Batcher, decodes events.
+Starts two anvils (L1 + L2), deploys infra + app, executes via Batcher, decodes events.
 
 ```bash
 bash script/e2e/shared/run-local.sh script/e2e/counter/E2E.s.sol
 bash script/e2e/shared/run-local.sh script/e2e/bridge/E2E.s.sol
 bash script/e2e/shared/run-local.sh script/e2e/multi-call-twice/E2E.s.sol
 bash script/e2e/shared/run-local.sh script/e2e/multi-call-two-diff/E2E.s.sol
-bash script/e2e/shared/run-local.sh script/e2e/flash-loan/E2E.s.sol   # auto-detects multi-chain
+bash script/e2e/shared/run-local.sh script/e2e/flash-loan/E2E.s.sol
 ```
 
-Multi-chain is auto-detected when `deploy-app.sh` exists in `script/deployment/<test-name>/`. In that case, two anvils are started and infra is deployed on both chains.
+All tests use both L1 and L2 anvils. Multi-chain deployment contracts (e.g. `DeployL2`, `Deploy2L2`) are auto-discovered in the E2E.s.sol file — contracts with "L2" in the name deploy to the L2 RPC.
 
 ### Network Mode
 

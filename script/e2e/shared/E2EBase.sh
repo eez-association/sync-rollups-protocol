@@ -135,6 +135,7 @@ ensure_create2_factory() {
         return
     fi
     echo "$label: Deploying CREATE2 factory..."
+    # Run twice: first funds the pre-determined signer, second deploys the factory
     forge script script/DeployBridge.s.sol:DeployCreate2Factory \
         --rpc-url "$rpc" --broadcast --private-key "$pk" 2>&1 | tail -1
     forge script script/DeployBridge.s.sol:DeployCreate2Factory \

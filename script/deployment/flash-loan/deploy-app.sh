@@ -42,7 +42,7 @@ for var in L1_RPC L2_RPC PK ROLLUPS MANAGER_L2 L2_ROLLUP_ID; do
     fi
 done
 
-extract() { echo "$1" | grep "$2=" | sed "s/.*$2=//"; }
+extract() { echo "$1" | grep "$2=" | sed "s/.*$2=//" | awk '{print $1}'; }
 
 # ══════════════════════════════════════════════
 #  Step 0: Ensure CREATE2 factory on both chains

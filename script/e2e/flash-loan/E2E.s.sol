@@ -71,10 +71,9 @@ contract DeployL2 is Script {
     }
 }
 
-/// @title Deploy2 — Set canonical on L1, compute wrapped token, deploy L1 flash loan contracts
+/// @title Deploy2 — Set canonical on L1, compute wrapped token, deploy flash loan pool
 /// @dev Env: ROLLUPS, BRIDGE_L1, BRIDGE_L2, TOKEN, L2_ROLLUP_ID
-/// Outputs: WRAPPED_TOKEN_L2, FLASH_LOAN_POOL, EXECUTOR_L2_PROXY, EXECUTOR_L1,
-///          TOKEN_NAME, TOKEN_SYMBOL, TOKEN_DECIMALS
+/// Outputs: WRAPPED_TOKEN_L2, FLASH_LOAN_POOL, TOKEN_NAME, TOKEN_SYMBOL, TOKEN_DECIMALS
 contract Deploy2 is Script {
     function run() external {
         address rollups = vm.envAddress("ROLLUPS");
@@ -107,12 +106,6 @@ contract Deploy2 is Script {
         FlashLoan flashLoanPool = new FlashLoan();
         IERC20(token).transfer(address(flashLoanPool), 10_000e18);
         console.log("FLASH_LOAN_POOL=%s", address(flashLoanPool));
-
-        // Create proxy for executorL2 on L1 (will be deployed in Deploy2L2, but we need the address now)
-        // We deploy a dummy executor first to get the proxy address — the real one comes in Deploy2L2
-        // Actually we can't reference executor L2 yet. We need Deploy2L2 first.
-        // Instead, we'll output what we have and Deploy2L2 outputs EXECUTOR_L2.
-        // Then we need a Deploy3 to create the proxy and executor L1.
 
         vm.stopBroadcast();
 
@@ -168,8 +161,15 @@ contract Deploy3 is Script {
 
         // Executor on L1
         FlashLoanBridgeExecutor executor = new FlashLoanBridgeExecutor(
-            flashLoanPool, bridgeL1, executorL2Proxy, executorL2,
-            wrappedTokenL2, flashLoanersNFT, bridgeL2, l2RollupId, token
+            flashLoanPool,
+            bridgeL1,
+            executorL2Proxy,
+            executorL2,
+            wrappedTokenL2,
+            flashLoanersNFT,
+            bridgeL2,
+            l2RollupId,
+            token
         );
         console.log("EXECUTOR_L1=%s", address(executor));
 
@@ -293,12 +293,7 @@ contract ExecuteL2 is Script {
 
         // Single system call: receiveTokens + claimAndBridgeBack (chained)
         manager.executeIncomingCrossChainCall(
-            bridgeL2,
-            0,
-            fwdReceiveTokensCalldata,
-            bridgeL1,
-            MAINNET_ROLLUP_ID,
-            new uint256[](0)
+            bridgeL2, 0, fwdReceiveTokensCalldata, bridgeL1, MAINNET_ROLLUP_ID, new uint256[](0)
         );
         console.log("L2 execution complete");
 
@@ -308,11 +303,7 @@ contract ExecuteL2 is Script {
 
 /// @title Batcher — postBatch + executor.execute() in single tx
 contract Batcher {
-    function execute(
-        Rollups rollups,
-        ExecutionEntry[] calldata entries,
-        FlashLoanBridgeExecutor executor
-    ) external {
+    function execute(Rollups rollups, ExecutionEntry[] calldata entries, FlashLoanBridgeExecutor executor) external {
         rollups.postBatch(entries, 0, "", "proof");
         executor.execute(msg.sender);
     }
