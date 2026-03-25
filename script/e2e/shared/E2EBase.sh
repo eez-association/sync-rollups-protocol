@@ -197,8 +197,6 @@ get_block_from_broadcast() {
 # Fetches the tx input, extracts the 3rd param (callData), decodes L2 block numbers.
 # Usage: L2_BLOCKS=$(extract_l2_blocks_from_tx TX_HASH RPC_URL)
 # Returns: "[156,157]" or "[]" if empty
-# TODO: The system currently encodes callData as abi.encode(tuple(uint256[], bytes[]))
-#   instead of abi.encode(uint256[], bytes[]). Update the decode once the encoding is fixed.
 extract_l2_blocks_from_tx() {
     local tx_hash="$1" rpc="$2"
     local postbatch_sig='postBatch(((uint256,bytes32,bytes32,int256)[],bytes32,(uint8,uint256,address,uint256,bytes,bool,address,uint256,uint256[]))[],uint256,bytes,bytes)'
@@ -215,10 +213,8 @@ extract_l2_blocks_from_tx() {
         return
     fi
 
-    # TODO: callData is currently abi.encode(tuple(uint256[], bytes[])) — update to
-    #   abi.encode(uint256[], bytes[]) once the tuple wrapper is removed from the system.
     local decoded
-    decoded=$(cast abi-decode "f()((uint256[],bytes[]))" "$calldata_hex" 2>/dev/null) || { echo "[]"; return; }
+    decoded=$(cast abi-decode "f()(uint256[],bytes[])" "$calldata_hex" 2>/dev/null) || { echo "[]"; return; }
 
     # cast outputs: ([156, 157], [0x...]) — extract the first array
     local blocks_str
