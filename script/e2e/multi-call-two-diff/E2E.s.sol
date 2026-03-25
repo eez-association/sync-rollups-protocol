@@ -73,8 +73,17 @@ contract Deploy is Script {
     }
 }
 
-/// @title ExecuteL2 — Load L2 table + executeIncomingCrossChainCall for both counters
+/// @title ExecuteL2 — Load L2 table + executeIncomingCrossChainCall (chained)
 /// @dev Env: MANAGER_L2, COUNTER_A, COUNTER_B, CALL_TWO_DIFF
+///
+/// L2 execution table (2 entries, chained):
+///   [0] hash(RESULT_1) → CALL(counterB)       ← result of A chains to calling B
+///   [1] hash(RESULT_1) → RESULT_1 (terminal)   ← result of B is terminal
+///
+/// Both entries share the same actionHash (hash of RESULT(1)) because both calls
+/// return the same result. Entry 0 is consumed first (chains), entry 1 second (terminal).
+///
+/// 1 executeIncomingCrossChainCall (for counterA). Chaining handles counterB.
 contract ExecuteL2 is Script {
     function run() external {
         address managerL2Addr = vm.envAddress("MANAGER_L2");
@@ -85,7 +94,20 @@ contract ExecuteL2 is Script {
         CrossChainManagerL2 manager = CrossChainManagerL2(managerL2Addr);
         bytes memory incrementCallData = abi.encodeWithSelector(Counter.increment.selector);
 
-        // Both counters return 1 (each incremented once: 0→1)
+        // CALL to counterB: chained from result of counterA (no scope — same level)
+        Action memory callB = Action({
+            actionType: ActionType.CALL,
+            rollupId: 1,
+            destination: counterBAddr,
+            value: 0,
+            data: incrementCallData,
+            failed: false,
+            sourceAddress: callTwoDiffAddr,
+            sourceRollup: 0,
+            scope: new uint256[](0)
+        });
+
+        // RESULT(1): both counters return 1 (each incremented 0→1)
         Action memory result1 = Action({
             actionType: ActionType.RESULT,
             rollupId: 1,
@@ -100,11 +122,14 @@ contract ExecuteL2 is Script {
 
         vm.startBroadcast();
 
-        // Load execution table: 2 entries (same RESULT hash, consumed once per call)
+        // Load chained execution table
+        // Both entries have actionHash = hash(RESULT(1)):
+        //   entry 0 consumed after counterA returns 1 → chains to CALL(counterB)
+        //   entry 1 consumed after counterB returns 1 → terminal
         ExecutionEntry[] memory entries = new ExecutionEntry[](2);
         entries[0].stateDeltas = new StateDelta[](0);
         entries[0].actionHash = keccak256(abi.encode(result1));
-        entries[0].nextAction = result1;
+        entries[0].nextAction = callB;
 
         entries[1].stateDeltas = new StateDelta[](0);
         entries[1].actionHash = keccak256(abi.encode(result1));
@@ -112,13 +137,9 @@ contract ExecuteL2 is Script {
 
         manager.loadExecutionTable(entries);
 
-        // Call 1: increment counterA (0→1)
+        // Single call: increment counterA (0→1). Chaining handles counterB.
         manager.executeIncomingCrossChainCall(
             counterAAddr, 0, incrementCallData, callTwoDiffAddr, 0, new uint256[](0)
-        );
-        // Call 2: increment counterB (0→1)
-        manager.executeIncomingCrossChainCall(
-            counterBAddr, 0, incrementCallData, callTwoDiffAddr, 0, new uint256[](0)
         );
 
         console.log("L2 execution complete");
@@ -250,6 +271,7 @@ contract ComputeExpected is ComputeExpectedBase {
 
         bytes memory incrementCallData = abi.encodeWithSelector(Counter.increment.selector);
 
+        // L1 CALL actions (no scope — consumed independently by postBatch)
         Action memory callA = Action({
             actionType: ActionType.CALL,
             rollupId: 1,
@@ -277,7 +299,7 @@ contract ComputeExpected is ComputeExpectedBase {
         bytes32 hashA = keccak256(abi.encode(callA));
         bytes32 hashB = keccak256(abi.encode(callB));
 
-        // RESULT action (L2 execution table entries — same hash, 2 entries)
+        // RESULT action (both counters return 1)
         Action memory result1 = Action({
             actionType: ActionType.RESULT,
             rollupId: 1,
@@ -289,7 +311,7 @@ contract ComputeExpected is ComputeExpectedBase {
             sourceRollup: 0,
             scope: new uint256[](0)
         });
-        bytes32 l2Hash = keccak256(abi.encode(result1));
+        bytes32 resultHash = keccak256(abi.encode(result1));
 
         StateDelta[] memory deltas1 = new StateDelta[](1);
         deltas1[0] = StateDelta({
@@ -307,37 +329,45 @@ contract ComputeExpected is ComputeExpectedBase {
             etherDelta: 0
         });
 
+        // L1 entry hashes (unchanged — 2 independent deferred entries)
+        bytes32 l1HashA = _entryHash(hashA, result1);
+        bytes32 l1HashB = _entryHash(hashB, result1);
+
+        // L2 entry hashes (chained: RESULT → CALL_B, RESULT → RESULT terminal)
+        // Both entries have actionHash = hash(RESULT(1)) — consumed in order
+        bytes32 l2Hash0 = _entryHash(resultHash, callB);
+        bytes32 l2Hash1 = _entryHash(resultHash, result1);
+
         // Parseable lines
-        console.log("EXPECTED_L1_HASHES=[%s,%s]", vm.toString(hashA), vm.toString(hashB));
-        console.log("EXPECTED_L2_HASHES=[%s,%s]", vm.toString(l2Hash), vm.toString(l2Hash));
-        console.log("EXPECTED_L2_CALL_HASHES=[%s,%s]", vm.toString(hashA), vm.toString(hashB));
+        console.log("EXPECTED_L1_HASHES=[%s,%s]", vm.toString(l1HashA), vm.toString(l1HashB));
+        console.log("EXPECTED_L2_HASHES=[%s,%s]", vm.toString(l2Hash0), vm.toString(l2Hash1));
+        console.log("EXPECTED_L2_CALL_HASHES=[%s]", vm.toString(hashA));
 
         // Human-readable: L1 execution table
         console.log("");
         console.log("=== EXPECTED L1 EXECUTION TABLE (2 entries, different targets) ===");
-        _logEntry(0, hashA, deltas1, _fmtCall(callA), _fmtResult(result1, "uint256(1)"));
-        _logEntry(1, hashB, deltas2, _fmtCall(callB), _fmtResult(result1, "uint256(1)"));
+        _logEntry(0, l1HashA, deltas1, _fmtCall(callA), _fmtResult(result1, "uint256(1)"));
+        _logEntry(1, l1HashB, deltas2, _fmtCall(callB), _fmtResult(result1, "uint256(1)"));
 
         // Human-readable: L2 execution table
         console.log("");
-        console.log("=== EXPECTED L2 EXECUTION TABLE (2 entries) ===");
+        console.log("=== EXPECTED L2 EXECUTION TABLE (2 entries, chained) ===");
         _logL2Entry(
             0,
-            l2Hash,
+            l2Hash0,
             _fmtResult(result1, "uint256(1)"),
-            string.concat(_fmtResult(result1, "uint256(1)"), "  (terminal)")
+            string.concat(_fmtCall(callB), "  (chains to counterB)")
         );
         _logL2Entry(
             1,
-            l2Hash,
-            string.concat(_fmtResult(result1, "uint256(1)"), "  (same hash, 2nd consumption)"),
+            l2Hash1,
+            _fmtResult(result1, "uint256(1)"),
             string.concat(_fmtResult(result1, "uint256(1)"), "  (terminal)")
         );
 
         // Human-readable: L2 calls
         console.log("");
-        console.log("=== EXPECTED L2 CALLS (2 calls) ===");
+        console.log("=== EXPECTED L2 CALLS (1 call) ===");
         _logL2Call(0, hashA, callA);
-        _logL2Call(1, hashB, callB);
     }
 }

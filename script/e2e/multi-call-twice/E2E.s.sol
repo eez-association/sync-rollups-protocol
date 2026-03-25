@@ -60,8 +60,14 @@ contract Deploy is Script {
     }
 }
 
-/// @title ExecuteL2 — Load L2 table + executeIncomingCrossChainCall twice
+/// @title ExecuteL2 — Load L2 table + executeIncomingCrossChainCall (chained)
 /// @dev Env: MANAGER_L2, COUNTER_A, CALL_TWICE
+///
+/// L2 execution table (2 entries, chained):
+///   [0] hash(RESULT_1) → CALL(counterA again)     ← result of 1st chains to 2nd call
+///   [1] hash(RESULT_2) → RESULT_2 (terminal)       ← result of 2nd is terminal
+///
+/// 1 executeIncomingCrossChainCall. Chaining handles the second invocation.
 contract ExecuteL2 is Script {
     function run() external {
         address managerL2Addr = vm.envAddress("MANAGER_L2");
@@ -71,7 +77,20 @@ contract ExecuteL2 is Script {
         CrossChainManagerL2 manager = CrossChainManagerL2(managerL2Addr);
         bytes memory incrementCallData = abi.encodeWithSelector(Counter.increment.selector);
 
-        // RESULT actions: first call returns 1, second returns 2
+        // CALL action: chained second call to counterA (no scope — same level)
+        Action memory callAction = Action({
+            actionType: ActionType.CALL,
+            rollupId: 1,
+            destination: counterAAddr,
+            value: 0,
+            data: incrementCallData,
+            failed: false,
+            sourceAddress: callTwiceAddr,
+            sourceRollup: 0,
+            scope: new uint256[](0)
+        });
+
+        // RESULT_1: first call returns 1 (counter 0→1)
         Action memory result1 = Action({
             actionType: ActionType.RESULT,
             rollupId: 1,
@@ -83,6 +102,8 @@ contract ExecuteL2 is Script {
             sourceRollup: 0,
             scope: new uint256[](0)
         });
+
+        // RESULT_2: second call returns 2 (counter 1→2, terminal)
         Action memory result2 = Action({
             actionType: ActionType.RESULT,
             rollupId: 1,
@@ -97,11 +118,13 @@ contract ExecuteL2 is Script {
 
         vm.startBroadcast();
 
-        // Load execution table: 2 entries (one per call)
+        // Load chained execution table
+        // Entry 0: consumed after counterA returns 1 → chains to CALL(counterA again)
+        // Entry 1: consumed after counterA returns 2 → terminal
         ExecutionEntry[] memory entries = new ExecutionEntry[](2);
         entries[0].stateDeltas = new StateDelta[](0);
         entries[0].actionHash = keccak256(abi.encode(result1));
-        entries[0].nextAction = result1;
+        entries[0].nextAction = callAction;
 
         entries[1].stateDeltas = new StateDelta[](0);
         entries[1].actionHash = keccak256(abi.encode(result2));
@@ -109,11 +132,7 @@ contract ExecuteL2 is Script {
 
         manager.loadExecutionTable(entries);
 
-        // Call 1: increment counter (0→1)
-        manager.executeIncomingCrossChainCall(
-            counterAAddr, 0, incrementCallData, callTwiceAddr, 0, new uint256[](0)
-        );
-        // Call 2: increment counter (1→2)
+        // Single call: chaining handles the second invocation
         manager.executeIncomingCrossChainCall(
             counterAAddr, 0, incrementCallData, callTwiceAddr, 0, new uint256[](0)
         );
@@ -247,85 +266,113 @@ contract ComputeExpected is ComputeExpectedBase {
 
         bytes memory incrementCallData = abi.encodeWithSelector(Counter.increment.selector);
 
-        Action memory callAction = Action({
-            actionType: ActionType.CALL,
-            rollupId: 1,
-            destination: counterAAddr,
-            value: 0,
-            data: incrementCallData,
-            failed: false,
-            sourceAddress: callTwiceAddr,
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
+        // L1 CALL action (used for L1 entries — rollupId=1 as seen from L1)
+        Action memory callAction = _mkCall(1, counterAAddr, incrementCallData, callTwiceAddr, 0, new uint256[](0));
 
-        // RESULT actions (L2 execution table entries)
-        Action memory result1 = Action({
-            actionType: ActionType.RESULT,
-            rollupId: 1,
-            destination: address(0),
-            value: 0,
-            data: abi.encode(uint256(1)),
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-        Action memory result2 = Action({
-            actionType: ActionType.RESULT,
-            rollupId: 1,
-            destination: address(0),
-            value: 0,
-            data: abi.encode(uint256(2)),
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
+        // L2 CALL action: chained second call (rollupId=1, no scope)
+        Action memory l2CallAction = _mkCall(1, counterAAddr, incrementCallData, callTwiceAddr, 0, new uint256[](0));
 
+        // RESULT actions
+        Action memory result1 = _mkResult(1, abi.encode(uint256(1)));
+        Action memory result2 = _mkResult(1, abi.encode(uint256(2)));
+
+        // L1 entries: same action hash, different state deltas and results
         bytes32 actionHash = keccak256(abi.encode(callAction));
         bytes32 l1Entry1 = _entryHash(actionHash, result1);
         bytes32 l1Entry2 = _entryHash(actionHash, result2);
 
-        bytes32 l2ActionHash1 = keccak256(abi.encode(result1));
-        bytes32 l2ActionHash2 = keccak256(abi.encode(result2));
-        bytes32 l2Entry1 = _entryHash(l2ActionHash1, result1);
-        bytes32 l2Entry2 = _entryHash(l2ActionHash2, result2);
+        // L2 entries: chained — RESULT_1 → CALL(again), RESULT_2 → terminal
+        bytes32 result1Hash = keccak256(abi.encode(result1));
+        bytes32 result2Hash = keccak256(abi.encode(result2));
+        bytes32 l2Entry0 = _entryHash(result1Hash, l2CallAction);
+        bytes32 l2Entry1 = _entryHash(result2Hash, result2);
 
-        // Entry hashes differ because nextActions differ (result1 vs result2)
+        // L2 call hash: what executeIncomingCrossChainCall emits
+        // The system builds a CALL with rollupId=1 on L2
+        bytes32 l2CallHash = keccak256(abi.encode(l2CallAction));
+
         console.log("EXPECTED_L1_HASHES=[%s,%s]", vm.toString(l1Entry1), vm.toString(l1Entry2));
-        console.log("EXPECTED_L2_HASHES=[%s,%s]", vm.toString(l2Entry1), vm.toString(l2Entry2));
-        console.log("EXPECTED_L2_CALL_HASHES=[%s,%s]", vm.toString(actionHash), vm.toString(actionHash));
+        console.log("EXPECTED_L2_HASHES=[%s,%s]", vm.toString(l2Entry0), vm.toString(l2Entry1));
+        console.log("EXPECTED_L2_CALL_HASHES=[%s]", vm.toString(l2CallHash));
 
         // ── L1 execution table ──
-        bytes32 s0 = keccak256("l2-initial-state");
-        bytes32 s1 = keccak256("l2-state-multicall-after-first");
-        bytes32 s2 = keccak256("l2-state-multicall-after-second");
+        {
+            bytes32 s0 = keccak256("l2-initial-state");
+            bytes32 s1 = keccak256("l2-state-multicall-after-first");
+            bytes32 s2 = keccak256("l2-state-multicall-after-second");
 
-        StateDelta[] memory deltas1 = new StateDelta[](1);
-        deltas1[0] = StateDelta({rollupId: 1, currentState: s0, newState: s1, etherDelta: 0});
+            StateDelta[] memory deltas1 = new StateDelta[](1);
+            deltas1[0] = StateDelta({rollupId: 1, currentState: s0, newState: s1, etherDelta: 0});
 
-        StateDelta[] memory deltas2 = new StateDelta[](1);
-        deltas2[0] = StateDelta({rollupId: 1, currentState: s1, newState: s2, etherDelta: 0});
+            StateDelta[] memory deltas2 = new StateDelta[](1);
+            deltas2[0] = StateDelta({rollupId: 1, currentState: s1, newState: s2, etherDelta: 0});
 
-        string memory triggerCall = _fmtCall(callAction);
-        string memory triggerCall2 = string.concat(_fmtCall(callAction), "  (same hash, 2nd consumption)");
+            console.log("");
+            console.log("=== EXPECTED L1 EXECUTION TABLE (2 entries, same action hash) ===");
+            _logEntry(0, l1Entry1, deltas1, _fmtCall(callAction), _fmtResult(result1, "uint256(1)"));
+            _logEntry(
+                1,
+                l1Entry2,
+                deltas2,
+                string.concat(_fmtCall(callAction), "  (same hash, 2nd consumption)"),
+                _fmtResult(result2, "uint256(2)")
+            );
+        }
 
+        // ── L2 execution table (chained) ──
         console.log("");
-        console.log("=== EXPECTED L1 EXECUTION TABLE (2 entries, same action hash) ===");
-        _logEntry(0, l1Entry1, deltas1, triggerCall, _fmtResult(result1, "uint256(1)"));
-        _logEntry(1, l1Entry2, deltas2, triggerCall2, _fmtResult(result2, "uint256(2)"));
-
-        // ── L2 execution table ──
-        console.log("");
-        console.log("=== EXPECTED L2 EXECUTION TABLE (2 entries) ===");
-        _logL2Entry(0, l2Hash1, _fmtResult(result1, "uint256(1)"), string.concat(_fmtResult(result1, "uint256(1)"), "  (terminal)"));
-        _logL2Entry(1, l2Hash2, _fmtResult(result2, "uint256(2)"), string.concat(_fmtResult(result2, "uint256(2)"), "  (terminal)"));
+        console.log("=== EXPECTED L2 EXECUTION TABLE (2 entries, chained) ===");
+        _logL2Entry(
+            0,
+            l2Entry0,
+            _fmtResult(result1, "uint256(1)"),
+            string.concat(_fmtCall(l2CallAction), "  (chains to 2nd call)")
+        );
+        _logL2Entry(
+            1,
+            l2Entry1,
+            _fmtResult(result2, "uint256(2)"),
+            string.concat(_fmtResult(result2, "uint256(2)"), "  (terminal)")
+        );
 
         // ── L2 calls ──
         console.log("");
-        console.log("=== EXPECTED L2 CALLS (2 calls) ===");
-        _logL2Call(0, hash, callAction);
-        _logL2Call(1, hash, callAction);
+        console.log("=== EXPECTED L2 CALLS (1 call) ===");
+        _logL2Call(0, l2CallHash, l2CallAction);
+    }
+
+    function _mkCall(
+        uint256 rollupId,
+        address dest,
+        bytes memory data,
+        address src,
+        uint256 srcRollup,
+        uint256[] memory scope
+    ) internal pure returns (Action memory) {
+        return Action({
+            actionType: ActionType.CALL,
+            rollupId: rollupId,
+            destination: dest,
+            value: 0,
+            data: data,
+            failed: false,
+            sourceAddress: src,
+            sourceRollup: srcRollup,
+            scope: scope
+        });
+    }
+
+    function _mkResult(uint256 rollupId, bytes memory data) internal pure returns (Action memory) {
+        return Action({
+            actionType: ActionType.RESULT,
+            rollupId: rollupId,
+            destination: address(0),
+            value: 0,
+            data: data,
+            failed: false,
+            sourceAddress: address(0),
+            sourceRollup: 0,
+            scope: new uint256[](0)
+        });
     }
 }
