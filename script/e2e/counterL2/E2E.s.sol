@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {Script, console} from "forge-std/Script.sol";
+import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 import {Rollups} from "../../../src/Rollups.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
 import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
@@ -271,8 +272,21 @@ contract ExecuteNetworkL2 is Script {
 
 /// @title ComputeExpected — Compute expected actionHashes + print expected table
 /// @dev Env: COUNTER_L1, COUNTER_AND_PROXY_L2
-contract ComputeExpected is Script {
+contract ComputeExpected is ComputeExpectedBase {
     uint256 constant L2_ROLLUP_ID = 1;
+
+    function _name(address a) internal view override returns (string memory) {
+        address counterL1Addr = vm.envAddress("COUNTER_L1");
+        address counterAndProxyL2Addr = vm.envAddress("COUNTER_AND_PROXY_L2");
+        if (a == counterL1Addr) return "Counter";
+        if (a == counterAndProxyL2Addr) return "CounterAndProxy";
+        return _shortAddr(a);
+    }
+
+    function _funcName(bytes4 sel) internal pure override returns (string memory) {
+        if (sel == Counter.increment.selector) return "increment";
+        return ComputeExpectedBase._funcName(sel);
+    }
 
     function run() external view {
         address counterL1Addr = vm.envAddress("COUNTER_L1");
@@ -334,33 +348,26 @@ contract ComputeExpected is Script {
         // L2 call: the CALL action hash (executeCrossChainCall on L2)
         console.log("EXPECTED_L2_CALL_HASHES=[%s]", vm.toString(l2h0));
 
-        // Human-readable
+        // ── Human-readable: L1 execution table (2 entries) ──
         console.log("");
         console.log("=== EXPECTED L1 EXECUTION TABLE (2 entries) ===");
-        console.log("  [0] DEFERRED  actionHash: %s", vm.toString(h0));
-        console.log(
-            string.concat(
-                "      stateDelta: rollup 1  ",
-                vm.toString(s0),
-                " -> ",
-                vm.toString(s1),
-                "  ether: 0"
-            )
-        );
-        console.log("      nextAction: CALL(rollup 0, dest=Counter, src=CounterAndProxyL2)");
 
-        console.log("  [1] DEFERRED  actionHash: %s", vm.toString(h1));
-        console.log(
-            string.concat(
-                "      stateDelta: rollup 1  ",
-                vm.toString(s1),
-                " -> ",
-                vm.toString(s2),
-                "  ether: 0"
-            )
-        );
-        console.log(
-            "      nextAction: RESULT(rollup 0, ok, data=0x0000000000000000000000000000000000000000000000000000000000000001)"
-        );
+        StateDelta[] memory deltas0 = new StateDelta[](1);
+        deltas0[0] = StateDelta({rollupId: L2_ROLLUP_ID, currentState: s0, newState: s1, etherDelta: 0});
+        _logEntry(0, h0, deltas0, _fmtL2TX(l2txAction), _fmtCall(callAction));
+
+        StateDelta[] memory deltas1 = new StateDelta[](1);
+        deltas1[0] = StateDelta({rollupId: L2_ROLLUP_ID, currentState: s1, newState: s2, etherDelta: 0});
+        _logEntry(1, h1, deltas1, _fmtResult(resultAction, "uint256(1)"), string.concat(_fmtResult(resultAction, "uint256(1)"), "  (terminal)"));
+
+        // ── Human-readable: L2 execution table (1 entry) ──
+        console.log("");
+        console.log("=== EXPECTED L2 EXECUTION TABLE (1 entry) ===");
+        _logL2Entry(0, l2h0, _fmtCall(callAction), _fmtResult(resultAction, "uint256(1)"));
+
+        // ── Human-readable: L2 calls (1 call) ──
+        console.log("");
+        console.log("=== EXPECTED L2 CALLS (1 call) ===");
+        _logL2Call(0, l2h0, callAction);
     }
 }

@@ -7,6 +7,7 @@ import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
 import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
 import {Counter} from "../../../test/mocks/CounterContracts.sol";
 import {CallTwoDifferent} from "../../../test/mocks/MultiCallContracts.sol";
+import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 
 /// @notice Batcher: postBatch + callBothCounters in one tx
 contract Batcher {
@@ -229,11 +230,24 @@ contract ExecuteNetwork is Script {
 
 /// @title ComputeExpected — Compute expected hashes for TwoDifferent scenario
 /// @dev Env: COUNTER_A, COUNTER_B, CALL_TWO_DIFF
-contract ComputeExpected is Script {
+contract ComputeExpected is ComputeExpectedBase {
+    function _name(address a) internal view override returns (string memory) {
+        if (a == vm.envAddress("COUNTER_A")) return "CounterA";
+        if (a == vm.envAddress("COUNTER_B")) return "CounterB";
+        if (a == vm.envAddress("CALL_TWO_DIFF")) return "CallTwoDifferent";
+        return _shortAddr(a);
+    }
+
+    function _funcName(bytes4 sel) internal pure override returns (string memory) {
+        if (sel == Counter.increment.selector) return "increment";
+        return ComputeExpectedBase._funcName(sel);
+    }
+
     function run() external view {
         address counterAAddr = vm.envAddress("COUNTER_A");
         address counterBAddr = vm.envAddress("COUNTER_B");
         address callTwoDiffAddr = vm.envAddress("CALL_TWO_DIFF");
+
         bytes memory incrementCallData = abi.encodeWithSelector(Counter.increment.selector);
 
         Action memory callA = Action({
@@ -277,15 +291,53 @@ contract ComputeExpected is Script {
         });
         bytes32 l2Hash = keccak256(abi.encode(result1));
 
+        StateDelta[] memory deltas1 = new StateDelta[](1);
+        deltas1[0] = StateDelta({
+            rollupId: 1,
+            currentState: keccak256("l2-initial-state"),
+            newState: keccak256("l2-state-twodiff-after-A"),
+            etherDelta: 0
+        });
+
+        StateDelta[] memory deltas2 = new StateDelta[](1);
+        deltas2[0] = StateDelta({
+            rollupId: 1,
+            currentState: keccak256("l2-state-twodiff-after-A"),
+            newState: keccak256("l2-state-twodiff-after-B"),
+            etherDelta: 0
+        });
+
+        // Parseable lines
         console.log("EXPECTED_L1_HASHES=[%s,%s]", vm.toString(hashA), vm.toString(hashB));
         console.log("EXPECTED_L2_HASHES=[%s,%s]", vm.toString(l2Hash), vm.toString(l2Hash));
         console.log("EXPECTED_L2_CALL_HASHES=[%s,%s]", vm.toString(hashA), vm.toString(hashB));
 
+        // Human-readable: L1 execution table
         console.log("");
-        console.log("=== EXPECTED EXECUTION TABLE (2 entries, different action hashes) ===");
-        console.log("  [0] DEFERRED  actionHash: %s", vm.toString(hashA));
-        console.log("      nextAction: RESULT(rollup 1, ok, data=encode(1))");
-        console.log("  [1] DEFERRED  actionHash: %s", vm.toString(hashB));
-        console.log("      nextAction: RESULT(rollup 1, ok, data=encode(1))");
+        console.log("=== EXPECTED L1 EXECUTION TABLE (2 entries, different targets) ===");
+        _logEntry(0, hashA, deltas1, _fmtCall(callA), _fmtResult(result1, "uint256(1)"));
+        _logEntry(1, hashB, deltas2, _fmtCall(callB), _fmtResult(result1, "uint256(1)"));
+
+        // Human-readable: L2 execution table
+        console.log("");
+        console.log("=== EXPECTED L2 EXECUTION TABLE (2 entries) ===");
+        _logL2Entry(
+            0,
+            l2Hash,
+            _fmtResult(result1, "uint256(1)"),
+            string.concat(_fmtResult(result1, "uint256(1)"), "  (terminal)")
+        );
+        _logL2Entry(
+            1,
+            l2Hash,
+            string.concat(_fmtResult(result1, "uint256(1)"), "  (same hash, 2nd consumption)"),
+            string.concat(_fmtResult(result1, "uint256(1)"), "  (terminal)")
+        );
+
+        // Human-readable: L2 calls
+        console.log("");
+        console.log("=== EXPECTED L2 CALLS (2 calls) ===");
+        _logL2Call(0, hashA, callA);
+        _logL2Call(1, hashB, callB);
     }
 }

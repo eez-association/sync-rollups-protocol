@@ -7,6 +7,7 @@ import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
 import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
 import {Bridge} from "../../../src/periphery/Bridge.sol";
 import {_deployBridge, _computeBridgeAddress} from "../../DeployBridge.s.sol";
+import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 
 /// @notice Batcher: postBatch + bridgeEther in one tx (local mode only)
 contract Batcher {
@@ -171,7 +172,13 @@ contract ExecuteNetwork is Script {
 
 /// @title ComputeExpected — Compute expected actionHashes + print expected table
 /// @dev Env: BRIDGE, DESTINATION
-contract ComputeExpected is Script {
+contract ComputeExpected is ComputeExpectedBase {
+    function _name(address a) internal view override returns (string memory) {
+        if (a == vm.envAddress("BRIDGE")) return "Bridge";
+        if (a == vm.envAddress("DESTINATION")) return "Destination";
+        return _shortAddr(a);
+    }
+
     function run() external view {
         address bridgeAddr = vm.envAddress("BRIDGE");
         address destination = vm.envAddress("DESTINATION");
@@ -219,19 +226,26 @@ contract ComputeExpected is Script {
         // L2 call verification (same hash — the CALL to L2)
         console.log("EXPECTED_L2_CALL_HASHES=[%s]", vm.toString(hash));
 
+        // ── Human-readable output ──
         console.log("");
-        console.log("=== EXPECTED EXECUTION TABLE (1 entry) ===");
-        console.log("  [0] DEFERRED  actionHash: %s", vm.toString(hash));
-        console.log(
-            string.concat(
-                "      stateDelta: rollup 1  ",
-                vm.toString(stateDeltas[0].currentState),
-                " -> ",
-                vm.toString(stateDeltas[0].newState),
-                "  ether: ",
-                vm.toString(stateDeltas[0].etherDelta)
-            )
+
+        // L1 execution table
+        console.log("=== EXPECTED L1 EXECUTION TABLE (1 entry) ===");
+        _logEntry(0, hash, stateDeltas, _fmtCall(callAction), _fmtResult(resultAction, "(void)"));
+
+        // L2 execution table
+        console.log("");
+        console.log("=== EXPECTED L2 EXECUTION TABLE (1 entry) ===");
+        _logL2Entry(
+            0,
+            l2Hash,
+            _fmtResult(resultAction, "(void)"),
+            string.concat(_fmtResult(resultAction, "(void)"), "  (terminal)")
         );
-        console.log("      nextAction: RESULT(rollup 1, ok, data=0x)");
+
+        // L2 calls
+        console.log("");
+        console.log("=== EXPECTED L2 CALLS (1 call) ===");
+        _logL2Call(0, hash, callAction);
     }
 }

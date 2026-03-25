@@ -7,6 +7,7 @@ import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
 import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
 import {Counter} from "../../../test/mocks/CounterContracts.sol";
 import {CallTwice} from "../../../test/mocks/MultiCallContracts.sol";
+import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 
 /// @notice Batcher: postBatch + callCounterTwice in one tx
 contract Batcher {
@@ -228,10 +229,22 @@ contract ExecuteNetwork is Script {
 
 /// @title ComputeExpected — Compute expected hashes for CallTwice scenario
 /// @dev Env: COUNTER_A, CALL_TWICE
-contract ComputeExpected is Script {
+contract ComputeExpected is ComputeExpectedBase {
+    function _name(address a) internal view override returns (string memory) {
+        if (a == vm.envAddress("COUNTER_A")) return "Counter";
+        if (a == vm.envAddress("CALL_TWICE")) return "CallTwice";
+        return _shortAddr(a);
+    }
+
+    function _funcName(bytes4 sel) internal pure override returns (string memory) {
+        if (sel == Counter.increment.selector) return "increment";
+        return ComputeExpectedBase._funcName(sel);
+    }
+
     function run() external view {
         address counterAAddr = vm.envAddress("COUNTER_A");
         address callTwiceAddr = vm.envAddress("CALL_TWICE");
+
         bytes memory incrementCallData = abi.encodeWithSelector(Counter.increment.selector);
 
         Action memory callAction = Action({
@@ -279,11 +292,35 @@ contract ComputeExpected is Script {
         console.log("EXPECTED_L2_HASHES=[%s,%s]", vm.toString(l2Hash1), vm.toString(l2Hash2));
         console.log("EXPECTED_L2_CALL_HASHES=[%s,%s]", vm.toString(hash), vm.toString(hash));
 
+        // ── L1 execution table ──
+        bytes32 s0 = keccak256("l2-initial-state");
+        bytes32 s1 = keccak256("l2-state-multicall-after-first");
+        bytes32 s2 = keccak256("l2-state-multicall-after-second");
+
+        StateDelta[] memory deltas1 = new StateDelta[](1);
+        deltas1[0] = StateDelta({rollupId: 1, currentState: s0, newState: s1, etherDelta: 0});
+
+        StateDelta[] memory deltas2 = new StateDelta[](1);
+        deltas2[0] = StateDelta({rollupId: 1, currentState: s1, newState: s2, etherDelta: 0});
+
+        string memory triggerCall = _fmtCall(callAction);
+        string memory triggerCall2 = string.concat(_fmtCall(callAction), "  (same hash, 2nd consumption)");
+
         console.log("");
-        console.log("=== EXPECTED EXECUTION TABLE (2 entries, same action hash) ===");
-        console.log("  [0] DEFERRED  actionHash: %s", vm.toString(hash));
-        console.log("      nextAction: RESULT(rollup 1, ok, data=encode(1))");
-        console.log("  [1] DEFERRED  actionHash: %s", vm.toString(hash));
-        console.log("      nextAction: RESULT(rollup 1, ok, data=encode(2))");
+        console.log("=== EXPECTED L1 EXECUTION TABLE (2 entries, same action hash) ===");
+        _logEntry(0, hash, deltas1, triggerCall, _fmtResult(result1, "uint256(1)"));
+        _logEntry(1, hash, deltas2, triggerCall2, _fmtResult(result2, "uint256(2)"));
+
+        // ── L2 execution table ──
+        console.log("");
+        console.log("=== EXPECTED L2 EXECUTION TABLE (2 entries) ===");
+        _logL2Entry(0, l2Hash1, _fmtResult(result1, "uint256(1)"), string.concat(_fmtResult(result1, "uint256(1)"), "  (terminal)"));
+        _logL2Entry(1, l2Hash2, _fmtResult(result2, "uint256(2)"), string.concat(_fmtResult(result2, "uint256(2)"), "  (terminal)"));
+
+        // ── L2 calls ──
+        console.log("");
+        console.log("=== EXPECTED L2 CALLS (2 calls) ===");
+        _logL2Call(0, hash, callAction);
+        _logL2Call(1, hash, callAction);
     }
 }

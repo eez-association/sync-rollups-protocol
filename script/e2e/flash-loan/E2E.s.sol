@@ -13,6 +13,7 @@ import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICros
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {_deployBridge, _computeBridgeAddress} from "../../DeployBridge.s.sol";
+import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 
 /// @dev Simple test token deployed on L1
 contract TestToken is ERC20 {
@@ -477,9 +478,36 @@ contract ExecuteNetwork is Script {
 
 /// @title ComputeExpected — Compute expected entries for L1 batch and L2 table
 /// @dev Env: BRIDGE_L1, BRIDGE_L2, EXECUTOR_L1, EXECUTOR_L2, FLASH_LOANERS_NFT, TOKEN, WRAPPED_TOKEN_L2
-contract ComputeExpected is Script {
+contract ComputeExpected is ComputeExpectedBase {
     uint256 constant L2_ROLLUP_ID = 1;
     uint256 constant MAINNET_ROLLUP_ID = 0;
+
+    // ── Address-to-name mapping ──
+
+    function _name(address a) internal view override returns (string memory) {
+        address bridgeL1 = vm.envAddress("BRIDGE_L1");
+        address bridgeL2 = vm.envAddress("BRIDGE_L2");
+        address executorL1 = vm.envAddress("EXECUTOR_L1");
+        address executorL2 = vm.envAddress("EXECUTOR_L2");
+        address flashLoanersNFT = vm.envAddress("FLASH_LOANERS_NFT");
+        address token = vm.envAddress("TOKEN");
+        address wrappedTokenL2 = vm.envAddress("WRAPPED_TOKEN_L2");
+
+        if (a == bridgeL1) return "BridgeL1";
+        if (a == bridgeL2) return "BridgeL2";
+        if (a == executorL1) return "ExecutorL1";
+        if (a == executorL2) return "ExecutorL2";
+        if (a == flashLoanersNFT) return "FlashLoanersNFT";
+        if (a == token) return "Token";
+        if (a == wrappedTokenL2) return "WrappedToken";
+        return _shortAddr(a);
+    }
+
+    function _funcName(bytes4 sel) internal pure override returns (string memory) {
+        if (sel == Bridge.receiveTokens.selector) return "receiveTokens";
+        if (sel == FlashLoanBridgeExecutor.claimAndBridgeBack.selector) return "claimAndBridgeBack";
+        return ComputeExpectedBase._funcName(sel);
+    }
 
     function run() external view {
         address bridgeL1 = vm.envAddress("BRIDGE_L1");
@@ -607,62 +635,30 @@ contract ComputeExpected is Script {
         // L2 call verification: h0 = callForward is the one executeIncomingCrossChainCall on L2
         console.log("EXPECTED_L2_CALL_HASHES=[%s]", vm.toString(h0));
 
-        // Human-readable expected L1 table
+        // ── Human-readable L1 table ──
+        StateDelta[] memory deltas1 = new StateDelta[](1);
+        deltas1[0] = StateDelta({rollupId: L2_ROLLUP_ID, currentState: s0, newState: s1, etherDelta: 0});
+        StateDelta[] memory deltas2 = new StateDelta[](1);
+        deltas2[0] = StateDelta({rollupId: L2_ROLLUP_ID, currentState: s1, newState: s2, etherDelta: 0});
+        StateDelta[] memory deltas3 = new StateDelta[](1);
+        deltas3[0] = StateDelta({rollupId: L2_ROLLUP_ID, currentState: s2, newState: s3, etherDelta: 0});
+
         console.log("");
         console.log("=== EXPECTED L1 EXECUTION TABLE (3 entries) ===");
-        _logEntry(0, h0, s0, s1, 0, "RESULT(rollup 1, ok, data=0x)");
-        _logEntry(1, h1, s1, s2, 0, _fmtCall(callReturnScoped));
-        _logEntry(2, h2, s2, s3, 0, "RESULT(rollup 1, ok, data=0x)");
+        _logEntry(0, h0, deltas1, _fmtCall(callForward), _fmtResult(result_L2_void, "(void)"));
+        _logEntry(1, h1, deltas2, _fmtCall(callClaimAndBridge), _fmtCall(callReturnScoped));
+        _logEntry(2, h2, deltas3, _fmtResult(result_MAINNET_void, "(void)  [MAINNET]"), _fmtResult(result_L2_void, "(void)"));
 
-        // Human-readable expected L2 table
+        // ── Human-readable L2 table ──
         console.log("");
         console.log("=== EXPECTED L2 EXECUTION TABLE (3 entries) ===");
-        console.log("  [0] actionHash: %s", vm.toString(l2h0));
-        console.log("      nextAction: %s", _fmtCall(callB));
-        console.log("  [1] actionHash: %s", vm.toString(l2h1));
-        console.log("      nextAction: RESULT(rollup 0, ok, data=0x)");
-        console.log("  [2] actionHash: %s", vm.toString(l2h0));
-        console.log("      nextAction: RESULT(rollup 1, ok, data=0x)");
-    }
+        _logL2Entry(0, l2h0, _fmtResult(result_L2_void, "(void)  [L2]"), _fmtCall(callB));
+        _logL2Entry(1, l2h1, _fmtCall(callBridgeReturn), _fmtResult(result_MAINNET_void, "(void)  [MAINNET]"));
+        _logL2Entry(2, l2h0, _fmtResult(result_L2_void, "(void)  [L2]"), _fmtResult(result_L2_void, "(void)  (terminal)"));
 
-    function _logEntry(uint256 idx, bytes32 hash, bytes32 cur, bytes32 next, int256 ether_, string memory nextAction)
-        internal
-        pure
-    {
-        console.log("  [%s] DEFERRED  actionHash: %s", idx, vm.toString(hash));
-        console.log(
-            string.concat(
-                "      stateDelta: rollup 1  ",
-                vm.toString(cur),
-                " -> ",
-                vm.toString(next),
-                "  ether: ",
-                vm.toString(ether_)
-            )
-        );
-        console.log("      nextAction: %s", nextAction);
-    }
-
-    function _fmtCall(Action memory a) internal pure returns (string memory) {
-        return string.concat(
-            "CALL(rollup ",
-            vm.toString(a.rollupId),
-            ", dest=",
-            vm.toString(a.destination),
-            ", from=",
-            vm.toString(a.sourceAddress),
-            ", scope=[",
-            _scopeStr(a.scope),
-            "])"
-        );
-    }
-
-    function _scopeStr(uint256[] memory scope) internal pure returns (string memory) {
-        string memory s = "";
-        for (uint256 i = 0; i < scope.length; i++) {
-            if (i > 0) s = string.concat(s, ",");
-            s = string.concat(s, vm.toString(scope[i]));
-        }
-        return s;
+        // ── Human-readable L2 calls ──
+        console.log("");
+        console.log("=== EXPECTED L2 CALLS (1 call) ===");
+        _logL2Call(0, h0, callForward);
     }
 }

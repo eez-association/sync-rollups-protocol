@@ -6,6 +6,7 @@ import {Rollups} from "../../../src/Rollups.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
 import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
 import {Counter, CounterAndProxy} from "../../../test/mocks/CounterContracts.sol";
+import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 
 /// @notice Batcher: postBatch + incrementProxy in one tx (local mode only)
 contract Batcher {
@@ -193,7 +194,18 @@ contract ExecuteNetwork is Script {
 
 /// @title ComputeExpected — Compute expected actionHashes + print expected table
 /// @dev Env: COUNTER_L2, COUNTER_AND_PROXY
-contract ComputeExpected is Script {
+contract ComputeExpected is ComputeExpectedBase {
+    function _name(address a) internal view override returns (string memory) {
+        if (a == vm.envAddress("COUNTER_L2")) return "Counter";
+        if (a == vm.envAddress("COUNTER_AND_PROXY")) return "CounterAndProxy";
+        return _shortAddr(a);
+    }
+
+    function _funcName(bytes4 sel) internal pure override returns (string memory) {
+        if (sel == Counter.increment.selector) return "increment";
+        return ComputeExpectedBase._funcName(sel);
+    }
+
     function run() external view {
         address counterL2Addr = vm.envAddress("COUNTER_L2");
         address counterAndProxyAddr = vm.envAddress("COUNTER_AND_PROXY");
@@ -239,21 +251,24 @@ contract ComputeExpected is Script {
         console.log("EXPECTED_L2_HASHES=[%s]", vm.toString(l2Hash));
         console.log("EXPECTED_L2_CALL_HASHES=[%s]", vm.toString(hash));
 
-        // Human-readable expected table
+        // Human-readable: L1 execution table
         console.log("");
         console.log("=== EXPECTED L1 EXECUTION TABLE (1 entry) ===");
-        console.log("  [0] DEFERRED  actionHash: %s", vm.toString(hash));
-        console.log(
-            string.concat(
-                "      stateDelta: rollup 1  ",
-                vm.toString(stateDeltas[0].currentState),
-                " -> ",
-                vm.toString(stateDeltas[0].newState),
-                "  ether: 0"
-            )
+        _logEntry(0, hash, stateDeltas, _fmtCall(callAction), _fmtResult(resultAction, "uint256(1)"));
+
+        // Human-readable: L2 execution table
+        console.log("");
+        console.log("=== EXPECTED L2 EXECUTION TABLE (1 entry) ===");
+        _logL2Entry(
+            0,
+            l2Hash,
+            _fmtResult(resultAction, "uint256(1)"),
+            string.concat(_fmtResult(resultAction, "uint256(1)"), "  (terminal)")
         );
-        console.log(
-            "      nextAction: RESULT(rollup 1, ok, data=0x0000000000000000000000000000000000000000000000000000000000000001)"
-        );
+
+        // Human-readable: L2 calls
+        console.log("");
+        console.log("=== EXPECTED L2 CALLS (1 call) ===");
+        _logL2Call(0, hash, callAction);
     }
 }
