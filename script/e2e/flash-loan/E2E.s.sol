@@ -314,11 +314,11 @@ contract Batcher {
         FlashLoanBridgeExecutor executor
     ) external {
         rollups.postBatch(entries, 0, "", "proof");
-        executor.execute();
+        executor.execute(msg.sender);
     }
 }
 
-/// @title Execute — Post batch entries + trigger flash loan (same block, local mode)
+/// @title Execute — Post batch entries + trigger flash loan (local mode)
 /// @dev Env: ROLLUPS, BRIDGE_L1, BRIDGE_L2, EXECUTOR_L1, EXECUTOR_L2,
 ///          FLASH_LOANERS_NFT, TOKEN, WRAPPED_TOKEN_L2
 contract Execute is Script {
