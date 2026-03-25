@@ -368,3 +368,86 @@ contract VerifyL2Blocks is Script {
         return string(r);
     }
 }
+
+/// @title VerifyL2Calls — Verify that IncomingCrossChainCallExecuted events match expected actionHashes
+/// @dev Runs against L2 RPC. Checks across given blocks for matching events.
+///   forge script script/e2e/shared/Verify.s.sol:VerifyL2Calls \
+///     --rpc-url $L2_RPC \
+///     --sig "run(uint256[],address,bytes32[])" "[5,6]" $MANAGER_L2 "[$HASH1,$HASH2]"
+contract VerifyL2Calls is Script {
+    bytes32 constant SIG_INCOMING_CALL = keccak256(
+        "IncomingCrossChainCallExecuted(bytes32,address,uint256,bytes,address,uint256,uint256[])"
+    );
+
+    function run(uint256[] calldata l2Blocks, address managerL2, bytes32[] calldata expectedCallHashes) external view {
+        if (l2Blocks.length == 0) {
+            console.log("FAIL: no L2 blocks to check");
+            revert("No L2 blocks");
+        }
+
+        // Collect all IncomingCrossChainCallExecuted actionHashes across all blocks
+        bytes32[] memory found = _collectActionHashes(l2Blocks, managerL2);
+
+        // Check all expected are present (subset match)
+        bytes32[] memory missing = _findMissing(found, expectedCallHashes);
+
+        if (missing.length > 0) {
+            console.log("FAIL: %s/%s expected L2 calls missing", missing.length, expectedCallHashes.length);
+            console.log("");
+            console.log("=== ACTUAL IncomingCrossChainCallExecuted HASHES ===");
+            for (uint256 i = 0; i < found.length; i++) {
+                console.log("  %s", vm.toString(found[i]));
+            }
+            console.log("");
+            console.log("=== MISSING CALL HASHES ===");
+            for (uint256 i = 0; i < missing.length; i++) {
+                console.log("  %s", vm.toString(missing[i]));
+            }
+            revert("Verification failed");
+        }
+
+        console.log("PASS: %s/%s expected L2 calls verified", expectedCallHashes.length, expectedCallHashes.length);
+    }
+
+    function _collectActionHashes(uint256[] calldata blocks, address managerL2) internal view returns (bytes32[] memory) {
+        uint256 count;
+        for (uint256 i = 0; i < blocks.length; i++) {
+            bytes32[] memory topics = new bytes32[](0);
+            Vm.EthGetLogs[] memory logs = vm.eth_getLogs(blocks[i], blocks[i], managerL2, topics);
+            for (uint256 j = 0; j < logs.length; j++) {
+                if (logs[j].topics[0] == SIG_INCOMING_CALL) count++;
+            }
+        }
+        bytes32[] memory result = new bytes32[](count);
+        uint256 idx;
+        for (uint256 i = 0; i < blocks.length; i++) {
+            bytes32[] memory topics = new bytes32[](0);
+            Vm.EthGetLogs[] memory logs = vm.eth_getLogs(blocks[i], blocks[i], managerL2, topics);
+            for (uint256 j = 0; j < logs.length; j++) {
+                if (logs[j].topics[0] == SIG_INCOMING_CALL) {
+                    // actionHash is topics[1] (first indexed parameter)
+                    result[idx++] = logs[j].topics[1];
+                }
+            }
+        }
+        return result;
+    }
+
+    function _findMissing(bytes32[] memory actual, bytes32[] calldata expected) internal pure returns (bytes32[] memory) {
+        bytes32[] memory tmp = new bytes32[](expected.length);
+        uint256 count;
+        for (uint256 i = 0; i < expected.length; i++) {
+            bool found = false;
+            for (uint256 j = 0; j < actual.length; j++) {
+                if (actual[j] == expected[i]) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) tmp[count++] = expected[i];
+        }
+        bytes32[] memory result = new bytes32[](count);
+        for (uint256 i = 0; i < count; i++) result[i] = tmp[i];
+        return result;
+    }
+}

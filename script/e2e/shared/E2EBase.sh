@@ -93,6 +93,29 @@ _export_outputs() {
     fi
 }
 
+# ── Auto-discover and run Deploy* contracts in file order ──
+# Contracts with "L2" in name → L2 RPC, others → L1 RPC
+# Usage: deploy_contracts SOL_FILE L1_RPC L2_RPC PK
+deploy_contracts() {
+    local sol="$1" l1_rpc="$2" l2_rpc="$3" pk="$4"
+    local contracts
+    contracts=$(grep -oE 'contract Deploy[A-Za-z0-9_]* ' "$sol" | awk '{print $2}')
+    [[ -z "$contracts" ]] && { echo "No Deploy* contracts found"; return 1; }
+    while IFS= read -r contract; do
+        local rpc label
+        if [[ "$contract" == *L2* ]]; then
+            rpc="$l2_rpc"; label="L2"
+        else
+            rpc="$l1_rpc"; label="L1"
+        fi
+        echo "--- $contract ($label) ---"
+        local out
+        out=$(forge script "$sol:$contract" --rpc-url "$rpc" --broadcast --private-key "$pk" 2>&1)
+        echo "$out" | sed 's/^[[:space:]]*//' | grep -E '^[A-Z0-9_]+=' | grep -v '^==' || true
+        _export_outputs "$out"
+    done <<< "$contracts"
+}
+
 # ── Strip forge execution traces, keep only console.log output ──
 # Usage: echo "$FORGE_OUTPUT" | strip_traces
 strip_traces() {

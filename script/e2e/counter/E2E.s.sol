@@ -3,7 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Script, console} from "forge-std/Script.sol";
 import {Rollups} from "../../../src/Rollups.sol";
-import {CrossChainProxy} from "../../../src/CrossChainProxy.sol";
+import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
 import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
 import {Counter, CounterAndProxy} from "../../../test/mocks/CounterContracts.sol";
 
@@ -15,22 +15,87 @@ contract Batcher {
     }
 }
 
-/// @title Deploy — Deploy counter app contracts
-/// @dev Env: ROLLUPS
-/// Outputs: COUNTER_L2, COUNTER_PROXY, COUNTER_AND_PROXY
+/// @title DeployL2 — Deploy counter on L2
+/// Outputs: COUNTER_L2
+contract DeployL2 is Script {
+    function run() external {
+        vm.startBroadcast();
+
+        Counter counterL2 = new Counter();
+        console.log("COUNTER_L2=%s", address(counterL2));
+
+        vm.stopBroadcast();
+    }
+}
+
+/// @title Deploy — Deploy counter app contracts on L1
+/// @dev Env: ROLLUPS, COUNTER_L2
+/// Outputs: COUNTER_PROXY, COUNTER_AND_PROXY
 contract Deploy is Script {
     function run() external {
         address rollupsAddr = vm.envAddress("ROLLUPS");
+        address counterL2Addr = vm.envAddress("COUNTER_L2");
+
         vm.startBroadcast();
 
         Rollups rollups = Rollups(rollupsAddr);
-        Counter counterL2 = new Counter();
-        address counterProxy = rollups.createCrossChainProxy(address(counterL2), 1);
+        address counterProxy = rollups.createCrossChainProxy(counterL2Addr, 1);
         CounterAndProxy counterAndProxy = new CounterAndProxy(Counter(counterProxy));
 
-        console.log("COUNTER_L2=%s", address(counterL2));
         console.log("COUNTER_PROXY=%s", counterProxy);
         console.log("COUNTER_AND_PROXY=%s", address(counterAndProxy));
+
+        vm.stopBroadcast();
+    }
+}
+
+/// @title ExecuteL2 — Load execution table + executeIncomingCrossChainCall on L2
+/// @dev Follows integration test Scenario 1 Phase 1 pattern.
+///   1. Load L2 execution table: RESULT hash -> same RESULT (terminal, self-referencing)
+///   2. System calls executeIncomingCrossChainCall to execute Counter.increment() on L2
+/// Env: MANAGER_L2, COUNTER_L2, COUNTER_AND_PROXY
+contract ExecuteL2 is Script {
+    function run() external {
+        address managerL2Addr = vm.envAddress("MANAGER_L2");
+        address counterL2Addr = vm.envAddress("COUNTER_L2");
+        address counterAndProxyAddr = vm.envAddress("COUNTER_AND_PROXY");
+
+        CrossChainManagerL2 manager = CrossChainManagerL2(managerL2Addr);
+
+        // RESULT that _processCallAtScope will build after Counter.increment() returns 1
+        Action memory resultAction = Action({
+            actionType: ActionType.RESULT,
+            rollupId: 1,
+            destination: address(0),
+            value: 0,
+            data: abi.encode(uint256(1)),
+            failed: false,
+            sourceAddress: address(0),
+            sourceRollup: 0,
+            scope: new uint256[](0)
+        });
+
+        vm.startBroadcast();
+
+        // Load execution table: RESULT hash -> same RESULT (terminal, self-referencing)
+        ExecutionEntry[] memory entries = new ExecutionEntry[](1);
+        entries[0].stateDeltas = new StateDelta[](0);
+        entries[0].actionHash = keccak256(abi.encode(resultAction));
+        entries[0].nextAction = resultAction;
+
+        manager.loadExecutionTable(entries);
+
+        // Execute the actual counter increment on L2
+        manager.executeIncomingCrossChainCall(
+            counterL2Addr,          // dest = Counter on L2
+            0,                      // value
+            abi.encodeWithSelector(Counter.increment.selector), // data = increment()
+            counterAndProxyAddr,    // source = CounterAndProxy on L1
+            0,                      // sourceRollup = MAINNET
+            new uint256[](0)        // scope = [] (root)
+        );
+
+        console.log("done");
 
         vm.stopBroadcast();
     }
@@ -143,12 +208,13 @@ contract ComputeExpected is Script {
 
         bytes32 hash = keccak256(abi.encode(callAction));
 
-        // Parseable line
-        console.log("EXPECTED_HASHES=[%s]", vm.toString(hash));
+        // Parseable lines — L1 uses CALL hash, L2 uses same CALL hash
+        console.log("EXPECTED_L1_HASHES=[%s]", vm.toString(hash));
+        console.log("EXPECTED_L2_CALL_HASHES=[%s]", vm.toString(hash));
 
         // Human-readable expected table
         console.log("");
-        console.log("=== EXPECTED EXECUTION TABLE (1 entry) ===");
+        console.log("=== EXPECTED L1 EXECUTION TABLE (1 entry) ===");
         console.log("  [0] DEFERRED  actionHash: %s", vm.toString(hash));
         console.log(
             string.concat(

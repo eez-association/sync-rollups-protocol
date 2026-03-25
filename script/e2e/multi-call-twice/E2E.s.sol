@@ -3,7 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Script, console} from "forge-std/Script.sol";
 import {Rollups} from "../../../src/Rollups.sol";
-import {CrossChainProxy} from "../../../src/CrossChainProxy.sol";
+import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
 import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
 import {Counter} from "../../../test/mocks/CounterContracts.sol";
 import {CallTwice} from "../../../test/mocks/MultiCallContracts.sol";
@@ -21,22 +21,97 @@ contract Batcher {
     }
 }
 
-/// @title Deploy — Deploy counter + CallTwice + proxy
-/// @dev Env: ROLLUPS
-/// Outputs: COUNTER_A, CALL_TWICE, PROXY_A
+/// @title DeployL2 — Deploy Counter on L2
+/// @dev Outputs: COUNTER_A
+contract DeployL2 is Script {
+    function run() external {
+        vm.startBroadcast();
+        Counter counterA = new Counter();
+        console.log("COUNTER_A=%s", address(counterA));
+        vm.stopBroadcast();
+    }
+}
+
+/// @title Deploy — Deploy CallTwice + proxy on L1
+/// @dev Env: ROLLUPS, COUNTER_A
+/// Outputs: CALL_TWICE, PROXY_A
 contract Deploy is Script {
     function run() external {
         address rollupsAddr = vm.envAddress("ROLLUPS");
+        address counterAAddr = vm.envAddress("COUNTER_A");
         vm.startBroadcast();
 
         Rollups rollups = Rollups(rollupsAddr);
-        Counter counterA = new Counter();
         CallTwice callTwice = new CallTwice();
-        address proxyA = rollups.createCrossChainProxy(address(counterA), 1);
+        address proxyA = rollups.createCrossChainProxy(counterAAddr, 1);
 
-        console.log("COUNTER_A=%s", address(counterA));
         console.log("CALL_TWICE=%s", address(callTwice));
         console.log("PROXY_A=%s", proxyA);
+
+        vm.stopBroadcast();
+    }
+}
+
+/// @title ExecuteL2 — Load L2 table + executeIncomingCrossChainCall twice
+/// @dev Env: MANAGER_L2, COUNTER_A, CALL_TWICE
+contract ExecuteL2 is Script {
+    function run() external {
+        address managerL2Addr = vm.envAddress("MANAGER_L2");
+        address counterAAddr = vm.envAddress("COUNTER_A");
+        address callTwiceAddr = vm.envAddress("CALL_TWICE");
+
+        CrossChainManagerL2 manager = CrossChainManagerL2(managerL2Addr);
+        bytes memory incrementCallData = abi.encodeWithSelector(Counter.increment.selector);
+
+        // RESULT actions: first call returns 1, second returns 2
+        Action memory result1 = Action({
+            actionType: ActionType.RESULT,
+            rollupId: 1,
+            destination: address(0),
+            value: 0,
+            data: abi.encode(uint256(1)),
+            failed: false,
+            sourceAddress: address(0),
+            sourceRollup: 0,
+            scope: new uint256[](0)
+        });
+        Action memory result2 = Action({
+            actionType: ActionType.RESULT,
+            rollupId: 1,
+            destination: address(0),
+            value: 0,
+            data: abi.encode(uint256(2)),
+            failed: false,
+            sourceAddress: address(0),
+            sourceRollup: 0,
+            scope: new uint256[](0)
+        });
+
+        vm.startBroadcast();
+
+        // Load execution table: 2 entries (one per call)
+        ExecutionEntry[] memory entries = new ExecutionEntry[](2);
+        entries[0].stateDeltas = new StateDelta[](0);
+        entries[0].actionHash = keccak256(abi.encode(result1));
+        entries[0].nextAction = result1;
+
+        entries[1].stateDeltas = new StateDelta[](0);
+        entries[1].actionHash = keccak256(abi.encode(result2));
+        entries[1].nextAction = result2;
+
+        manager.loadExecutionTable(entries);
+
+        // Call 1: increment counter (0→1)
+        manager.executeIncomingCrossChainCall(
+            counterAAddr, 0, incrementCallData, callTwiceAddr, 0, new uint256[](0)
+        );
+        // Call 2: increment counter (1→2)
+        manager.executeIncomingCrossChainCall(
+            counterAAddr, 0, incrementCallData, callTwiceAddr, 0, new uint256[](0)
+        );
+
+        console.log("L2 execution complete");
+        console.log("counter=%s", Counter(counterAAddr).counter());
 
         vm.stopBroadcast();
     }
@@ -163,7 +238,8 @@ contract ComputeExpected is Script {
         bytes32 hash = keccak256(abi.encode(callAction));
 
         // Same hash repeated for 2 entries
-        console.log("EXPECTED_HASHES=[%s,%s]", vm.toString(hash), vm.toString(hash));
+        console.log("EXPECTED_L1_HASHES=[%s,%s]", vm.toString(hash), vm.toString(hash));
+        console.log("EXPECTED_L2_CALL_HASHES=[%s,%s]", vm.toString(hash), vm.toString(hash));
 
         console.log("");
         console.log("=== EXPECTED EXECUTION TABLE (2 entries, same action hash) ===");

@@ -3,7 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Script, console} from "forge-std/Script.sol";
 import {Rollups} from "../../../src/Rollups.sol";
-import {CrossChainProxy} from "../../../src/CrossChainProxy.sol";
+import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
 import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
 import {Counter} from "../../../test/mocks/CounterContracts.sol";
 import {CallTwoDifferent} from "../../../test/mocks/MultiCallContracts.sol";
@@ -22,26 +22,94 @@ contract Batcher {
     }
 }
 
-/// @title Deploy — Deploy 2 counters + CallTwoDifferent + proxies
-/// @dev Env: ROLLUPS
-/// Outputs: COUNTER_A, COUNTER_B, CALL_TWO_DIFF, PROXY_A, PROXY_B
+/// @title DeployL2 — Deploy both Counters on L2
+/// @dev Outputs: COUNTER_A, COUNTER_B
+contract DeployL2 is Script {
+    function run() external {
+        vm.startBroadcast();
+        Counter counterA = new Counter();
+        Counter counterB = new Counter();
+        console.log("COUNTER_A=%s", address(counterA));
+        console.log("COUNTER_B=%s", address(counterB));
+        vm.stopBroadcast();
+    }
+}
+
+/// @title Deploy — Deploy CallTwoDifferent + proxies on L1
+/// @dev Env: ROLLUPS, COUNTER_A, COUNTER_B
+/// Outputs: CALL_TWO_DIFF, PROXY_A, PROXY_B
 contract Deploy is Script {
     function run() external {
         address rollupsAddr = vm.envAddress("ROLLUPS");
+        address counterAAddr = vm.envAddress("COUNTER_A");
+        address counterBAddr = vm.envAddress("COUNTER_B");
+
         vm.startBroadcast();
 
         Rollups rollups = Rollups(rollupsAddr);
-        Counter counterA = new Counter();
-        Counter counterB = new Counter();
         CallTwoDifferent callTwoDiff = new CallTwoDifferent();
-        address proxyA = rollups.createCrossChainProxy(address(counterA), 1);
-        address proxyB = rollups.createCrossChainProxy(address(counterB), 1);
+        address proxyA = rollups.createCrossChainProxy(counterAAddr, 1);
+        address proxyB = rollups.createCrossChainProxy(counterBAddr, 1);
 
-        console.log("COUNTER_A=%s", address(counterA));
-        console.log("COUNTER_B=%s", address(counterB));
         console.log("CALL_TWO_DIFF=%s", address(callTwoDiff));
         console.log("PROXY_A=%s", proxyA);
         console.log("PROXY_B=%s", proxyB);
+
+        vm.stopBroadcast();
+    }
+}
+
+/// @title ExecuteL2 — Load L2 table + executeIncomingCrossChainCall for both counters
+/// @dev Env: MANAGER_L2, COUNTER_A, COUNTER_B, CALL_TWO_DIFF
+contract ExecuteL2 is Script {
+    function run() external {
+        address managerL2Addr = vm.envAddress("MANAGER_L2");
+        address counterAAddr = vm.envAddress("COUNTER_A");
+        address counterBAddr = vm.envAddress("COUNTER_B");
+        address callTwoDiffAddr = vm.envAddress("CALL_TWO_DIFF");
+
+        CrossChainManagerL2 manager = CrossChainManagerL2(managerL2Addr);
+        bytes memory incrementCallData = abi.encodeWithSelector(Counter.increment.selector);
+
+        // Both counters return 1 (each incremented once: 0→1)
+        Action memory result1 = Action({
+            actionType: ActionType.RESULT,
+            rollupId: 1,
+            destination: address(0),
+            value: 0,
+            data: abi.encode(uint256(1)),
+            failed: false,
+            sourceAddress: address(0),
+            sourceRollup: 0,
+            scope: new uint256[](0)
+        });
+
+        vm.startBroadcast();
+
+        // Load execution table: 2 entries (same RESULT hash, consumed once per call)
+        ExecutionEntry[] memory entries = new ExecutionEntry[](2);
+        entries[0].stateDeltas = new StateDelta[](0);
+        entries[0].actionHash = keccak256(abi.encode(result1));
+        entries[0].nextAction = result1;
+
+        entries[1].stateDeltas = new StateDelta[](0);
+        entries[1].actionHash = keccak256(abi.encode(result1));
+        entries[1].nextAction = result1;
+
+        manager.loadExecutionTable(entries);
+
+        // Call 1: increment counterA (0→1)
+        manager.executeIncomingCrossChainCall(
+            counterAAddr, 0, incrementCallData, callTwoDiffAddr, 0, new uint256[](0)
+        );
+        // Call 2: increment counterB (0→1)
+        manager.executeIncomingCrossChainCall(
+            counterBAddr, 0, incrementCallData, callTwoDiffAddr, 0, new uint256[](0)
+        );
+
+        console.log("L2 execution complete");
+        console.log("counterA=%s", Counter(counterAAddr).counter());
+        console.log("counterB=%s", Counter(counterBAddr).counter());
 
         vm.stopBroadcast();
     }
@@ -181,7 +249,8 @@ contract ComputeExpected is Script {
         bytes32 hashA = keccak256(abi.encode(callA));
         bytes32 hashB = keccak256(abi.encode(callB));
 
-        console.log("EXPECTED_HASHES=[%s,%s]", vm.toString(hashA), vm.toString(hashB));
+        console.log("EXPECTED_L1_HASHES=[%s,%s]", vm.toString(hashA), vm.toString(hashB));
+        console.log("EXPECTED_L2_CALL_HASHES=[%s,%s]", vm.toString(hashA), vm.toString(hashB));
 
         console.log("");
         console.log("=== EXPECTED EXECUTION TABLE (2 entries, different action hashes) ===");

@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Script, console} from "forge-std/Script.sol";
 import {Rollups} from "../../../src/Rollups.sol";
+import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
 import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
 import {Bridge} from "../../../src/periphery/Bridge.sol";
 import {_deployBridge} from "../../DeployBridge.s.sol";
@@ -21,9 +22,9 @@ contract Batcher {
     }
 }
 
-/// @title Deploy — Deploy bridge app contracts
+/// @title Deploy — Deploy bridge app contracts on L1
 /// @dev Env: ROLLUPS
-/// Outputs: BRIDGE
+/// Outputs: BRIDGE, DESTINATION
 contract Deploy is Script {
     function run() external {
         address rollupsAddr = vm.envAddress("ROLLUPS");
@@ -34,6 +35,57 @@ contract Deploy is Script {
         Bridge(bridgeAddr).initialize(rollupsAddr, 0, msg.sender);
 
         console.log("BRIDGE=%s", bridgeAddr);
+        console.log("DESTINATION=%s", msg.sender);
+
+        vm.stopBroadcast();
+    }
+}
+
+/// @title ExecuteL2 — Load L2 execution table + executeIncomingCrossChainCall for bridge
+/// @dev Env: MANAGER_L2, BRIDGE, DESTINATION
+/// The bridge CALL sends ETH to destination on L2. On L2, the system executes this via
+/// executeIncomingCrossChainCall, which creates a proxy for the bridge and sends ETH.
+contract ExecuteL2 is Script {
+    function run() external {
+        address managerL2Addr = vm.envAddress("MANAGER_L2");
+        address bridgeAddr = vm.envAddress("BRIDGE");
+        address destination = vm.envAddress("DESTINATION");
+
+        CrossChainManagerL2 manager = CrossChainManagerL2(managerL2Addr);
+
+        // RESULT: empty return from ETH transfer to destination
+        Action memory resultAction = Action({
+            actionType: ActionType.RESULT,
+            rollupId: 1,
+            destination: address(0),
+            value: 0,
+            data: "",
+            failed: false,
+            sourceAddress: address(0),
+            sourceRollup: 0,
+            scope: new uint256[](0)
+        });
+
+        vm.startBroadcast();
+
+        // Load execution table: 1 entry (RESULT hash -> same RESULT, terminal)
+        ExecutionEntry[] memory entries = new ExecutionEntry[](1);
+        entries[0].stateDeltas = new StateDelta[](0);
+        entries[0].actionHash = keccak256(abi.encode(resultAction));
+        entries[0].nextAction = resultAction;
+        manager.loadExecutionTable(entries);
+
+        // Execute: system sends 1 ETH to destination via proxy for bridge
+        manager.executeIncomingCrossChainCall{value: 1 ether}(
+            destination, // destination on L2
+            1 ether,     // value
+            "",          // data (empty for ETH transfer)
+            bridgeAddr,  // sourceAddress = Bridge on L1
+            0,           // sourceRollup = MAINNET
+            new uint256[](0) // scope = root
+        );
+
+        console.log("L2 execution complete");
 
         vm.stopBroadcast();
     }
@@ -139,7 +191,10 @@ contract ComputeExpected is Script {
 
         bytes32 hash = keccak256(abi.encode(callAction));
 
-        console.log("EXPECTED_HASHES=[%s]", vm.toString(hash));
+        // L1 batch verification
+        console.log("EXPECTED_L1_HASHES=[%s]", vm.toString(hash));
+        // L2 call verification (same hash — the CALL to L2)
+        console.log("EXPECTED_L2_CALL_HASHES=[%s]", vm.toString(hash));
 
         console.log("");
         console.log("=== EXPECTED EXECUTION TABLE (1 entry) ===");
