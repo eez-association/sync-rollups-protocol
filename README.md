@@ -117,7 +117,7 @@ Each rollup maintains an ETH balance held by the Rollups contract. This enables 
 
 ```bash
 # Clone the repository
-git clone https://github.com/jbaylina/sync-rollups.git
+git clone https://github.com/eez-association/sync-rollups.git
 cd sync-rollups
 
 # Install dependencies
