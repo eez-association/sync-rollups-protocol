@@ -216,29 +216,34 @@ contract ComputeExpected is ComputeExpectedBase {
             scope: new uint256[](0)
         });
 
-        bytes32 hash = keccak256(abi.encode(callAction));
-        bytes32 l2Hash = keccak256(abi.encode(resultAction));
+        bytes32 callHash = keccak256(abi.encode(callAction));
+        bytes32 resultHash = keccak256(abi.encode(resultAction));
+
+        // L1: actionHash=hash(callAction), nextAction=resultAction
+        bytes32 l1EntryHash = _entryHash(callHash, resultAction);
+        // L2: actionHash=hash(resultAction), nextAction=resultAction (terminal)
+        bytes32 l2EntryHash = _entryHash(resultHash, resultAction);
 
         // L1 batch verification
-        console.log("EXPECTED_L1_HASHES=[%s]", vm.toString(hash));
+        console.log("EXPECTED_L1_HASHES=[%s]", vm.toString(l1EntryHash));
         // L2 execution table verification
-        console.log("EXPECTED_L2_HASHES=[%s]", vm.toString(l2Hash));
+        console.log("EXPECTED_L2_HASHES=[%s]", vm.toString(l2EntryHash));
         // L2 call verification (same hash — the CALL to L2)
-        console.log("EXPECTED_L2_CALL_HASHES=[%s]", vm.toString(hash));
+        console.log("EXPECTED_L2_CALL_HASHES=[%s]", vm.toString(callHash));
 
         // ── Human-readable output ──
         console.log("");
 
         // L1 execution table
         console.log("=== EXPECTED L1 EXECUTION TABLE (1 entry) ===");
-        _logEntry(0, hash, stateDeltas, _fmtCall(callAction), _fmtResult(resultAction, "(void)"));
+        _logEntry(0, l1EntryHash, stateDeltas, _fmtCall(callAction), _fmtResult(resultAction, "(void)"));
 
         // L2 execution table
         console.log("");
         console.log("=== EXPECTED L2 EXECUTION TABLE (1 entry) ===");
         _logL2Entry(
             0,
-            l2Hash,
+            l2EntryHash,
             _fmtResult(resultAction, "(void)"),
             string.concat(_fmtResult(resultAction, "(void)"), "  (terminal)")
         );
@@ -246,6 +251,6 @@ contract ComputeExpected is ComputeExpectedBase {
         // L2 calls
         console.log("");
         console.log("=== EXPECTED L2 CALLS (1 call) ===");
-        _logL2Call(0, hash, callAction);
+        _logL2Call(0, callHash, callAction);
     }
 }

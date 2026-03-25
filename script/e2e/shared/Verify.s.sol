@@ -99,34 +99,37 @@ abstract contract VerifyHelpers is Script {
     }
 }
 
-/// @title VerifyL1Batch — Verify that a block's BatchPosted events contain expected action hashes
-/// @dev On failure, prints the actual execution table from the block before reverting.
+/// @title VerifyL1Batch — Verify that a block's BatchPosted events contain expected entries
+/// @dev Compares entry hashes (actionHash + nextAction) not just actionHash alone.
+///   On failure, prints the actual execution table from the block before reverting.
 contract VerifyL1Batch is VerifyHelpers {
-    function run(uint256 blockNumber, address rollups, bytes32[] calldata expectedActionHashes) external view {
+    function run(uint256 blockNumber, address rollups, bytes32[] calldata expectedEntryHashes) external view {
         bytes32[] memory topics = new bytes32[](0);
         Vm.EthGetLogs[] memory logs = vm.eth_getLogs(blockNumber, blockNumber, rollups, topics);
 
         ExecutionEntry[] memory actual = _collectEntries(logs);
 
-        // Extract action hashes for comparison
-        bytes32[] memory actualHashes = new bytes32[](actual.length);
+        // Compute entry hashes: encode both actionHash and nextAction
+        bytes32[] memory actualEntryHashes = new bytes32[](actual.length);
         for (uint256 i = 0; i < actual.length; i++) {
-            actualHashes[i] = actual[i].actionHash;
+            actualEntryHashes[i] = keccak256(
+                abi.encode(actual[i].actionHash, keccak256(abi.encode(actual[i].nextAction)))
+            );
         }
-        bytes32[] memory missing = _findMissingHashes(actualHashes, expectedActionHashes);
+        bytes32[] memory missing = _findMissingHashes(actualEntryHashes, expectedEntryHashes);
 
         if (missing.length > 0) {
             console.log(
                 "FAIL: %s/%s expected entries missing in block %s",
                 missing.length,
-                expectedActionHashes.length,
+                expectedEntryHashes.length,
                 blockNumber
             );
             console.log("");
             console.log("=== ACTUAL EXECUTION TABLE (L1 block %s, %s entries) ===", blockNumber, actual.length);
             _printEntries(actual);
             console.log("");
-            console.log("=== MISSING ACTION HASHES ===");
+            console.log("=== MISSING ENTRY HASHES ===");
             for (uint256 i = 0; i < missing.length; i++) {
                 console.log("  %s", vm.toString(missing[i]));
             }
@@ -135,8 +138,8 @@ contract VerifyL1Batch is VerifyHelpers {
 
         console.log(
             "PASS: %s/%s expected entries found in block %s",
-            expectedActionHashes.length,
-            expectedActionHashes.length,
+            expectedEntryHashes.length,
+            expectedEntryHashes.length,
             blockNumber
         );
         // Output tx hash of the BatchPosted event for the summary
@@ -200,17 +203,14 @@ contract VerifyL1Batch is VerifyHelpers {
 }
 
 /// @title VerifyL2Blocks — Verify expected entries exist in one of the given L2 blocks
-/// @dev Runs against L2 RPC. Tries each block — if all expected hashes found in any single block, PASS.
-///   Otherwise prints all blocks' tables and reverts.
-///   forge script script/e2e/shared/Verify.s.sol:VerifyL2Blocks \
-///     --rpc-url $L2_RPC \
-///     --sig "run(uint256[],address,bytes32[])" "[5,6,7]" $MANAGER_L2 "[$HASH1,$HASH2]"
+/// @dev Compares entry hashes (actionHash + nextAction) not just actionHash alone.
+///   Runs against L2 RPC. Tries each block — if all expected entry hashes found in any single block, PASS.
 contract VerifyL2Blocks is VerifyHelpers {
     bytes32 constant SIG_TABLE_LOADED = keccak256(
         "ExecutionTableLoaded(((uint256,bytes32,bytes32,int256)[],bytes32,(uint8,uint256,address,uint256,bytes,bool,address,uint256,uint256[]))[])"
     );
 
-    function run(uint256[] calldata l2Blocks, address managerL2, bytes32[] calldata expectedHashes) external view {
+    function run(uint256[] calldata l2Blocks, address managerL2, bytes32[] calldata expectedEntryHashes) external view {
         if (l2Blocks.length == 0) {
             console.log("FAIL: no L2 blocks to check");
             revert("No L2 blocks");
@@ -219,8 +219,8 @@ contract VerifyL2Blocks is VerifyHelpers {
         // Try each block
         for (uint256 i = 0; i < l2Blocks.length; i++) {
             ExecutionEntry[] memory entries = _getEntries(l2Blocks[i], managerL2);
-            if (_allPresent(entries, expectedHashes)) {
-                console.log("PASS: all %s expected entries found at L2 block %s", expectedHashes.length, l2Blocks[i]);
+            if (_allPresent(entries, expectedEntryHashes)) {
+                console.log("PASS: all %s expected entries found at L2 block %s", expectedEntryHashes.length, l2Blocks[i]);
                 // Output tx hash of the ExecutionTableLoaded event
                 bytes32[] memory topics = new bytes32[](0);
                 Vm.EthGetLogs[] memory blkLogs = vm.eth_getLogs(l2Blocks[i], l2Blocks[i], managerL2, topics);
@@ -262,9 +262,9 @@ contract VerifyL2Blocks is VerifyHelpers {
         }
 
         console.log("");
-        console.log("=== EXPECTED ACTION HASHES ===");
-        for (uint256 i = 0; i < expectedHashes.length; i++) {
-            console.log("  %s", vm.toString(expectedHashes[i]));
+        console.log("=== MISSING ENTRY HASHES ===");
+        for (uint256 i = 0; i < expectedEntryHashes.length; i++) {
+            console.log("  %s", vm.toString(expectedEntryHashes[i]));
         }
         revert("Verification failed");
     }
@@ -292,11 +292,19 @@ contract VerifyL2Blocks is VerifyHelpers {
         return all;
     }
 
-    function _allPresent(ExecutionEntry[] memory entries, bytes32[] calldata expected) internal pure returns (bool) {
-        for (uint256 i = 0; i < expected.length; i++) {
+    function _allPresent(ExecutionEntry[] memory entries, bytes32[] calldata expectedEntryHashes) internal pure returns (bool) {
+        // Compute entry hashes from actuals
+        bytes32[] memory actualEntryHashes = new bytes32[](entries.length);
+        for (uint256 i = 0; i < entries.length; i++) {
+            actualEntryHashes[i] = keccak256(
+                abi.encode(entries[i].actionHash, keccak256(abi.encode(entries[i].nextAction)))
+            );
+        }
+        // Check all expected are present
+        for (uint256 i = 0; i < expectedEntryHashes.length; i++) {
             bool found = false;
-            for (uint256 j = 0; j < entries.length; j++) {
-                if (entries[j].actionHash == expected[i]) {
+            for (uint256 j = 0; j < actualEntryHashes.length; j++) {
+                if (actualEntryHashes[j] == expectedEntryHashes[i]) {
                     found = true;
                     break;
                 }

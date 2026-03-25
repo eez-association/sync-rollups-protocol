@@ -7,6 +7,14 @@ import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICros
 /// @title ComputeExpectedBase — Shared formatting helpers for ComputeExpected contracts
 /// @dev Each test's ComputeExpected inherits this and overrides _name() and _funcName().
 abstract contract ComputeExpectedBase is Script {
+    // ── Entry hash: encodes both actionHash and nextAction ──
+
+    /// @dev Computes the entry hash used by VerifyL1Batch/VerifyL2Blocks for matching.
+    ///   Encodes both the trigger (actionHash) and the response (nextAction).
+    function _entryHash(bytes32 actionHash, Action memory nextAction) internal pure returns (bytes32) {
+        return keccak256(abi.encode(actionHash, keccak256(abi.encode(nextAction))));
+    }
+
     // ── Address-to-name mapping (override per test) ──
 
     /// @dev Override to map deployed addresses to human-readable names.

@@ -617,11 +617,12 @@ contract ComputeExpected is ComputeExpectedBase {
             scope: new uint256[](0)
         });
 
-        bytes32 h0 = keccak256(abi.encode(callForward));
-        bytes32 h1 = keccak256(abi.encode(callClaimAndBridge));
-        bytes32 h2 = keccak256(abi.encode(result_MAINNET_void));
-        bytes32 l2h0 = keccak256(abi.encode(result_L2_void));
-        bytes32 l2h1 = keccak256(abi.encode(callBridgeReturn));
+        bytes32 h0 = _entryHash(keccak256(abi.encode(callForward)), result_L2_void);
+        bytes32 h1 = _entryHash(keccak256(abi.encode(callClaimAndBridge)), callReturnScoped);
+        bytes32 h2 = _entryHash(keccak256(abi.encode(result_MAINNET_void)), result_L2_void);
+        bytes32 l2h0 = _entryHash(keccak256(abi.encode(result_L2_void)), callB);
+        bytes32 l2h1 = _entryHash(keccak256(abi.encode(callBridgeReturn)), result_MAINNET_void);
+        bytes32 l2h2 = _entryHash(keccak256(abi.encode(result_L2_void)), result_L2_void);
 
         // State progression
         bytes32 s0 = keccak256("l2-initial-state");
@@ -631,9 +632,10 @@ contract ComputeExpected is ComputeExpectedBase {
 
         // Parseable lines for shell scripts
         console.log("EXPECTED_L1_HASHES=[%s,%s,%s]", vm.toString(h0), vm.toString(h1), vm.toString(h2));
-        console.log("EXPECTED_L2_HASHES=[%s,%s,%s]", vm.toString(l2h0), vm.toString(l2h1), vm.toString(l2h0));
-        // L2 call verification: h0 = callForward is the one executeIncomingCrossChainCall on L2
-        console.log("EXPECTED_L2_CALL_HASHES=[%s]", vm.toString(h0));
+        console.log("EXPECTED_L2_HASHES=[%s,%s,%s]", vm.toString(l2h0), vm.toString(l2h1), vm.toString(l2h2));
+        // L2 call verification: callForward is the one executeIncomingCrossChainCall on L2
+        bytes32 callForwardHash = keccak256(abi.encode(callForward));
+        console.log("EXPECTED_L2_CALL_HASHES=[%s]", vm.toString(callForwardHash));
 
         // ── Human-readable L1 table ──
         StateDelta[] memory deltas1 = new StateDelta[](1);
@@ -654,11 +656,11 @@ contract ComputeExpected is ComputeExpectedBase {
         console.log("=== EXPECTED L2 EXECUTION TABLE (3 entries) ===");
         _logL2Entry(0, l2h0, _fmtResult(result_L2_void, "(void)  [L2]"), _fmtCall(callB));
         _logL2Entry(1, l2h1, _fmtCall(callBridgeReturn), _fmtResult(result_MAINNET_void, "(void)  [MAINNET]"));
-        _logL2Entry(2, l2h0, _fmtResult(result_L2_void, "(void)  [L2]"), _fmtResult(result_L2_void, "(void)  (terminal)"));
+        _logL2Entry(2, l2h2, _fmtResult(result_L2_void, "(void)  [L2]"), _fmtResult(result_L2_void, "(void)  (terminal)"));
 
         // ── Human-readable L2 calls ──
         console.log("");
         console.log("=== EXPECTED L2 CALLS (1 call) ===");
-        _logL2Call(0, h0, callForward);
+        _logL2Call(0, callForwardHash, callForward);
     }
 }

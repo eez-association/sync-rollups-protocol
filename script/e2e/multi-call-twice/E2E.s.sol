@@ -283,14 +283,19 @@ contract ComputeExpected is ComputeExpectedBase {
             scope: new uint256[](0)
         });
 
-        bytes32 hash = keccak256(abi.encode(callAction));
-        bytes32 l2Hash1 = keccak256(abi.encode(result1));
-        bytes32 l2Hash2 = keccak256(abi.encode(result2));
+        bytes32 actionHash = keccak256(abi.encode(callAction));
+        bytes32 l1Entry1 = _entryHash(actionHash, result1);
+        bytes32 l1Entry2 = _entryHash(actionHash, result2);
 
-        // Same hash repeated for 2 entries
-        console.log("EXPECTED_L1_HASHES=[%s,%s]", vm.toString(hash), vm.toString(hash));
-        console.log("EXPECTED_L2_HASHES=[%s,%s]", vm.toString(l2Hash1), vm.toString(l2Hash2));
-        console.log("EXPECTED_L2_CALL_HASHES=[%s,%s]", vm.toString(hash), vm.toString(hash));
+        bytes32 l2ActionHash1 = keccak256(abi.encode(result1));
+        bytes32 l2ActionHash2 = keccak256(abi.encode(result2));
+        bytes32 l2Entry1 = _entryHash(l2ActionHash1, result1);
+        bytes32 l2Entry2 = _entryHash(l2ActionHash2, result2);
+
+        // Entry hashes differ because nextActions differ (result1 vs result2)
+        console.log("EXPECTED_L1_HASHES=[%s,%s]", vm.toString(l1Entry1), vm.toString(l1Entry2));
+        console.log("EXPECTED_L2_HASHES=[%s,%s]", vm.toString(l2Entry1), vm.toString(l2Entry2));
+        console.log("EXPECTED_L2_CALL_HASHES=[%s,%s]", vm.toString(actionHash), vm.toString(actionHash));
 
         // ── L1 execution table ──
         bytes32 s0 = keccak256("l2-initial-state");
@@ -308,8 +313,8 @@ contract ComputeExpected is ComputeExpectedBase {
 
         console.log("");
         console.log("=== EXPECTED L1 EXECUTION TABLE (2 entries, same action hash) ===");
-        _logEntry(0, hash, deltas1, triggerCall, _fmtResult(result1, "uint256(1)"));
-        _logEntry(1, hash, deltas2, triggerCall2, _fmtResult(result2, "uint256(2)"));
+        _logEntry(0, l1Entry1, deltas1, triggerCall, _fmtResult(result1, "uint256(1)"));
+        _logEntry(1, l1Entry2, deltas2, triggerCall2, _fmtResult(result2, "uint256(2)"));
 
         // ── L2 execution table ──
         console.log("");

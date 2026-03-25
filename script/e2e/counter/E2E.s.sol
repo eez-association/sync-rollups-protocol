@@ -243,13 +243,16 @@ contract ComputeExpected is ComputeExpectedBase {
             scope: new uint256[](0)
         });
 
-        bytes32 hash = keccak256(abi.encode(callAction));
-        bytes32 l2Hash = keccak256(abi.encode(resultAction));
+        bytes32 callActionHash = keccak256(abi.encode(callAction));
+        bytes32 resultActionHash = keccak256(abi.encode(resultAction));
+
+        bytes32 hash = _entryHash(callActionHash, resultAction);
+        bytes32 l2Hash = _entryHash(resultActionHash, resultAction);
 
         // Parseable lines
         console.log("EXPECTED_L1_HASHES=[%s]", vm.toString(hash));
         console.log("EXPECTED_L2_HASHES=[%s]", vm.toString(l2Hash));
-        console.log("EXPECTED_L2_CALL_HASHES=[%s]", vm.toString(hash));
+        console.log("EXPECTED_L2_CALL_HASHES=[%s]", vm.toString(callActionHash));
 
         // Human-readable: L1 execution table
         console.log("");
@@ -269,6 +272,6 @@ contract ComputeExpected is ComputeExpectedBase {
         // Human-readable: L2 calls
         console.log("");
         console.log("=== EXPECTED L2 CALLS (1 call) ===");
-        _logL2Call(0, hash, callAction);
+        _logL2Call(0, callActionHash, callAction);
     }
 }

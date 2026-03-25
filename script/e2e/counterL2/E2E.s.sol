@@ -337,15 +337,20 @@ contract ComputeExpected is ComputeExpectedBase {
         bytes32 h1 = keccak256(abi.encode(resultAction));
         bytes32 l2h0 = keccak256(abi.encode(callAction));
 
+        // Entry hashes: encode both actionHash and nextAction
+        bytes32 eh0 = _entryHash(h0, callAction);       // L1 entry 0: L2TX -> CALL
+        bytes32 eh1 = _entryHash(h1, resultAction);      // L1 entry 1: RESULT -> RESULT
+        bytes32 l2eh0 = _entryHash(l2h0, resultAction);  // L2 entry 0: CALL -> RESULT
+
         bytes32 s0 = keccak256("l2-initial-state");
         bytes32 s1 = keccak256("l2-state-before-call");
         bytes32 s2 = keccak256("l2-state-after-scenario2");
 
-        // L1 batch: 2 entries (L2TX + RESULT)
-        console.log("EXPECTED_L1_HASHES=[%s,%s]", vm.toString(h0), vm.toString(h1));
-        // L2 execution table: 1 entry (CALL hash -> RESULT)
-        console.log("EXPECTED_L2_HASHES=[%s]", vm.toString(l2h0));
-        // L2 call: the CALL action hash (executeCrossChainCall on L2)
+        // L1 batch: 2 entries (L2TX + RESULT) — entry hashes
+        console.log("EXPECTED_L1_HASHES=[%s,%s]", vm.toString(eh0), vm.toString(eh1));
+        // L2 execution table: 1 entry (CALL hash -> RESULT) — entry hash
+        console.log("EXPECTED_L2_HASHES=[%s]", vm.toString(l2eh0));
+        // L2 call: the CALL action hash (executeCrossChainCall on L2) — plain action hash
         console.log("EXPECTED_L2_CALL_HASHES=[%s]", vm.toString(l2h0));
 
         // ── Human-readable: L1 execution table (2 entries) ──
