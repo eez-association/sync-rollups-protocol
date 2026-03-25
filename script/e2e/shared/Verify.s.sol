@@ -139,6 +139,13 @@ contract VerifyL1Batch is VerifyHelpers {
             expectedActionHashes.length,
             blockNumber
         );
+        // Output tx hash of the BatchPosted event for the summary
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics[0] == SIG_BATCH_POSTED) {
+                console.log("L1_BATCH_TX=%s", vm.toString(logs[i].transactionHash));
+                break;
+            }
+        }
     }
 
     function _collectEntries(Vm.EthGetLogs[] memory logs) internal pure returns (ExecutionEntry[] memory) {
@@ -192,67 +199,6 @@ contract VerifyL1Batch is VerifyHelpers {
     }
 }
 
-/// @title ExtractL2Blocks — Extract L2 block numbers from postBatch callData on L1
-/// @dev Runs against L1 RPC. Reads the postBatch transaction, decodes callData to get L2 block numbers.
-///   forge script script/e2e/shared/Verify.s.sol:ExtractL2Blocks \
-///     --rpc-url $L1_RPC \
-///     --sig "run(uint256,address)" $BLOCK $ROLLUPS
-contract ExtractL2Blocks is VerifyHelpers {
-    function run(uint256 blockNumber, address rollups) external {
-        bytes32[] memory topics = new bytes32[](0);
-        Vm.EthGetLogs[] memory logs = vm.eth_getLogs(blockNumber, blockNumber, rollups, topics);
-
-        bool found = false;
-        for (uint256 i = 0; i < logs.length; i++) {
-            if (logs[i].topics[0] != SIG_BATCH_POSTED) continue;
-            found = true;
-
-            // Fetch the full transaction to get its input
-            bytes32 txHash = logs[i].transactionHash;
-            string memory params = string.concat('["', vm.toString(txHash), '"]');
-            bytes memory rpcResult = vm.rpc("eth_getTransactionByHash", params);
-            bytes memory txInput = vm.parseJsonBytes(string(rpcResult), ".input");
-
-            // Strip 4-byte selector, decode postBatch params
-            bytes memory encoded = _stripSelector(txInput);
-            (,, bytes memory batchCallData,) = abi.decode(encoded, (ExecutionEntry[], uint256, bytes, bytes));
-
-            if (batchCallData.length == 0) {
-                console.log("L2_BLOCKS=[]");
-                console.log("(empty callData - cross-chain-only batch)");
-                continue;
-            }
-
-            // callData format: abi.encode(uint256[] l2BlockNumbers, bytes[] transactions)
-            (uint256[] memory l2Blocks,) = abi.decode(batchCallData, (uint256[], bytes[]));
-
-            // Output parseable array
-            string memory s = "[";
-            for (uint256 j = 0; j < l2Blocks.length; j++) {
-                if (j > 0) s = string.concat(s, ",");
-                s = string.concat(s, vm.toString(l2Blocks[j]));
-            }
-            s = string.concat(s, "]");
-            console.log("L2_BLOCKS=%s", s);
-            console.log("(%s L2 blocks in batch)", l2Blocks.length);
-        }
-
-        if (!found) {
-            console.log("L2_BLOCKS=[]");
-            console.log("(no BatchPosted events in block %s)", blockNumber);
-        }
-    }
-
-    function _stripSelector(bytes memory input) internal pure returns (bytes memory) {
-        require(input.length >= 4, "input too short");
-        bytes memory result = new bytes(input.length - 4);
-        for (uint256 i = 4; i < input.length; i++) {
-            result[i - 4] = input[i];
-        }
-        return result;
-    }
-}
-
 /// @title VerifyL2Blocks — Verify expected entries exist in one of the given L2 blocks
 /// @dev Runs against L2 RPC. Tries each block — if all expected hashes found in any single block, PASS.
 ///   Otherwise prints all blocks' tables and reverts.
@@ -275,6 +221,15 @@ contract VerifyL2Blocks is VerifyHelpers {
             ExecutionEntry[] memory entries = _getEntries(l2Blocks[i], managerL2);
             if (_allPresent(entries, expectedHashes)) {
                 console.log("PASS: all %s expected entries found at L2 block %s", expectedHashes.length, l2Blocks[i]);
+                // Output tx hash of the ExecutionTableLoaded event
+                bytes32[] memory topics = new bytes32[](0);
+                Vm.EthGetLogs[] memory blkLogs = vm.eth_getLogs(l2Blocks[i], l2Blocks[i], managerL2, topics);
+                for (uint256 j = 0; j < blkLogs.length; j++) {
+                    if (blkLogs[j].topics[0] == SIG_TABLE_LOADED) {
+                        console.log("L2_TABLE_TX=%s", vm.toString(blkLogs[j].transactionHash));
+                        break;
+                    }
+                }
                 return;
             }
         }
@@ -389,6 +344,16 @@ contract VerifyL2Calls is VerifyHelpers {
         }
 
         console.log("PASS: %s/%s expected L2 calls verified", expectedCallHashes.length, expectedCallHashes.length);
+        // Output tx hashes of the IncomingCrossChainCallExecuted events
+        for (uint256 i = 0; i < l2Blocks.length; i++) {
+            bytes32[] memory topics = new bytes32[](0);
+            Vm.EthGetLogs[] memory blkLogs = vm.eth_getLogs(l2Blocks[i], l2Blocks[i], managerL2, topics);
+            for (uint256 j = 0; j < blkLogs.length; j++) {
+                if (blkLogs[j].topics[0] == SIG_INCOMING_CALL) {
+                    console.log("L2_CALL_TX=%s", vm.toString(blkLogs[j].transactionHash));
+                }
+            }
+        }
     }
 
     function _collectActionHashes(uint256[] calldata blocks, address managerL2)

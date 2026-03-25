@@ -173,6 +173,59 @@ execute_l2_same_block() {
     return "$exit_code"
 }
 
+# ── Get block number from forge broadcast JSON ──
+# Reads broadcast/<Script>.s.sol/<chainId>/run-latest.json, returns decimal block of last receipt.
+# Usage: BLOCK=$(get_block_from_broadcast SOL_FILE RPC_URL)
+get_block_from_broadcast() {
+    local sol="$1" rpc="$2"
+    local chain_id
+    chain_id=$(cast chain-id --rpc-url "$rpc")
+    local sol_basename
+    sol_basename=$(basename "$sol")
+    local json="broadcast/${sol_basename}/${chain_id}/run-latest.json"
+    if [[ ! -f "$json" ]]; then
+        echo "ERROR: Broadcast file not found: $json" >&2
+        return 1
+    fi
+    local tx_hash
+    tx_hash=$(jq -r '.receipts[-1].transactionHash' "$json")
+    echo "tx: $tx_hash" >&2
+    printf "%d\n" "$(jq -r '.receipts[-1].blockNumber' "$json")"
+}
+
+# ── Extract L2 block numbers from a postBatch tx's callData ──
+# Fetches the tx input, extracts the 3rd param (callData), decodes L2 block numbers.
+# Usage: L2_BLOCKS=$(extract_l2_blocks_from_tx TX_HASH RPC_URL)
+# Returns: "[156,157]" or "[]" if empty
+# TODO: The system currently encodes callData as abi.encode(tuple(uint256[], bytes[]))
+#   instead of abi.encode(uint256[], bytes[]). Update the decode once the encoding is fixed.
+extract_l2_blocks_from_tx() {
+    local tx_hash="$1" rpc="$2"
+    local postbatch_sig='postBatch(((uint256,bytes32,bytes32,int256)[],bytes32,(uint8,uint256,address,uint256,bytes,bool,address,uint256,uint256[]))[],uint256,bytes,bytes)'
+
+    local input
+    input=$(cast tx "$tx_hash" input --rpc-url "$rpc" 2>/dev/null) || { echo "[]"; return; }
+
+    # Decode the full postBatch calldata — 3rd line is the callData (bytes) param
+    local calldata_hex
+    calldata_hex=$(cast calldata-decode "$postbatch_sig" "$input" 2>/dev/null | sed -n '3p') || { echo "[]"; return; }
+
+    if [[ -z "$calldata_hex" || "$calldata_hex" == "0x" ]]; then
+        echo "[]"
+        return
+    fi
+
+    # TODO: callData is currently abi.encode(tuple(uint256[], bytes[])) — update to
+    #   abi.encode(uint256[], bytes[]) once the tuple wrapper is removed from the system.
+    local decoded
+    decoded=$(cast abi-decode "f()((uint256[],bytes[]))" "$calldata_hex" 2>/dev/null) || { echo "[]"; return; }
+
+    # cast outputs: ([156, 157], [0x...]) — extract the first array
+    local blocks_str
+    blocks_str=$(echo "$decoded" | head -1 | grep -oE '\[[0-9, ]*\]' | head -1)
+    echo "${blocks_str:-[]}"
+}
+
 # ── Ensure CREATE2 factory exists on a chain ──
 ensure_create2_factory() {
     local rpc="$1"

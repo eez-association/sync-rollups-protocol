@@ -12,7 +12,7 @@ import {FlashLoanersNFT} from "../../../src/periphery/defiMock/FlashLoanersNFT.s
 import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import {_deployBridge} from "../../DeployBridge.s.sol";
+import {_deployBridge, _computeBridgeAddress} from "../../DeployBridge.s.sol";
 
 /// @dev Simple test token deployed on L1
 contract TestToken is ERC20 {
@@ -41,8 +41,11 @@ contract Deploy is Script {
         console.log("TOKEN=%s", address(token));
 
         bytes32 salt = keccak256("sync-rollups-bridge-v1");
-        address bridge = _deployBridge(salt);
-        Bridge(bridge).initialize(rollups, 0, msg.sender);
+        address bridge = _computeBridgeAddress(salt);
+        if (bridge.code.length == 0) {
+            bridge = _deployBridge(salt);
+            Bridge(bridge).initialize(rollups, 0, msg.sender);
+        }
         console.log("BRIDGE_L1=%s", bridge);
 
         vm.stopBroadcast();
@@ -61,9 +64,12 @@ contract DeployL2 is Script {
         vm.startBroadcast();
 
         bytes32 salt = keccak256("sync-rollups-bridge-v1");
-        address bridge = _deployBridge(salt);
-        Bridge(bridge).initialize(managerL2, l2RollupId, msg.sender);
-        Bridge(bridge).setCanonicalBridgeAddress(bridgeL1);
+        address bridge = _computeBridgeAddress(salt);
+        if (bridge.code.length == 0) {
+            bridge = _deployBridge(salt);
+            Bridge(bridge).initialize(managerL2, l2RollupId, msg.sender);
+            Bridge(bridge).setCanonicalBridgeAddress(bridgeL1);
+        }
 
         console.log("BRIDGE_L2=%s", bridge);
 
@@ -155,8 +161,13 @@ contract Deploy3 is Script {
 
         vm.startBroadcast();
 
-        // Create proxy for executorL2 on L1
-        address executorL2Proxy = Rollups(rollups).createCrossChainProxy(executorL2, l2RollupId);
+        // Create proxy for executorL2 on L1 (try/catch for re-run tolerance)
+        address executorL2Proxy;
+        try Rollups(rollups).createCrossChainProxy(executorL2, l2RollupId) returns (address proxy) {
+            executorL2Proxy = proxy;
+        } catch {
+            executorL2Proxy = Rollups(rollups).computeCrossChainProxyAddress(executorL2, l2RollupId);
+        }
         console.log("EXECUTOR_L2_PROXY=%s", executorL2Proxy);
 
         // Executor on L1
@@ -450,13 +461,17 @@ contract Execute is Script {
 
 /// @title ExecuteNetwork — Network mode L1: user transaction only (no Batcher)
 /// @dev Env: EXECUTOR_L1
+/// Returns (target, value, calldata) so the runner can send via `cast send`.
+/// We can't use `forge script --broadcast` because the tx reverts in local simulation
+/// (no execution table loaded yet). The system intercepts the tx from the mempool
+/// and inserts postBatch before it in the same block.
 contract ExecuteNetwork is Script {
-    function run() external {
-        address executorL1 = vm.envAddress("EXECUTOR_L1");
-        vm.startBroadcast();
-        FlashLoanBridgeExecutor(executorL1).execute();
-        console.log("done");
-        vm.stopBroadcast();
+    function run() external view {
+        address target = vm.envAddress("EXECUTOR_L1");
+        bytes memory data = abi.encodeWithSignature("execute()");
+        console.log("TARGET=%s", target);
+        console.log("VALUE=0");
+        console.log("CALLDATA=%s", vm.toString(data));
     }
 }
 

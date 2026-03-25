@@ -6,7 +6,7 @@ import {Rollups} from "../../../src/Rollups.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
 import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
 import {Bridge} from "../../../src/periphery/Bridge.sol";
-import {_deployBridge} from "../../DeployBridge.s.sol";
+import {_deployBridge, _computeBridgeAddress} from "../../DeployBridge.s.sol";
 
 /// @notice Batcher: postBatch + bridgeEther in one tx (local mode only)
 contract Batcher {
@@ -31,8 +31,11 @@ contract Deploy is Script {
         vm.startBroadcast();
 
         bytes32 salt = keccak256("sync-rollups-bridge-v1");
-        address bridgeAddr = _deployBridge(salt);
-        Bridge(bridgeAddr).initialize(rollupsAddr, 0, msg.sender);
+        address bridgeAddr = _computeBridgeAddress(salt);
+        if (bridgeAddr.code.length == 0) {
+            bridgeAddr = _deployBridge(salt);
+            Bridge(bridgeAddr).initialize(rollupsAddr, 0, msg.sender);
+        }
 
         console.log("BRIDGE=%s", bridgeAddr);
         console.log("DESTINATION=%s", msg.sender);
@@ -151,14 +154,18 @@ contract Execute is Script {
 
 /// @title ExecuteNetwork — Network mode: user transaction only (no Batcher)
 /// @dev Env: BRIDGE, DESTINATION
+/// Returns (target, value, calldata) so the runner can send via `cast send`.
+/// We can't use `forge script --broadcast` because the tx reverts in local simulation
+/// (no execution table loaded yet). The system intercepts the tx from the mempool
+/// and inserts postBatch before it in the same block.
 contract ExecuteNetwork is Script {
-    function run() external {
+    function run() external view {
         address bridgeAddr = vm.envAddress("BRIDGE");
         address destination = vm.envAddress("DESTINATION");
-        vm.startBroadcast();
-        Bridge(bridgeAddr).bridgeEther{value: 1 ether}(1, destination);
-        console.log("done");
-        vm.stopBroadcast();
+        bytes memory data = abi.encodeWithSelector(Bridge.bridgeEther.selector, 1, destination);
+        console.log("TARGET=%s", bridgeAddr);
+        console.log("VALUE=1000000000000000000");
+        console.log("CALLDATA=%s", vm.toString(data));
     }
 }
 
@@ -189,10 +196,26 @@ contract ComputeExpected is Script {
             etherDelta: 1 ether
         });
 
+        // RESULT action (L2 execution table entry)
+        Action memory resultAction = Action({
+            actionType: ActionType.RESULT,
+            rollupId: 1,
+            destination: address(0),
+            value: 0,
+            data: "",
+            failed: false,
+            sourceAddress: address(0),
+            sourceRollup: 0,
+            scope: new uint256[](0)
+        });
+
         bytes32 hash = keccak256(abi.encode(callAction));
+        bytes32 l2Hash = keccak256(abi.encode(resultAction));
 
         // L1 batch verification
         console.log("EXPECTED_L1_HASHES=[%s]", vm.toString(hash));
+        // L2 execution table verification
+        console.log("EXPECTED_L2_HASHES=[%s]", vm.toString(l2Hash));
         // L2 call verification (same hash — the CALL to L2)
         console.log("EXPECTED_L2_CALL_HASHES=[%s]", vm.toString(hash));
 

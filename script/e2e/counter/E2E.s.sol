@@ -39,7 +39,15 @@ contract Deploy is Script {
         vm.startBroadcast();
 
         Rollups rollups = Rollups(rollupsAddr);
-        address counterProxy = rollups.createCrossChainProxy(counterL2Addr, 1);
+
+        // Try to create proxy; if it already exists (CreateCollision), compute the address
+        address counterProxy;
+        try rollups.createCrossChainProxy(counterL2Addr, 1) returns (address proxy) {
+            counterProxy = proxy;
+        } catch {
+            counterProxy = rollups.computeCrossChainProxyAddress(counterL2Addr, 1);
+        }
+
         CounterAndProxy counterAndProxy = new CounterAndProxy(Counter(counterProxy));
 
         console.log("COUNTER_PROXY=%s", counterProxy);
@@ -169,13 +177,17 @@ contract Execute is Script {
 
 /// @title ExecuteNetwork — Network mode: user transaction only (no Batcher)
 /// @dev Env: COUNTER_AND_PROXY
+/// Returns (target, value, calldata) so the runner can send via `cast send`.
+/// We can't use `forge script --broadcast` because the tx reverts in local simulation
+/// (no execution table loaded yet). The system intercepts the tx from the mempool
+/// and inserts postBatch before it in the same block.
 contract ExecuteNetwork is Script {
-    function run() external {
-        address counterAndProxyAddr = vm.envAddress("COUNTER_AND_PROXY");
-        vm.startBroadcast();
-        CounterAndProxy(counterAndProxyAddr).incrementProxy();
-        console.log("done");
-        vm.stopBroadcast();
+    function run() external view {
+        address target = vm.envAddress("COUNTER_AND_PROXY");
+        bytes memory data = abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector);
+        console.log("TARGET=%s", target);
+        console.log("VALUE=0");
+        console.log("CALLDATA=%s", vm.toString(data));
     }
 }
 
@@ -206,10 +218,25 @@ contract ComputeExpected is Script {
             etherDelta: 0
         });
 
-        bytes32 hash = keccak256(abi.encode(callAction));
+        // RESULT action (L2 execution table entry)
+        Action memory resultAction = Action({
+            actionType: ActionType.RESULT,
+            rollupId: 1,
+            destination: address(0),
+            value: 0,
+            data: abi.encode(uint256(1)),
+            failed: false,
+            sourceAddress: address(0),
+            sourceRollup: 0,
+            scope: new uint256[](0)
+        });
 
-        // Parseable lines — L1 uses CALL hash, L2 uses same CALL hash
+        bytes32 hash = keccak256(abi.encode(callAction));
+        bytes32 l2Hash = keccak256(abi.encode(resultAction));
+
+        // Parseable lines
         console.log("EXPECTED_L1_HASHES=[%s]", vm.toString(hash));
+        console.log("EXPECTED_L2_HASHES=[%s]", vm.toString(l2Hash));
         console.log("EXPECTED_L2_CALL_HASHES=[%s]", vm.toString(hash));
 
         // Human-readable expected table

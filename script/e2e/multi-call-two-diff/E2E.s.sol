@@ -48,8 +48,21 @@ contract Deploy is Script {
 
         Rollups rollups = Rollups(rollupsAddr);
         CallTwoDifferent callTwoDiff = new CallTwoDifferent();
-        address proxyA = rollups.createCrossChainProxy(counterAAddr, 1);
-        address proxyB = rollups.createCrossChainProxy(counterBAddr, 1);
+
+        // Try to create proxies; if they already exist (CreateCollision), compute the addresses
+        address proxyA;
+        try rollups.createCrossChainProxy(counterAAddr, 1) returns (address p) {
+            proxyA = p;
+        } catch {
+            proxyA = rollups.computeCrossChainProxyAddress(counterAAddr, 1);
+        }
+
+        address proxyB;
+        try rollups.createCrossChainProxy(counterBAddr, 1) returns (address p) {
+            proxyB = p;
+        } catch {
+            proxyB = rollups.computeCrossChainProxyAddress(counterBAddr, 1);
+        }
 
         console.log("CALL_TWO_DIFF=%s", address(callTwoDiff));
         console.log("PROXY_A=%s", proxyA);
@@ -201,15 +214,16 @@ contract Execute is Script {
 
 /// @title ExecuteNetwork — Network mode: user transaction only
 /// @dev Env: CALL_TWO_DIFF, PROXY_A, PROXY_B
+/// Returns (target, value, calldata) so the runner can send via `cast send`.
 contract ExecuteNetwork is Script {
-    function run() external {
+    function run() external view {
         address callTwoDiffAddr = vm.envAddress("CALL_TWO_DIFF");
         address proxyAAddr = vm.envAddress("PROXY_A");
         address proxyBAddr = vm.envAddress("PROXY_B");
-        vm.startBroadcast();
-        CallTwoDifferent(callTwoDiffAddr).callBothCounters(proxyAAddr, proxyBAddr);
-        console.log("done");
-        vm.stopBroadcast();
+        bytes memory data = abi.encodeWithSelector(CallTwoDifferent.callBothCounters.selector, proxyAAddr, proxyBAddr);
+        console.log("TARGET=%s", callTwoDiffAddr);
+        console.log("VALUE=0");
+        console.log("CALLDATA=%s", vm.toString(data));
     }
 }
 
@@ -249,7 +263,22 @@ contract ComputeExpected is Script {
         bytes32 hashA = keccak256(abi.encode(callA));
         bytes32 hashB = keccak256(abi.encode(callB));
 
+        // RESULT action (L2 execution table entries — same hash, 2 entries)
+        Action memory result1 = Action({
+            actionType: ActionType.RESULT,
+            rollupId: 1,
+            destination: address(0),
+            value: 0,
+            data: abi.encode(uint256(1)),
+            failed: false,
+            sourceAddress: address(0),
+            sourceRollup: 0,
+            scope: new uint256[](0)
+        });
+        bytes32 l2Hash = keccak256(abi.encode(result1));
+
         console.log("EXPECTED_L1_HASHES=[%s,%s]", vm.toString(hashA), vm.toString(hashB));
+        console.log("EXPECTED_L2_HASHES=[%s,%s]", vm.toString(l2Hash), vm.toString(l2Hash));
         console.log("EXPECTED_L2_CALL_HASHES=[%s,%s]", vm.toString(hashA), vm.toString(hashB));
 
         console.log("");
