@@ -253,19 +253,15 @@ contract CrossChainManagerL2 is ICrossChainManager {
         emit CrossChainProxyCreated(proxy, originalAddress, originalRollupId);
     }
 
-    /// @notice Finds a matching execution for the given action hash, removes it, and returns the next action
+    /// @notice Finds a matching execution for the given action hash, marks it as consumed, and returns the next action
     function _consumeExecution(bytes32 actionHash, Action memory action) internal returns (Action memory nextAction) {
         for (uint256 i = 0; i < executions.length; i++) {
             if (executions[i].actionHash != actionHash) continue;
 
             nextAction = executions[i].nextAction;
 
-            // Swap-and-pop
-            uint256 lastIndex = executions.length - 1;
-            if (i != lastIndex) {
-                executions[i] = executions[lastIndex];
-            }
-            executions.pop();
+            // Mark as consumed (preserves insertion order for duplicate action hashes)
+            executions[i].actionHash = bytes32(0);
 
             emit ExecutionConsumed(actionHash, action);
             return nextAction;

@@ -140,6 +140,20 @@ forge test -vvv
 forge fmt
 ```
 
+## E2E Tests
+
+E2E tests deploy contracts on anvil (or a live network) and execute real cross-chain flows. See [`script/e2e/README.md`](script/e2e/README.md) for full documentation.
+
+```bash
+# Local mode — starts anvil, deploys everything, executes, decodes events
+bash script/e2e/counter/run-local.sh       # Simple counter increment
+bash script/e2e/bridge/run-local.sh        # Bridge ETH via CREATE2
+bash script/e2e/flash-loan/run-local.sh    # Multi-chain flash loan
+
+# Network mode — deploys app to existing network, verifies post-facto
+bash script/e2e/counter/run-network.sh --rpc $RPC --pk $PK --rollups $ROLLUPS
+```
+
 ## Usage
 
 ### Creating a Rollup

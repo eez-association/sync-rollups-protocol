@@ -49,6 +49,11 @@ contract FlashLoanBridgeExecutor is IFlashLoanReceiver {
         flashLoanPool.flashLoan(token, 10_000e18);
     }
 
+    function execute(address beneficiary) external {
+        caller = beneficiary;
+        flashLoanPool.flashLoan(token, 10_000e18);
+    }
+
     function onFlashLoan(address _token, uint256 amount) external override {
         require(msg.sender == address(flashLoanPool), "Unauthorized");
 

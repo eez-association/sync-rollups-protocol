@@ -5,8 +5,10 @@ out/
 # Ignores development broadcast logs
 broadcast/
 
-# Docs
-docs/
-
 # Dotenv file
 .env
+lib
+devnet
+.devnet.md
+tmp
+todoignore
