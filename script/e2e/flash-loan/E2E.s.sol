@@ -15,6 +15,170 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {_deployBridge, _computeBridgeAddress} from "../../DeployBridge.s.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 
+/// @dev Centralized action & entry definitions for the flash-loan scenario.
+///   Single source of truth — used by Execute, ExecuteL2, and ComputeExpected.
+abstract contract FlashLoanActions {
+    uint256 internal constant L2_ROLLUP_ID = 1;
+    uint256 internal constant MAINNET_ROLLUP_ID = 0;
+
+    function _callForward(address bridgeL2, address bridgeL1, bytes memory fwdCalldata)
+        internal
+        pure
+        returns (Action memory)
+    {
+        return Action({
+            actionType: ActionType.CALL,
+            rollupId: L2_ROLLUP_ID,
+            destination: bridgeL2,
+            value: 0,
+            data: fwdCalldata,
+            failed: false,
+            sourceAddress: bridgeL1,
+            sourceRollup: MAINNET_ROLLUP_ID,
+            scope: new uint256[](0)
+        });
+    }
+
+    function _callClaimAndBridge(address executorL2, address executorL1, bytes memory claimCalldata)
+        internal
+        pure
+        returns (Action memory)
+    {
+        return Action({
+            actionType: ActionType.CALL,
+            rollupId: L2_ROLLUP_ID,
+            destination: executorL2,
+            value: 0,
+            data: claimCalldata,
+            failed: false,
+            sourceAddress: executorL1,
+            sourceRollup: MAINNET_ROLLUP_ID,
+            scope: new uint256[](0)
+        });
+    }
+
+    function _callReturn(address bridgeL1, address bridgeL2, bytes memory retCalldata, uint256[] memory scope)
+        internal
+        pure
+        returns (Action memory)
+    {
+        return Action({
+            actionType: ActionType.CALL,
+            rollupId: MAINNET_ROLLUP_ID,
+            destination: bridgeL1,
+            value: 0,
+            data: retCalldata,
+            failed: false,
+            sourceAddress: bridgeL2,
+            sourceRollup: L2_ROLLUP_ID,
+            scope: scope
+        });
+    }
+
+    function _resultL2Void() internal pure returns (Action memory) {
+        return Action({
+            actionType: ActionType.RESULT,
+            rollupId: L2_ROLLUP_ID,
+            destination: address(0),
+            value: 0,
+            data: "",
+            failed: false,
+            sourceAddress: address(0),
+            sourceRollup: 0,
+            scope: new uint256[](0)
+        });
+    }
+
+    function _resultMainnetVoid() internal pure returns (Action memory) {
+        return Action({
+            actionType: ActionType.RESULT,
+            rollupId: MAINNET_ROLLUP_ID,
+            destination: address(0),
+            value: 0,
+            data: "",
+            failed: false,
+            sourceAddress: address(0),
+            sourceRollup: 0,
+            scope: new uint256[](0)
+        });
+    }
+
+    function _l1Entries(
+        address bridgeL2,
+        address bridgeL1,
+        bytes memory fwdCalldata,
+        address executorL2,
+        address executorL1,
+        bytes memory claimCalldata,
+        bytes memory retCalldata
+    ) internal pure returns (ExecutionEntry[] memory entries) {
+        Action memory callFwd = _callForward(bridgeL2, bridgeL1, fwdCalldata);
+        Action memory callClaim = _callClaimAndBridge(executorL2, executorL1, claimCalldata);
+        Action memory resultL2 = _resultL2Void();
+        Action memory resultMainnet = _resultMainnetVoid();
+
+        uint256[] memory scope0 = new uint256[](1);
+        scope0[0] = 0;
+        Action memory callRet = _callReturn(bridgeL1, bridgeL2, retCalldata, scope0);
+
+        bytes32 s0 = keccak256("l2-initial-state");
+        bytes32 s1 = keccak256("l2-tokens-bridged-to-executor");
+        bytes32 s2 = keccak256("l2-nft-claimed-tokens-bridged-back");
+        bytes32 s3 = keccak256("l2-bridge-return-executed");
+
+        StateDelta[] memory deltas1 = new StateDelta[](1);
+        deltas1[0] = StateDelta({rollupId: L2_ROLLUP_ID, currentState: s0, newState: s1, etherDelta: 0});
+
+        StateDelta[] memory deltas2 = new StateDelta[](1);
+        deltas2[0] = StateDelta({rollupId: L2_ROLLUP_ID, currentState: s1, newState: s2, etherDelta: 0});
+
+        StateDelta[] memory deltas3 = new StateDelta[](1);
+        deltas3[0] = StateDelta({rollupId: L2_ROLLUP_ID, currentState: s2, newState: s3, etherDelta: 0});
+
+        entries = new ExecutionEntry[](3);
+
+        entries[0].stateDeltas = deltas1;
+        entries[0].actionHash = keccak256(abi.encode(callFwd));
+        entries[0].nextAction = resultL2;
+
+        entries[1].stateDeltas = deltas2;
+        entries[1].actionHash = keccak256(abi.encode(callClaim));
+        entries[1].nextAction = callRet;
+
+        entries[2].stateDeltas = deltas3;
+        entries[2].actionHash = keccak256(abi.encode(resultMainnet));
+        entries[2].nextAction = resultL2;
+    }
+
+    function _l2Entries(
+        address bridgeL1,
+        address bridgeL2,
+        bytes memory retCalldata,
+        address executorL2,
+        address executorL1,
+        bytes memory claimCalldata
+    ) internal pure returns (ExecutionEntry[] memory entries) {
+        Action memory resultL2 = _resultL2Void();
+        Action memory resultMainnet = _resultMainnetVoid();
+        Action memory callClaim = _callClaimAndBridge(executorL2, executorL1, claimCalldata);
+        Action memory callRet = _callReturn(bridgeL1, bridgeL2, retCalldata, new uint256[](0));
+
+        entries = new ExecutionEntry[](3);
+
+        entries[0].stateDeltas = new StateDelta[](0);
+        entries[0].actionHash = keccak256(abi.encode(resultL2));
+        entries[0].nextAction = callClaim;
+
+        entries[1].stateDeltas = new StateDelta[](0);
+        entries[1].actionHash = keccak256(abi.encode(callRet));
+        entries[1].nextAction = resultMainnet;
+
+        entries[2].stateDeltas = new StateDelta[](0);
+        entries[2].actionHash = keccak256(abi.encode(resultL2));
+        entries[2].nextAction = resultL2;
+    }
+}
+
 /// @dev Simple test token deployed on L1
 contract TestToken is ERC20 {
     constructor() ERC20("Test Token", "TT") {
@@ -196,10 +360,7 @@ contract Deploy3 is Script {
 /// @title ExecuteL2 — Load execution table + executeIncomingCrossChainCall on L2
 /// @dev Env: MANAGER_L2, BRIDGE_L1, BRIDGE_L2, EXECUTOR_L1, EXECUTOR_L2,
 ///          FLASH_LOANERS_NFT, TOKEN, WRAPPED_TOKEN_L2, TOKEN_NAME, TOKEN_SYMBOL, TOKEN_DECIMALS
-contract ExecuteL2 is Script {
-    uint256 constant L2_ROLLUP_ID = 1;
-    uint256 constant MAINNET_ROLLUP_ID = 0;
-
+contract ExecuteL2 is Script, FlashLoanActions {
     function run() external {
         address managerL2 = vm.envAddress("MANAGER_L2");
         address bridgeL1 = vm.envAddress("BRIDGE_L1");
@@ -215,95 +376,26 @@ contract ExecuteL2 is Script {
 
         CrossChainManagerL2 manager = CrossChainManagerL2(managerL2);
 
-        // Forward receiveTokens: L1 → L2
         bytes memory fwdReceiveTokensCalldata = abi.encodeCall(
             Bridge.receiveTokens,
             (token, MAINNET_ROLLUP_ID, executorL2, 10_000e18, name, symbol, tokenDecimals, MAINNET_ROLLUP_ID)
         );
-
-        // claimAndBridgeBack — nftRecipient = msg.sender (Alice, the user who calls execute())
         bytes memory claimAndBridgeBackCalldata = abi.encodeCall(
             FlashLoanBridgeExecutor.claimAndBridgeBack,
             (wrappedTokenL2, flashLoanersNFT, bridgeL2, MAINNET_ROLLUP_ID, executorL1, msg.sender)
         );
-
-        // Return receiveTokens: L2 → L1
         bytes memory retReceiveTokensCalldata = abi.encodeCall(
             Bridge.receiveTokens,
             (token, MAINNET_ROLLUP_ID, executorL1, 10_000e18, name, symbol, tokenDecimals, L2_ROLLUP_ID)
         );
 
-        // Shared action templates
-        Action memory result_L2_void = Action({
-            actionType: ActionType.RESULT,
-            rollupId: L2_ROLLUP_ID,
-            destination: address(0),
-            value: 0,
-            data: "",
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-
-        Action memory result_MAINNET_void = Action({
-            actionType: ActionType.RESULT,
-            rollupId: MAINNET_ROLLUP_ID,
-            destination: address(0),
-            value: 0,
-            data: "",
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-
-        Action memory callBridgeReturn = Action({
-            actionType: ActionType.CALL,
-            rollupId: MAINNET_ROLLUP_ID,
-            destination: bridgeL1,
-            value: 0,
-            data: retReceiveTokensCalldata,
-            failed: false,
-            sourceAddress: bridgeL2,
-            sourceRollup: L2_ROLLUP_ID,
-            scope: new uint256[](0)
-        });
-
-        Action memory callB = Action({
-            actionType: ActionType.CALL,
-            rollupId: L2_ROLLUP_ID,
-            destination: executorL2,
-            value: 0,
-            data: claimAndBridgeBackCalldata,
-            failed: false,
-            sourceAddress: executorL1,
-            sourceRollup: MAINNET_ROLLUP_ID,
-            scope: new uint256[](0)
-        });
-
         vm.startBroadcast();
 
-        // Load execution table (3 entries)
-        ExecutionEntry[] memory l2Entries = new ExecutionEntry[](3);
-        StateDelta[] memory emptyDeltas = new StateDelta[](0);
-
-        l2Entries[0].stateDeltas = emptyDeltas;
-        l2Entries[0].actionHash = keccak256(abi.encode(result_L2_void));
-        l2Entries[0].nextAction = callB;
-
-        l2Entries[1].stateDeltas = emptyDeltas;
-        l2Entries[1].actionHash = keccak256(abi.encode(callBridgeReturn));
-        l2Entries[1].nextAction = result_MAINNET_void;
-
-        l2Entries[2].stateDeltas = emptyDeltas;
-        l2Entries[2].actionHash = keccak256(abi.encode(result_L2_void));
-        l2Entries[2].nextAction = result_L2_void;
-
-        manager.loadExecutionTable(l2Entries);
+        manager.loadExecutionTable(
+            _l2Entries(bridgeL1, bridgeL2, retReceiveTokensCalldata, executorL2, executorL1, claimAndBridgeBackCalldata)
+        );
         console.log("L2 execution table loaded (3 entries)");
 
-        // Single system call: receiveTokens + claimAndBridgeBack (chained)
         manager.executeIncomingCrossChainCall(
             bridgeL2, 0, fwdReceiveTokensCalldata, bridgeL1, MAINNET_ROLLUP_ID, new uint256[](0)
         );
@@ -324,10 +416,7 @@ contract Batcher {
 /// @title Execute — Post batch entries + trigger flash loan (local mode)
 /// @dev Env: ROLLUPS, BRIDGE_L1, BRIDGE_L2, EXECUTOR_L1, EXECUTOR_L2,
 ///          FLASH_LOANERS_NFT, TOKEN, WRAPPED_TOKEN_L2
-contract Execute is Script {
-    uint256 constant L2_ROLLUP_ID = 1;
-    uint256 constant MAINNET_ROLLUP_ID = 0;
-
+contract Execute is Script, FlashLoanActions {
     function run() external {
         address rollupsAddr = vm.envAddress("ROLLUPS");
         address bridgeL1 = vm.envAddress("BRIDGE_L1");
@@ -338,8 +427,6 @@ contract Execute is Script {
         address token = vm.envAddress("TOKEN");
         address wrappedTokenL2 = vm.envAddress("WRAPPED_TOKEN_L2");
 
-        Rollups rollups = Rollups(rollupsAddr);
-
         string memory name = ERC20(token).name();
         string memory symbol = ERC20(token).symbol();
         uint8 tokenDecimals = ERC20(token).decimals();
@@ -348,111 +435,23 @@ contract Execute is Script {
             Bridge.receiveTokens,
             (token, MAINNET_ROLLUP_ID, executorL2, 10_000e18, name, symbol, tokenDecimals, MAINNET_ROLLUP_ID)
         );
-
         bytes memory claimAndBridgeBackCalldata = abi.encodeCall(
             FlashLoanBridgeExecutor.claimAndBridgeBack,
             (wrappedTokenL2, flashLoanersNFT, bridgeL2, MAINNET_ROLLUP_ID, executorL1, msg.sender)
         );
-
         bytes memory retReceiveTokensCalldata = abi.encodeCall(
             Bridge.receiveTokens,
             (token, MAINNET_ROLLUP_ID, executorL1, 10_000e18, name, symbol, tokenDecimals, L2_ROLLUP_ID)
         );
 
-        Action memory result_L2_void = Action({
-            actionType: ActionType.RESULT,
-            rollupId: L2_ROLLUP_ID,
-            destination: address(0),
-            value: 0,
-            data: "",
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-
-        Action memory result_MAINNET_void = Action({
-            actionType: ActionType.RESULT,
-            rollupId: MAINNET_ROLLUP_ID,
-            destination: address(0),
-            value: 0,
-            data: "",
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-
-        Action memory callForward = Action({
-            actionType: ActionType.CALL,
-            rollupId: L2_ROLLUP_ID,
-            destination: bridgeL2,
-            value: 0,
-            data: fwdReceiveTokensCalldata,
-            failed: false,
-            sourceAddress: bridgeL1,
-            sourceRollup: MAINNET_ROLLUP_ID,
-            scope: new uint256[](0)
-        });
-
-        Action memory callClaimAndBridge = Action({
-            actionType: ActionType.CALL,
-            rollupId: L2_ROLLUP_ID,
-            destination: executorL2,
-            value: 0,
-            data: claimAndBridgeBackCalldata,
-            failed: false,
-            sourceAddress: executorL1,
-            sourceRollup: MAINNET_ROLLUP_ID,
-            scope: new uint256[](0)
-        });
-
-        uint256[] memory scope0 = new uint256[](1);
-        scope0[0] = 0;
-        Action memory callReturnScoped = Action({
-            actionType: ActionType.CALL,
-            rollupId: MAINNET_ROLLUP_ID,
-            destination: bridgeL1,
-            value: 0,
-            data: retReceiveTokensCalldata,
-            failed: false,
-            sourceAddress: bridgeL2,
-            sourceRollup: L2_ROLLUP_ID,
-            scope: scope0
-        });
-
-        bytes32 s0 = keccak256("l2-initial-state");
-        bytes32 s1 = keccak256("l2-tokens-bridged-to-executor");
-        bytes32 s2 = keccak256("l2-nft-claimed-tokens-bridged-back");
-        bytes32 s3 = keccak256("l2-bridge-return-executed");
-
-        StateDelta[] memory deltas1 = new StateDelta[](1);
-        deltas1[0] = StateDelta({rollupId: L2_ROLLUP_ID, currentState: s0, newState: s1, etherDelta: 0});
-
-        StateDelta[] memory deltas2 = new StateDelta[](1);
-        deltas2[0] = StateDelta({rollupId: L2_ROLLUP_ID, currentState: s1, newState: s2, etherDelta: 0});
-
-        StateDelta[] memory deltas3 = new StateDelta[](1);
-        deltas3[0] = StateDelta({rollupId: L2_ROLLUP_ID, currentState: s2, newState: s3, etherDelta: 0});
-
-        ExecutionEntry[] memory entries = new ExecutionEntry[](3);
-
-        entries[0].stateDeltas = deltas1;
-        entries[0].actionHash = keccak256(abi.encode(callForward));
-        entries[0].nextAction = result_L2_void;
-
-        entries[1].stateDeltas = deltas2;
-        entries[1].actionHash = keccak256(abi.encode(callClaimAndBridge));
-        entries[1].nextAction = callReturnScoped;
-
-        entries[2].stateDeltas = deltas3;
-        entries[2].actionHash = keccak256(abi.encode(result_MAINNET_void));
-        entries[2].nextAction = result_L2_void;
-
         vm.startBroadcast();
 
         Batcher batcher = new Batcher();
-        batcher.execute(rollups, entries, FlashLoanBridgeExecutor(executorL1));
+        batcher.execute(
+            Rollups(rollupsAddr),
+            _l1Entries(bridgeL2, bridgeL1, fwdReceiveTokensCalldata, executorL2, executorL1, claimAndBridgeBackCalldata, retReceiveTokensCalldata),
+            FlashLoanBridgeExecutor(executorL1)
+        );
 
         console.log("L1 execution complete");
 
@@ -478,10 +477,7 @@ contract ExecuteNetwork is Script {
 
 /// @title ComputeExpected — Compute expected entries for L1 batch and L2 table
 /// @dev Env: BRIDGE_L1, BRIDGE_L2, EXECUTOR_L1, EXECUTOR_L2, FLASH_LOANERS_NFT, TOKEN, WRAPPED_TOKEN_L2
-contract ComputeExpected is ComputeExpectedBase {
-    uint256 constant L2_ROLLUP_ID = 1;
-    uint256 constant MAINNET_ROLLUP_ID = 0;
-
+contract ComputeExpected is ComputeExpectedBase, FlashLoanActions {
     // ── Address-to-name mapping ──
 
     function _name(address a) internal view override returns (string memory) {
@@ -534,133 +530,64 @@ contract ComputeExpected is ComputeExpectedBase {
             (token, MAINNET_ROLLUP_ID, executorL1, 10_000e18, name, symbol, tokenDecimals, L2_ROLLUP_ID)
         );
 
-        // ── L1 actions ──
-        Action memory callForward = Action({
-            actionType: ActionType.CALL,
-            rollupId: L2_ROLLUP_ID,
-            destination: bridgeL2,
-            value: 0,
-            data: fwdReceiveTokensCalldata,
-            failed: false,
-            sourceAddress: bridgeL1,
-            sourceRollup: MAINNET_ROLLUP_ID,
-            scope: new uint256[](0)
-        });
-        Action memory callClaimAndBridge = Action({
-            actionType: ActionType.CALL,
-            rollupId: L2_ROLLUP_ID,
-            destination: executorL2,
-            value: 0,
-            data: claimAndBridgeBackCalldata,
-            failed: false,
-            sourceAddress: executorL1,
-            sourceRollup: MAINNET_ROLLUP_ID,
-            scope: new uint256[](0)
-        });
-        Action memory result_MAINNET_void = Action({
-            actionType: ActionType.RESULT,
-            rollupId: MAINNET_ROLLUP_ID,
-            destination: address(0),
-            value: 0,
-            data: "",
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-        Action memory result_L2_void = Action({
-            actionType: ActionType.RESULT,
-            rollupId: L2_ROLLUP_ID,
-            destination: address(0),
-            value: 0,
-            data: "",
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
+        // Actions (single source of truth)
+        Action memory callFwd = _callForward(bridgeL2, bridgeL1, fwdReceiveTokensCalldata);
+        Action memory callClaim = _callClaimAndBridge(executorL2, executorL1, claimAndBridgeBackCalldata);
+        Action memory resultL2 = _resultL2Void();
+        Action memory resultMainnet = _resultMainnetVoid();
 
         uint256[] memory scope0 = new uint256[](1);
         scope0[0] = 0;
-        Action memory callReturnScoped = Action({
-            actionType: ActionType.CALL,
-            rollupId: MAINNET_ROLLUP_ID,
-            destination: bridgeL1,
-            value: 0,
-            data: retReceiveTokensCalldata,
-            failed: false,
-            sourceAddress: bridgeL2,
-            sourceRollup: L2_ROLLUP_ID,
-            scope: scope0
-        });
+        Action memory callRetScoped = _callReturn(bridgeL1, bridgeL2, retReceiveTokensCalldata, scope0);
+        Action memory callRetUnscoped = _callReturn(bridgeL1, bridgeL2, retReceiveTokensCalldata, new uint256[](0));
 
-        Action memory callBridgeReturn = Action({
-            actionType: ActionType.CALL,
-            rollupId: MAINNET_ROLLUP_ID,
-            destination: bridgeL1,
-            value: 0,
-            data: retReceiveTokensCalldata,
-            failed: false,
-            sourceAddress: bridgeL2,
-            sourceRollup: L2_ROLLUP_ID,
-            scope: new uint256[](0)
-        });
-        Action memory callB = Action({
-            actionType: ActionType.CALL,
-            rollupId: L2_ROLLUP_ID,
-            destination: executorL2,
-            value: 0,
-            data: claimAndBridgeBackCalldata,
-            failed: false,
-            sourceAddress: executorL1,
-            sourceRollup: MAINNET_ROLLUP_ID,
-            scope: new uint256[](0)
-        });
+        // Entries (single source of truth)
+        ExecutionEntry[] memory l1 = _l1Entries(
+            bridgeL2, bridgeL1, fwdReceiveTokensCalldata, executorL2, executorL1, claimAndBridgeBackCalldata, retReceiveTokensCalldata
+        );
+        ExecutionEntry[] memory l2 = _l2Entries(
+            bridgeL1, bridgeL2, retReceiveTokensCalldata, executorL2, executorL1, claimAndBridgeBackCalldata
+        );
 
-        bytes32 h0 = _entryHash(keccak256(abi.encode(callForward)), result_L2_void);
-        bytes32 h1 = _entryHash(keccak256(abi.encode(callClaimAndBridge)), callReturnScoped);
-        bytes32 h2 = _entryHash(keccak256(abi.encode(result_MAINNET_void)), result_L2_void);
-        bytes32 l2h0 = _entryHash(keccak256(abi.encode(result_L2_void)), callB);
-        bytes32 l2h1 = _entryHash(keccak256(abi.encode(callBridgeReturn)), result_MAINNET_void);
-        bytes32 l2h2 = _entryHash(keccak256(abi.encode(result_L2_void)), result_L2_void);
-
-        // State progression
-        bytes32 s0 = keccak256("l2-initial-state");
-        bytes32 s1 = keccak256("l2-tokens-bridged-to-executor");
-        bytes32 s2 = keccak256("l2-nft-claimed-tokens-bridged-back");
-        bytes32 s3 = keccak256("l2-bridge-return-executed");
+        // Compute hashes from entries
+        bytes32 h0 = _entryHash(l1[0].actionHash, l1[0].nextAction);
+        bytes32 h1 = _entryHash(l1[1].actionHash, l1[1].nextAction);
+        bytes32 h2 = _entryHash(l1[2].actionHash, l1[2].nextAction);
+        bytes32 l2h0 = _entryHash(l2[0].actionHash, l2[0].nextAction);
+        bytes32 l2h1 = _entryHash(l2[1].actionHash, l2[1].nextAction);
+        bytes32 l2h2 = _entryHash(l2[2].actionHash, l2[2].nextAction);
 
         // Parseable lines for shell scripts
         console.log("EXPECTED_L1_HASHES=[%s,%s,%s]", vm.toString(h0), vm.toString(h1), vm.toString(h2));
         console.log("EXPECTED_L2_HASHES=[%s,%s,%s]", vm.toString(l2h0), vm.toString(l2h1), vm.toString(l2h2));
         // L2 call verification: callForward is the one executeIncomingCrossChainCall on L2
-        bytes32 callForwardHash = keccak256(abi.encode(callForward));
+        bytes32 callForwardHash = l1[0].actionHash;
         console.log("EXPECTED_L2_CALL_HASHES=[%s]", vm.toString(callForwardHash));
 
-        // ── Human-readable L1 table ──
-        StateDelta[] memory deltas1 = new StateDelta[](1);
-        deltas1[0] = StateDelta({rollupId: L2_ROLLUP_ID, currentState: s0, newState: s1, etherDelta: 0});
-        StateDelta[] memory deltas2 = new StateDelta[](1);
-        deltas2[0] = StateDelta({rollupId: L2_ROLLUP_ID, currentState: s1, newState: s2, etherDelta: 0});
-        StateDelta[] memory deltas3 = new StateDelta[](1);
-        deltas3[0] = StateDelta({rollupId: L2_ROLLUP_ID, currentState: s2, newState: s3, etherDelta: 0});
+        // Summary
+        console.log("");
+        console.log("=== EXPECTED SUMMARY ===");
+        _logEntrySummary(0, callFwd, resultL2, false);
+        _logEntrySummary(1, callClaim, callRetScoped, false);
+        _logEntrySummary(2, resultMainnet, resultL2, false);
 
+        // ── Human-readable L1 table ──
         console.log("");
         console.log("=== EXPECTED L1 EXECUTION TABLE (3 entries) ===");
-        _logEntry(0, h0, deltas1, _fmtCall(callForward), _fmtResult(result_L2_void, "(void)"));
-        _logEntry(1, h1, deltas2, _fmtCall(callClaimAndBridge), _fmtCall(callReturnScoped));
-        _logEntry(2, h2, deltas3, _fmtResult(result_MAINNET_void, "(void)  [MAINNET]"), _fmtResult(result_L2_void, "(void)"));
+        _logEntry(0, h0, l1[0].stateDeltas, _fmtCall(callFwd), _fmtResult(resultL2, "(void)"));
+        _logEntry(1, h1, l1[1].stateDeltas, _fmtCall(callClaim), _fmtCall(callRetScoped));
+        _logEntry(2, h2, l1[2].stateDeltas, _fmtResult(resultMainnet, "(void)  [MAINNET]"), _fmtResult(resultL2, "(void)"));
 
         // ── Human-readable L2 table ──
         console.log("");
         console.log("=== EXPECTED L2 EXECUTION TABLE (3 entries) ===");
-        _logL2Entry(0, l2h0, _fmtResult(result_L2_void, "(void)  [L2]"), _fmtCall(callB));
-        _logL2Entry(1, l2h1, _fmtCall(callBridgeReturn), _fmtResult(result_MAINNET_void, "(void)  [MAINNET]"));
-        _logL2Entry(2, l2h2, _fmtResult(result_L2_void, "(void)  [L2]"), _fmtResult(result_L2_void, "(void)  (terminal)"));
+        _logL2Entry(0, l2h0, _fmtResult(resultL2, "(void)  [L2]"), _fmtCall(callClaim));
+        _logL2Entry(1, l2h1, _fmtCall(callRetUnscoped), _fmtResult(resultMainnet, "(void)  [MAINNET]"));
+        _logL2Entry(2, l2h2, _fmtResult(resultL2, "(void)  [L2]"), _fmtResult(resultL2, "(void)  (terminal)"));
 
         // ── Human-readable L2 calls ──
         console.log("");
         console.log("=== EXPECTED L2 CALLS (1 call) ===");
-        _logL2Call(0, callForwardHash, callForward);
+        _logL2Call(0, callForwardHash, callFwd);
     }
 }

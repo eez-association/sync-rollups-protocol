@@ -18,6 +18,11 @@ contract DecodeExecutions is Script {
     bytes32 constant SIG_BATCH_POSTED = keccak256(
         "BatchPosted(((uint256,bytes32,bytes32,int256)[],bytes32,(uint8,uint256,address,uint256,bytes,bool,address,uint256,uint256[]))[],bytes32)"
     );
+    bytes32 constant SIG_TABLE_LOADED = keccak256(
+        "ExecutionTableLoaded(((uint256,bytes32,bytes32,int256)[],bytes32,(uint8,uint256,address,uint256,bytes,bool,address,uint256,uint256[]))[])"
+    );
+    bytes32 constant SIG_INCOMING_CALL =
+        keccak256("IncomingCrossChainCallExecuted(bytes32,address,uint256,bytes,address,uint256,uint256[])");
 
     // ── Collected data per tx ──
     struct TxData {
@@ -38,6 +43,17 @@ contract DecodeExecutions is Script {
         bytes ccCallData;
         uint256 ccValue;
         bytes32 ccActionHash;
+        // L2: table loaded
+        bool hasTableLoaded;
+        ExecutionEntry[] tableEntries;
+        // L2: incoming call
+        bool hasIncomingCall;
+        bytes32 incomingCallHash;
+        address incomingDest;
+        uint256 incomingValue;
+        bytes incomingData;
+        address incomingSource;
+        uint256 incomingSourceRollup;
     }
 
     // ──────────────────── Entry point ────────────────────
@@ -78,12 +94,18 @@ contract DecodeExecutions is Script {
         bytes memory ccCallData;
         uint256 ccValue;
         bytes32 ccActionHash;
+        // L2 events
+        ExecutionEntry[] memory tableEntries;
+        bool hasIncomingCall;
+        bytes32 incomingCallHash;
 
         for (uint256 i = 0; i < logs.length; i++) {
             bytes32 t0 = logs[i].topics[0];
             if (t0 == SIG_BATCH_POSTED) {
                 (batchEntries,) = abi.decode(logs[i].data, (ExecutionEntry[], bytes32));
                 batchEntryCount = batchEntries.length;
+            } else if (t0 == SIG_TABLE_LOADED) {
+                tableEntries = abi.decode(logs[i].data, (ExecutionEntry[]));
             } else if (t0 == SIG_EXECUTION_CONSUMED) {
                 consumed[consumedCount] = abi.decode(logs[i].data, (Action));
                 consumedHashes[consumedCount] = logs[i].topics[1];
@@ -98,12 +120,27 @@ contract DecodeExecutions is Script {
                 ccActionHash = logs[i].topics[1];
                 ccProxy = address(uint160(uint256(logs[i].topics[2])));
                 (ccSource, ccCallData, ccValue) = abi.decode(logs[i].data, (address, bytes, uint256));
+            } else if (t0 == SIG_INCOMING_CALL) {
+                hasIncomingCall = true;
+                incomingCallHash = logs[i].topics[1];
             }
+        }
+
+        // Print table loaded (L2)
+        if (tableEntries.length > 0) {
+            _printTableLoaded(tableEntries);
         }
 
         // Print full detail
         _printFullDetail(batchEntries, consumed, consumedHashes, consumedCount, hasL2TX, l2txRollupId, l2txRlpData,
             l2txActionHash, hasCCCall, ccProxy, ccSource, ccCallData, ccValue, ccActionHash);
+
+        // Print incoming call (L2)
+        if (hasIncomingCall) {
+            console.log("");
+            console.log("  TRIGGER: IncomingCrossChainCall");
+            console.log("    actionHash: %s", vm.toString(incomingCallHash));
+        }
 
         // Print flow
         _printFlow(batchEntries, consumed, consumedHashes, consumedCount, hasL2TX, l2txRollupId, l2txRlpData,
@@ -118,11 +155,14 @@ contract DecodeExecutions is Script {
             return;
         }
 
-        // First pass: collect ALL batch entries from the block so cross-tx lookups work
+        // First pass: collect ALL batch/table entries from the block so cross-tx lookups work
         uint256 totalBatchCount;
         for (uint256 i = 0; i < logs.length; i++) {
             if (logs[i].topics[0] == SIG_BATCH_POSTED) {
                 (ExecutionEntry[] memory entries,) = abi.decode(logs[i].data, (ExecutionEntry[], bytes32));
+                totalBatchCount += entries.length;
+            } else if (logs[i].topics[0] == SIG_TABLE_LOADED) {
+                ExecutionEntry[] memory entries = abi.decode(logs[i].data, (ExecutionEntry[]));
                 totalBatchCount += entries.length;
             }
         }
@@ -131,6 +171,11 @@ contract DecodeExecutions is Script {
         for (uint256 i = 0; i < logs.length; i++) {
             if (logs[i].topics[0] == SIG_BATCH_POSTED) {
                 (ExecutionEntry[] memory entries,) = abi.decode(logs[i].data, (ExecutionEntry[], bytes32));
+                for (uint256 j = 0; j < entries.length; j++) {
+                    allBatchEntries[idx++] = entries[j];
+                }
+            } else if (logs[i].topics[0] == SIG_TABLE_LOADED) {
+                ExecutionEntry[] memory entries = abi.decode(logs[i].data, (ExecutionEntry[]));
                 for (uint256 j = 0; j < entries.length; j++) {
                     allBatchEntries[idx++] = entries[j];
                 }
@@ -170,11 +215,17 @@ contract DecodeExecutions is Script {
         bytes memory ccCallData;
         uint256 ccValue;
         bytes32 ccActionHash;
+        // L2 events
+        ExecutionEntry[] memory tableEntries;
+        bool hasIncomingCall;
+        bytes32 incomingCallHash;
 
         for (uint256 i = from; i < to; i++) {
             bytes32 t0 = logs[i].topics[0];
             if (t0 == SIG_BATCH_POSTED) {
                 (localBatchEntries,) = abi.decode(logs[i].data, (ExecutionEntry[], bytes32));
+            } else if (t0 == SIG_TABLE_LOADED) {
+                tableEntries = abi.decode(logs[i].data, (ExecutionEntry[]));
             } else if (t0 == SIG_EXECUTION_CONSUMED) {
                 consumed[consumedCount] = abi.decode(logs[i].data, (Action));
                 consumedHashes[consumedCount] = logs[i].topics[1];
@@ -189,6 +240,9 @@ contract DecodeExecutions is Script {
                 ccActionHash = logs[i].topics[1];
                 ccProxy = address(uint160(uint256(logs[i].topics[2])));
                 (ccSource, ccCallData, ccValue) = abi.decode(logs[i].data, (address, bytes, uint256));
+            } else if (t0 == SIG_INCOMING_CALL) {
+                hasIncomingCall = true;
+                incomingCallHash = logs[i].topics[1];
             }
         }
 
@@ -197,9 +251,21 @@ contract DecodeExecutions is Script {
         console.log("TX %s", vm.toString(txHash));
         console.log("========================================");
 
+        // Table loaded (L2)
+        if (tableEntries.length > 0) {
+            _printTableLoaded(tableEntries);
+        }
+
         // Full detail uses local batch entries (what was posted in THIS tx)
         _printFullDetail(localBatchEntries, consumed, consumedHashes, consumedCount, hasL2TX, l2txRollupId, l2txRlpData,
             l2txActionHash, hasCCCall, ccProxy, ccSource, ccCallData, ccValue, ccActionHash);
+
+        // Incoming call (L2)
+        if (hasIncomingCall) {
+            console.log("");
+            console.log("  TRIGGER: IncomingCrossChainCall");
+            console.log("    actionHash: %s", vm.toString(incomingCallHash));
+        }
 
         // Flow/summary uses ALL batch entries from the block (cross-tx lookup)
         _printFlow(allBatchEntries, consumed, consumedHashes, consumedCount, hasL2TX, l2txRollupId, l2txRlpData,
@@ -445,6 +511,16 @@ contract DecodeExecutions is Script {
         }
         ExecutionEntry memory empty;
         return (false, empty);
+    }
+
+    // ──────────────────── Table loaded (L2) ────────────────────
+
+    function _printTableLoaded(ExecutionEntry[] memory entries) internal pure {
+        console.log("");
+        console.log("  EXECUTION TABLE LOADED (%s entries)", entries.length);
+        for (uint256 e = 0; e < entries.length; e++) {
+            _logBatchEntry(e, entries[e]);
+        }
     }
 
     // ──────────────────── Detail formatters ────────────────────

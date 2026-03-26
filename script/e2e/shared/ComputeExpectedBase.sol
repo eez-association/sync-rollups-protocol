@@ -137,6 +137,47 @@ abstract contract ComputeExpectedBase is Script {
         console.log("      hash: %s", _shortHash(hash));
     }
 
+    // ── Summary helpers ──
+
+    function _chainName(uint256 rollupId) internal pure returns (string memory) {
+        if (rollupId == 0) return "L1";
+        if (rollupId == 1) return "L2";
+        return string.concat("rollup ", vm.toString(rollupId));
+    }
+
+    function _summaryAction(Action memory a) internal view returns (string memory) {
+        if (a.actionType == ActionType.CALL) {
+            string memory func;
+            if (a.data.length == 0) {
+                func = "(ETH transfer)";
+            } else {
+                func = string.concat(_name(a.destination), ".", _funcName(bytes4(a.data)), "()");
+            }
+            return string.concat("Call --> ", _chainName(a.rollupId), " (", func, ")");
+        } else if (a.actionType == ActionType.RESULT) {
+            return string.concat("Result ", a.failed ? "FAILED" : "ok");
+        } else if (a.actionType == ActionType.L2TX) {
+            return string.concat("L2TX rollup ", _chainName(a.rollupId));
+        } else if (a.actionType == ActionType.REVERT) {
+            return "Revert";
+        } else if (a.actionType == ActionType.REVERT_CONTINUE) {
+            return "RevertContinue";
+        }
+        return "?";
+    }
+
+    function _logEntrySummary(uint256 idx, Action memory trigger, Action memory response, bool isTerminal)
+        internal
+        view
+    {
+        string memory terminal = isTerminal ? " (terminal)" : "";
+        console.log(
+            string.concat(
+                "  [", vm.toString(idx), "] ", _summaryAction(trigger), ", next: ", _summaryAction(response), terminal
+            )
+        );
+    }
+
     // ── Primitives ──
 
     function _shortHash(bytes32 h) internal pure returns (string memory) {

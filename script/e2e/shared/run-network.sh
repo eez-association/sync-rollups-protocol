@@ -97,6 +97,13 @@ fi
 EXPECTED_L2_CALL_HASHES=$(extract "$COMPUTE_OUT" "EXPECTED_L2_CALL_HASHES")
 echo "L2 calls expected: $EXPECTED_L2_CALL_HASHES"
 
+# Print summary (extract lines between === EXPECTED SUMMARY === and next blank line)
+SUMMARY=$(echo "$COMPUTE_OUT" | sed -n '/=== EXPECTED SUMMARY ===/,/^$/p' | head -20)
+if [[ -n "$SUMMARY" ]]; then
+    echo ""
+    echo "$SUMMARY"
+fi
+
 # ══════════════════════════════════════════════
 #  3. Detect trigger chain & execute user tx
 #
@@ -216,18 +223,16 @@ L2_CALL_OK=true
 
 echo ""
 echo "====== Verify L1 Batch (range $L1_BLOCK_BEFORE..$L1_BLOCK_AFTER) ======"
-L1_OK=false
-for (( b=L1_BLOCK_BEFORE; b<=L1_BLOCK_AFTER; b++ )); do
-    L1_VERIFY=$(forge script script/e2e/shared/Verify.s.sol:VerifyL1Batch \
-        --rpc-url "$RPC" \
-        --sig "run(uint256,address,bytes32[])" "$b" "$ROLLUPS" "$EXPECTED_L1_HASHES" 2>&1) \
-        && { L1_OK=true; L1_BLOCK="$b"; break; } || true
-done
+L1_VERIFY=$(forge script script/e2e/shared/Verify.s.sol:VerifyL1BatchRange \
+    --rpc-url "$RPC" \
+    --sig "run(uint256,uint256,address,bytes32[])" \
+    "$L1_BLOCK_BEFORE" "$L1_BLOCK_AFTER" "$ROLLUPS" "$EXPECTED_L1_HASHES" 2>&1) \
+    && L1_OK=true || L1_OK=false
 
 if $L1_OK; then
     echo "$L1_VERIFY" | grep "PASS"
-    # Extract the postBatch tx hash (output by VerifyL1Batch on PASS)
     L1_BATCH_TX=$(extract "$L1_VERIFY" "L1_BATCH_TX")
+    L1_BLOCK=$(extract "$L1_VERIFY" "L1_MATCH_BLOCK")
 else
     FAILED=true
     echo "L1 VERIFICATION FAILED"
@@ -387,8 +392,9 @@ echo ""
 echo "User tx:        $TX_HASH  (block $TX_BLOCK_NUMBER)"
 
 L1_BATCH_TX=$(extract "${L1_VERIFY:-}" "L1_BATCH_TX")
+L1_BLOCK=$(extract "${L1_VERIFY:-}" "L1_MATCH_BLOCK")
 if [[ -n "$L1_BATCH_TX" ]]; then
-    echo "L1 postBatch:   $L1_BATCH_TX  (block $L1_BLOCK)"
+    echo "L1 postBatch:   $L1_BATCH_TX  (block ${L1_BLOCK:-?})"
 fi
 
 L2_TABLE_TX=$(extract "${L2_VERIFY:-}" "L2_TABLE_TX")

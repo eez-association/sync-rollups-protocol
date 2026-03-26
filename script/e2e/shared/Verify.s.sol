@@ -74,6 +74,79 @@ abstract contract VerifyHelpers is Script {
         return string(r);
     }
 
+    function _fmtScope(uint256[] memory scope) internal pure returns (string memory) {
+        if (scope.length == 0) return "[]";
+        string memory s = "[";
+        for (uint256 i = 0; i < scope.length; i++) {
+            if (i > 0) s = string.concat(s, ",");
+            s = string.concat(s, vm.toString(scope[i]));
+        }
+        return string.concat(s, "]");
+    }
+
+    function _printEntryDetailed(uint256 idx, ExecutionEntry memory entry) internal pure {
+        bool immediate = entry.actionHash == bytes32(0);
+        console.log(
+            "  [%s] %s  actionHash: %s", idx, immediate ? "IMMEDIATE" : "DEFERRED", vm.toString(entry.actionHash)
+        );
+        Action memory a = entry.nextAction;
+        console.log("      nextAction:");
+        console.log("        actionType:    %s", _typeName(a.actionType));
+        console.log("        rollupId:      %s", vm.toString(a.rollupId));
+        console.log("        destination:   %s", vm.toString(a.destination));
+        console.log("        value:         %s", vm.toString(a.value));
+        console.log("        data:          %s", _shortBytes(a.data));
+        console.log("        failed:        %s", a.failed ? "true" : "false");
+        console.log("        sourceAddress: %s", vm.toString(a.sourceAddress));
+        console.log("        sourceRollup:  %s", vm.toString(a.sourceRollup));
+        console.log("        scope:         %s", _fmtScope(a.scope));
+        if (entry.stateDeltas.length > 0) {
+            console.log("      stateDeltas:");
+            for (uint256 d = 0; d < entry.stateDeltas.length; d++) {
+                StateDelta memory delta = entry.stateDeltas[d];
+                console.log(
+                    string.concat(
+                        "        rollup ",
+                        vm.toString(delta.rollupId),
+                        ": ",
+                        _shortHash(delta.currentState),
+                        " -> ",
+                        _shortHash(delta.newState),
+                        "  ether: ",
+                        vm.toString(delta.etherDelta)
+                    )
+                );
+            }
+        }
+        bytes32 entryHash =
+            keccak256(abi.encode(entry.actionHash, keccak256(abi.encode(entry.nextAction))));
+        console.log("      entryHash: %s", vm.toString(entryHash));
+    }
+
+    function _collectBatchEntries(Vm.EthGetLogs[] memory logs) internal pure returns (ExecutionEntry[] memory) {
+        bytes32 batchSig = keccak256(
+            "BatchPosted(((uint256,bytes32,bytes32,int256)[],bytes32,(uint8,uint256,address,uint256,bytes,bool,address,uint256,uint256[]))[],bytes32)"
+        );
+        uint256 totalCount;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics[0] == batchSig) {
+                (ExecutionEntry[] memory entries,) = abi.decode(logs[i].data, (ExecutionEntry[], bytes32));
+                totalCount += entries.length;
+            }
+        }
+        ExecutionEntry[] memory all = new ExecutionEntry[](totalCount);
+        uint256 idx;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics[0] == batchSig) {
+                (ExecutionEntry[] memory entries,) = abi.decode(logs[i].data, (ExecutionEntry[], bytes32));
+                for (uint256 j = 0; j < entries.length; j++) {
+                    all[idx++] = entries[j];
+                }
+            }
+        }
+        return all;
+    }
+
     function _findMissingHashes(bytes32[] memory actual, bytes32[] calldata expected)
         internal
         pure
@@ -107,7 +180,7 @@ contract VerifyL1Batch is VerifyHelpers {
         bytes32[] memory topics = new bytes32[](0);
         Vm.EthGetLogs[] memory logs = vm.eth_getLogs(blockNumber, blockNumber, rollups, topics);
 
-        ExecutionEntry[] memory actual = _collectEntries(logs);
+        ExecutionEntry[] memory actual = _collectBatchEntries(logs);
 
         // Compute entry hashes: encode both actionHash and nextAction
         bytes32[] memory actualEntryHashes = new bytes32[](actual.length);
@@ -149,27 +222,6 @@ contract VerifyL1Batch is VerifyHelpers {
                 break;
             }
         }
-    }
-
-    function _collectEntries(Vm.EthGetLogs[] memory logs) internal pure returns (ExecutionEntry[] memory) {
-        uint256 totalCount;
-        for (uint256 i = 0; i < logs.length; i++) {
-            if (logs[i].topics[0] == SIG_BATCH_POSTED) {
-                (ExecutionEntry[] memory entries,) = abi.decode(logs[i].data, (ExecutionEntry[], bytes32));
-                totalCount += entries.length;
-            }
-        }
-        ExecutionEntry[] memory all = new ExecutionEntry[](totalCount);
-        uint256 idx;
-        for (uint256 i = 0; i < logs.length; i++) {
-            if (logs[i].topics[0] == SIG_BATCH_POSTED) {
-                (ExecutionEntry[] memory entries,) = abi.decode(logs[i].data, (ExecutionEntry[], bytes32));
-                for (uint256 j = 0; j < entries.length; j++) {
-                    all[idx++] = entries[j];
-                }
-            }
-        }
-        return all;
     }
 
     function _printEntries(ExecutionEntry[] memory entries) internal pure {
@@ -241,23 +293,7 @@ contract VerifyL2Blocks is VerifyHelpers {
             console.log("");
             console.log("=== L2 BLOCK %s (%s entries) ===", l2Blocks[i], entries.length);
             for (uint256 j = 0; j < entries.length; j++) {
-                console.log("  [%s] actionHash: %s", j, vm.toString(entries[j].actionHash));
-                for (uint256 d = 0; d < entries[j].stateDeltas.length; d++) {
-                    StateDelta memory delta = entries[j].stateDeltas[d];
-                    console.log(
-                        string.concat(
-                            "      stateDelta: rollup ",
-                            vm.toString(delta.rollupId),
-                            "  ",
-                            _shortHash(delta.currentState),
-                            " -> ",
-                            _shortHash(delta.newState),
-                            "  ether: ",
-                            vm.toString(delta.etherDelta)
-                        )
-                    );
-                }
-                console.log("      nextAction: %s", _formatAction(entries[j].nextAction));
+                _printEntryDetailed(j, entries[j]);
             }
         }
 
@@ -398,5 +434,67 @@ contract VerifyL2Calls is VerifyHelpers {
             }
         }
         return result;
+    }
+}
+
+/// @title VerifyL1BatchRange — Verify expected entries exist in any block within a range
+/// @dev Scans [blockFrom..blockTo] for BatchPosted events. On success, prints PASS + block/tx.
+///   On failure, prints per-block inventory using _printEntryDetailed for full diagnostics.
+contract VerifyL1BatchRange is VerifyHelpers {
+    function run(uint256 blockFrom, uint256 blockTo, address rollups, bytes32[] calldata expectedEntryHashes)
+        external
+        view
+    {
+        // Scan all blocks for a match
+        for (uint256 b = blockFrom; b <= blockTo; b++) {
+            bytes32[] memory topics = new bytes32[](0);
+            Vm.EthGetLogs[] memory logs = vm.eth_getLogs(b, b, rollups, topics);
+            ExecutionEntry[] memory entries = _collectBatchEntries(logs);
+            if (entries.length == 0) continue;
+
+            bytes32[] memory actualEntryHashes = new bytes32[](entries.length);
+            for (uint256 i = 0; i < entries.length; i++) {
+                actualEntryHashes[i] =
+                    keccak256(abi.encode(entries[i].actionHash, keccak256(abi.encode(entries[i].nextAction))));
+            }
+
+            bytes32[] memory missing = _findMissingHashes(actualEntryHashes, expectedEntryHashes);
+            if (missing.length == 0) {
+                console.log(
+                    "PASS: %s/%s expected entries found in block %s",
+                    expectedEntryHashes.length,
+                    expectedEntryHashes.length,
+                    b
+                );
+                console.log("L1_MATCH_BLOCK=%s", b);
+                for (uint256 i = 0; i < logs.length; i++) {
+                    if (logs[i].topics[0] == SIG_BATCH_POSTED) {
+                        console.log("L1_BATCH_TX=%s", vm.toString(logs[i].transactionHash));
+                        break;
+                    }
+                }
+                return;
+            }
+        }
+
+        // No match — print per-block inventory
+        console.log("FAIL: expected entries not found in blocks %s..%s", blockFrom, blockTo);
+        for (uint256 b = blockFrom; b <= blockTo; b++) {
+            bytes32[] memory topics = new bytes32[](0);
+            Vm.EthGetLogs[] memory logs = vm.eth_getLogs(b, b, rollups, topics);
+            ExecutionEntry[] memory entries = _collectBatchEntries(logs);
+            if (entries.length == 0) continue;
+            console.log("");
+            console.log("=== L1 BLOCK %s (%s entries) ===", b, entries.length);
+            for (uint256 i = 0; i < entries.length; i++) {
+                _printEntryDetailed(i, entries[i]);
+            }
+        }
+        console.log("");
+        console.log("=== MISSING ENTRY HASHES ===");
+        for (uint256 i = 0; i < expectedEntryHashes.length; i++) {
+            console.log("  %s", vm.toString(expectedEntryHashes[i]));
+        }
+        revert("Verification failed");
     }
 }

@@ -9,6 +9,68 @@ import {Bridge} from "../../../src/periphery/Bridge.sol";
 import {_deployBridge, _computeBridgeAddress} from "../../DeployBridge.s.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 
+/// @dev Centralized action & entry definitions for the bridge scenario.
+abstract contract BridgeActions {
+    function _callAction(address destination, address bridge) internal pure returns (Action memory) {
+        return Action({
+            actionType: ActionType.CALL,
+            rollupId: 1,
+            destination: destination,
+            value: 1 ether,
+            data: "",
+            failed: false,
+            sourceAddress: bridge,
+            sourceRollup: 0,
+            scope: new uint256[](0)
+        });
+    }
+
+    function _resultAction() internal pure returns (Action memory) {
+        return Action({
+            actionType: ActionType.RESULT,
+            rollupId: 1,
+            destination: address(0),
+            value: 0,
+            data: "",
+            failed: false,
+            sourceAddress: address(0),
+            sourceRollup: 0,
+            scope: new uint256[](0)
+        });
+    }
+
+    function _l1Entries(address destination, address bridge)
+        internal
+        pure
+        returns (ExecutionEntry[] memory entries)
+    {
+        Action memory call_ = _callAction(destination, bridge);
+        Action memory result = _resultAction();
+
+        StateDelta[] memory deltas = new StateDelta[](1);
+        deltas[0] = StateDelta({
+            rollupId: 1,
+            currentState: keccak256("l2-initial-state"),
+            newState: keccak256("l2-state-after-bridge"),
+            etherDelta: 1 ether
+        });
+
+        entries = new ExecutionEntry[](1);
+        entries[0].stateDeltas = deltas;
+        entries[0].actionHash = keccak256(abi.encode(call_));
+        entries[0].nextAction = result;
+    }
+
+    function _l2Entries() internal pure returns (ExecutionEntry[] memory entries) {
+        Action memory result = _resultAction();
+
+        entries = new ExecutionEntry[](1);
+        entries[0].stateDeltas = new StateDelta[](0);
+        entries[0].actionHash = keccak256(abi.encode(result));
+        entries[0].nextAction = result;
+    }
+}
+
 /// @notice Batcher: postBatch + bridgeEther in one tx (local mode only)
 contract Batcher {
     function execute(
@@ -49,7 +111,7 @@ contract Deploy is Script {
 /// @dev Env: MANAGER_L2, BRIDGE, DESTINATION
 /// The bridge CALL sends ETH to destination on L2. On L2, the system executes this via
 /// executeIncomingCrossChainCall, which creates a proxy for the bridge and sends ETH.
-contract ExecuteL2 is Script {
+contract ExecuteL2 is Script, BridgeActions {
     function run() external {
         address managerL2Addr = vm.envAddress("MANAGER_L2");
         address bridgeAddr = vm.envAddress("BRIDGE");
@@ -57,36 +119,13 @@ contract ExecuteL2 is Script {
 
         CrossChainManagerL2 manager = CrossChainManagerL2(managerL2Addr);
 
-        // RESULT: empty return from ETH transfer to destination
-        Action memory resultAction = Action({
-            actionType: ActionType.RESULT,
-            rollupId: 1,
-            destination: address(0),
-            value: 0,
-            data: "",
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-
         vm.startBroadcast();
 
-        // Load execution table: 1 entry (RESULT hash -> same RESULT, terminal)
-        ExecutionEntry[] memory entries = new ExecutionEntry[](1);
-        entries[0].stateDeltas = new StateDelta[](0);
-        entries[0].actionHash = keccak256(abi.encode(resultAction));
-        entries[0].nextAction = resultAction;
-        manager.loadExecutionTable(entries);
+        manager.loadExecutionTable(_l2Entries());
 
         // Execute: system sends 1 ETH to destination via proxy for bridge
         manager.executeIncomingCrossChainCall{value: 1 ether}(
-            destination, // destination on L2
-            1 ether,     // value
-            "",          // data (empty for ETH transfer)
-            bridgeAddr,  // sourceAddress = Bridge on L1
-            0,           // sourceRollup = MAINNET
-            new uint256[](0) // scope = root
+            destination, 1 ether, "", bridgeAddr, 0, new uint256[](0)
         );
 
         console.log("L2 execution complete");
@@ -97,7 +136,7 @@ contract ExecuteL2 is Script {
 
 /// @title Execute — Local mode: postBatch + bridgeEther via Batcher
 /// @dev Env: ROLLUPS, BRIDGE
-contract Execute is Script {
+contract Execute is Script, BridgeActions {
     function run() external {
         address rollupsAddr = vm.envAddress("ROLLUPS");
         address bridgeAddr = vm.envAddress("BRIDGE");
@@ -106,46 +145,10 @@ contract Execute is Script {
 
         Batcher batcher = new Batcher();
         address destination = msg.sender;
-        uint256 L2_ROLLUP_ID = 1;
 
-        Action memory callAction = Action({
-            actionType: ActionType.CALL,
-            rollupId: L2_ROLLUP_ID,
-            destination: destination,
-            value: 1 ether,
-            data: "",
-            failed: false,
-            sourceAddress: bridgeAddr,
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-
-        Action memory resultAction = Action({
-            actionType: ActionType.RESULT,
-            rollupId: L2_ROLLUP_ID,
-            destination: address(0),
-            value: 0,
-            data: "",
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-
-        StateDelta[] memory stateDeltas = new StateDelta[](1);
-        stateDeltas[0] = StateDelta({
-            rollupId: L2_ROLLUP_ID,
-            currentState: keccak256("l2-initial-state"),
-            newState: keccak256("l2-state-after-bridge"),
-            etherDelta: 1 ether
-        });
-
-        ExecutionEntry[] memory entries = new ExecutionEntry[](1);
-        entries[0].stateDeltas = stateDeltas;
-        entries[0].actionHash = keccak256(abi.encode(callAction));
-        entries[0].nextAction = resultAction;
-
-        batcher.execute{value: 1 ether}(Rollups(rollupsAddr), entries, Bridge(bridgeAddr), L2_ROLLUP_ID, destination);
+        batcher.execute{value: 1 ether}(
+            Rollups(rollupsAddr), _l1Entries(destination, bridgeAddr), Bridge(bridgeAddr), 1, destination
+        );
 
         console.log("done");
 
@@ -172,7 +175,7 @@ contract ExecuteNetwork is Script {
 
 /// @title ComputeExpected — Compute expected actionHashes + print expected table
 /// @dev Env: BRIDGE, DESTINATION
-contract ComputeExpected is ComputeExpectedBase {
+contract ComputeExpected is ComputeExpectedBase, BridgeActions {
     function _name(address a) internal view override returns (string memory) {
         if (a == vm.envAddress("BRIDGE")) return "Bridge";
         if (a == vm.envAddress("DESTINATION")) return "Destination";
@@ -183,60 +186,33 @@ contract ComputeExpected is ComputeExpectedBase {
         address bridgeAddr = vm.envAddress("BRIDGE");
         address destination = vm.envAddress("DESTINATION");
 
-        Action memory callAction = Action({
-            actionType: ActionType.CALL,
-            rollupId: 1,
-            destination: destination,
-            value: 1 ether,
-            data: "",
-            failed: false,
-            sourceAddress: bridgeAddr,
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
+        // Actions (single source of truth)
+        Action memory callAction = _callAction(destination, bridgeAddr);
+        Action memory resultAction = _resultAction();
 
-        StateDelta[] memory stateDeltas = new StateDelta[](1);
-        stateDeltas[0] = StateDelta({
-            rollupId: 1,
-            currentState: keccak256("l2-initial-state"),
-            newState: keccak256("l2-state-after-bridge"),
-            etherDelta: 1 ether
-        });
+        // Entries (single source of truth)
+        ExecutionEntry[] memory l1 = _l1Entries(destination, bridgeAddr);
+        ExecutionEntry[] memory l2 = _l2Entries();
 
-        // RESULT action (L2 execution table entry)
-        Action memory resultAction = Action({
-            actionType: ActionType.RESULT,
-            rollupId: 1,
-            destination: address(0),
-            value: 0,
-            data: "",
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
+        // Compute hashes from entries
+        bytes32 l1EntryHash = _entryHash(l1[0].actionHash, l1[0].nextAction);
+        bytes32 l2EntryHash = _entryHash(l2[0].actionHash, l2[0].nextAction);
+        bytes32 callHash = l1[0].actionHash;
 
-        bytes32 callHash = keccak256(abi.encode(callAction));
-        bytes32 resultHash = keccak256(abi.encode(resultAction));
-
-        // L1: actionHash=hash(callAction), nextAction=resultAction
-        bytes32 l1EntryHash = _entryHash(callHash, resultAction);
-        // L2: actionHash=hash(resultAction), nextAction=resultAction (terminal)
-        bytes32 l2EntryHash = _entryHash(resultHash, resultAction);
-
-        // L1 batch verification
+        // Parseable lines
         console.log("EXPECTED_L1_HASHES=[%s]", vm.toString(l1EntryHash));
-        // L2 execution table verification
         console.log("EXPECTED_L2_HASHES=[%s]", vm.toString(l2EntryHash));
-        // L2 call verification (same hash — the CALL to L2)
         console.log("EXPECTED_L2_CALL_HASHES=[%s]", vm.toString(callHash));
 
-        // ── Human-readable output ──
+        // Summary
         console.log("");
+        console.log("=== EXPECTED SUMMARY ===");
+        _logEntrySummary(0, callAction, resultAction, false);
 
         // L1 execution table
+        console.log("");
         console.log("=== EXPECTED L1 EXECUTION TABLE (1 entry) ===");
-        _logEntry(0, l1EntryHash, stateDeltas, _fmtCall(callAction), _fmtResult(resultAction, "(void)"));
+        _logEntry(0, l1EntryHash, l1[0].stateDeltas, _fmtCall(callAction), _fmtResult(resultAction, "(void)"));
 
         // L2 execution table
         console.log("");
