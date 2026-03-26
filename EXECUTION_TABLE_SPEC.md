@@ -9,7 +9,7 @@ How to correctly build execution entries for L1 (`postBatch`) and L2 (`loadExecu
 | Type | When to use | rollupId | sourceRollup | destination | sourceAddress | data |
 |------|------------|----------|--------------|-------------|---------------|------|
 | **CALL** | Cross-chain call to another rollup | Target rollup (where call executes) | Caller's rollup (where call originates) | Contract being called | Address initiating the call | Calldata (selector + args) |
-| **RESULT** | Return value from a CALL | Rollup that initiated the CALL (caller) | Rollup that computed the result (where CALL executed) | `address(0)` | `address(0)` | ABI-encoded return data |
+| **RESULT** | Return value from a CALL | Rollup that executed the CALL (= CALL's rollupId) | Always `0` | `address(0)` | `address(0)` | ABI-encoded return data |
 | **L2TX** | Trigger an L2 transaction from L1 | Target L2 rollup ID | `MAINNET_ROLLUP_ID` (0) | `address(0)` | `address(0)` | RLP-encoded transaction |
 | **REVERT** | Signal that a scoped call reverted | Rollup where revert happened | 0 | `address(0)` | `address(0)` | `""` |
 | **REVERT_CONTINUE** | Continuation after a REVERT | Same as REVERT | 0 | `address(0)` | `address(0)` | `""` |
@@ -26,14 +26,14 @@ How to correctly build execution entries for L1 (`postBatch`) and L2 (`loadExecu
 
 ### RESULT field rules
 
-- `rollupId`: **the rollup that initiated the CALL** (= CALL's `sourceRollup`)
+- `rollupId`: **the rollup that executed the CALL** (= CALL's `rollupId`). The contract can enforce this: `require(action.rollupId == ROLLUP_ID)` in `_processCallAtScope`.
 - `sourceRollup`: **always 0**
 - `destination`: `address(0)`
 - `sourceAddress`: `address(0)`
 - `data`: ABI-encoded return data from the executed call
 - `failed`: `true` if the call reverted, `false` if successful
 
-Example: `CALL(rollupId=0, sourceRollup=1)` (L2 calling L1) produces `RESULT(rollupId=1, sourceRollup=0)`.
+Example: `CALL(rollupId=0, sourceRollup=1)` (L2 calling L1) produces `RESULT(rollupId=0, sourceRollup=0)` — the result was computed on rollup 0 (L1).
 
 ### L2TX field rules
 
@@ -61,6 +61,26 @@ Applied during `postBatch` without any trigger. Used for state commitments. Thei
 ### DEFERRED entries (`actionHash != 0`)
 
 Stored in the execution table, consumed when the matching action hash is produced during execution. The `actionHash` is `keccak256(abi.encode(action))` of the trigger action.
+
+### Terminal entries (self-referencing RESULT)
+
+Every execution chain must end with a **terminal entry** where the trigger and the nextAction are the same RESULT:
+
+```
+actionHash:  keccak256(abi.encode(resultAction))
+nextAction:  resultAction                         ← same action
+```
+
+When the execution produces this RESULT (e.g., after a CALL completes), its hash matches the entry's `actionHash`. The entry is consumed and returns the same RESULT as `nextAction`. Since the nextAction is a RESULT (not a CALL), execution stops — there's nothing left to resolve.
+
+This is how the system knows the chain is done. Without a terminal entry, the last RESULT would have no matching entry and execution would revert with `ExecutionNotFound`.
+
+Example (from L1→L2 simple):
+```solidity
+// Terminal entry: RESULT triggers itself
+entries[1].actionHash = keccak256(abi.encode(resultAction));
+entries[1].nextAction = resultAction;  // same object
+```
 
 ---
 
@@ -93,13 +113,13 @@ Alice on L1 calls a contract on L2.
 ```
 [0] IMMEDIATE  — state commit
 [1] DEFERRED   trigger: CALL(rollupId=L2, dest=B, from=Alice, sourceRollup=MAINNET)
-                next:    RESULT(rollupId=MAINNET, sourceRollup=L2, data=<return>)
+                next:    RESULT(rollupId=L2, sourceRollup=0, data=<return>)
 ```
 
 **L2 execution table** (loadExecutionTable):
 ```
-[0] DEFERRED   trigger: RESULT(rollupId=L2, sourceRollup=L2, data=<B's return>)
-                next:    RESULT(rollupId=L2, sourceRollup=L2, data=<B's return>)  (terminal)
+[0] DEFERRED   trigger: RESULT(rollupId=L2, sourceRollup=0, data=<B's return>)
+                next:    RESULT(rollupId=L2, sourceRollup=0, data=<B's return>)  (terminal)
 ```
 
 **L1 execution**: User calls proxy for B on L1 → `executeCrossChainCall` → consumes entry [1] → returns RESULT.
@@ -115,14 +135,14 @@ Alice on L2 calls a contract on L1.
 [0] IMMEDIATE  — state commit
 [1] DEFERRED   trigger: L2TX(rollupId=L2, data=<rlpTx>)
                 next:    CALL(rollupId=MAINNET, dest=C, from=D, sourceRollup=L2)
-[2] DEFERRED   trigger: RESULT(rollupId=L2, sourceRollup=MAINNET, data=<C's return>)
-                next:    RESULT(rollupId=L2, sourceRollup=MAINNET, data=<C's return>)  (terminal)
+[2] DEFERRED   trigger: RESULT(rollupId=MAINNET, sourceRollup=0, data=<C's return>)
+                next:    RESULT(rollupId=MAINNET, sourceRollup=0, data=<C's return>)  (terminal)
 ```
 
 **L2 execution table** (loadExecutionTable):
 ```
 [0] DEFERRED   trigger: CALL(rollupId=MAINNET, dest=C, from=D, sourceRollup=L2)
-                next:    RESULT(rollupId=L2, sourceRollup=MAINNET, data=<C's return>)
+                next:    RESULT(rollupId=MAINNET, sourceRollup=0, data=<C's return>)
 ```
 
 **L2 execution**: Alice calls D on L2 → D calls proxy for C → `executeCrossChainCall` → consumes table entry → returns RESULT.
@@ -188,8 +208,9 @@ TX1 on L1: Alice → proxy → executeCrossChainCall
 
 For L2→L1 flows, L1 execution starts with `executeL2TX`, **not** by calling a proxy. The trigger action is `L2TX`, not `CALL`. The system must not route L2 user transactions through L1 proxies as if they were L1-initiated calls.
 
-### Consistent rollupId semantics
+### Consistent rollupId semantics for CALL
 
-- `rollupId` always means **target** (where the action executes / is directed to)
-- `sourceRollup` always means **origin** (where the action was initiated / comes from)
-- Never swap these. Every action type follows this convention.
+- On CALL actions: `rollupId` = **target** (where the call executes), `sourceRollup` = **origin** (where the call was initiated)
+- On RESULT actions: `rollupId` = **the rollup that executed** (same as the CALL's rollupId), `sourceRollup` = always 0
+- On L2TX actions: `rollupId` = **target L2**, `sourceRollup` = MAINNET (0)
+- Never use `rollupId` to mean "origin" — that's what `sourceRollup` is for (on CALL and L2TX only)

@@ -391,8 +391,6 @@ echo "====== Summary ======"
 echo ""
 echo "User tx:        $TX_HASH  (block $TX_BLOCK_NUMBER)"
 
-L1_BATCH_TX=$(extract "${L1_VERIFY:-}" "L1_BATCH_TX")
-L1_BLOCK=$(extract "${L1_VERIFY:-}" "L1_MATCH_BLOCK")
 if [[ -n "$L1_BATCH_TX" ]]; then
     echo "L1 postBatch:   $L1_BATCH_TX  (block ${L1_BLOCK:-?})"
 fi

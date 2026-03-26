@@ -12,25 +12,11 @@ import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 /// @dev Centralized action & entry definitions for the multi-call-two-diff scenario.
 ///   Single source of truth — used by Execute, ExecuteL2, and ComputeExpected.
 abstract contract MultiCallTwoDiffActions {
-    function _callAAction(address counterA, address callTwoDiff) internal pure returns (Action memory) {
+    function _callAction(address counter, address callTwoDiff) internal pure returns (Action memory) {
         return Action({
             actionType: ActionType.CALL,
             rollupId: 1,
-            destination: counterA,
-            value: 0,
-            data: abi.encodeWithSelector(Counter.increment.selector),
-            failed: false,
-            sourceAddress: callTwoDiff,
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-    }
-
-    function _callBAction(address counterB, address callTwoDiff) internal pure returns (Action memory) {
-        return Action({
-            actionType: ActionType.CALL,
-            rollupId: 1,
-            destination: counterB,
+            destination: counter,
             value: 0,
             data: abi.encodeWithSelector(Counter.increment.selector),
             failed: false,
@@ -59,8 +45,8 @@ abstract contract MultiCallTwoDiffActions {
         pure
         returns (ExecutionEntry[] memory entries)
     {
-        Action memory callA = _callAAction(counterA, callTwoDiff);
-        Action memory callB = _callBAction(counterB, callTwoDiff);
+        Action memory callA = _callAction(counterA, callTwoDiff);
+        Action memory callB = _callAction(counterB, callTwoDiff);
         Action memory result = _resultAction();
 
         bytes32 s0 = keccak256("l2-initial-state");
@@ -88,7 +74,7 @@ abstract contract MultiCallTwoDiffActions {
         pure
         returns (ExecutionEntry[] memory entries)
     {
-        Action memory callB = _callBAction(counterB, callTwoDiff);
+        Action memory callB = _callAction(counterB, callTwoDiff);
         Action memory result = _resultAction();
 
         entries = new ExecutionEntry[](2);
@@ -270,8 +256,8 @@ contract ComputeExpected is ComputeExpectedBase, MultiCallTwoDiffActions {
         address callTwoDiffAddr = vm.envAddress("CALL_TWO_DIFF");
 
         // Actions (single source of truth)
-        Action memory callA = _callAAction(counterAAddr, callTwoDiffAddr);
-        Action memory callB = _callBAction(counterBAddr, callTwoDiffAddr);
+        Action memory callA = _callAction(counterAAddr, callTwoDiffAddr);
+        Action memory callB = _callAction(counterBAddr, callTwoDiffAddr);
         Action memory result1 = _resultAction();
 
         // Entries (single source of truth)

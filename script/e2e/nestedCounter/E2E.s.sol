@@ -342,6 +342,9 @@ contract ComputeExpected is ComputeExpectedBase, NestedCounterActions {
         // Actions (single source of truth)
         Action memory callToCAP2 = _callToCounterAndProxyL2(counterAndProxyL2Addr, alice);
         Action memory callToC1 = _callToCounterL1(counterL1Addr, counterAndProxyL2Addr, new uint256[](0));
+        uint256[] memory scope0 = new uint256[](1);
+        scope0[0] = 0;
+        Action memory callToC1Scoped = _callToCounterL1(counterL1Addr, counterAndProxyL2Addr, scope0);
         Action memory resultC1 = _resultFromCounterL1();
         Action memory resultCAP2 = _resultFromCounterAndProxyL2();
 
@@ -350,7 +353,7 @@ contract ComputeExpected is ComputeExpectedBase, NestedCounterActions {
         ExecutionEntry[] memory l2 = _l2Entries(counterL1Addr, counterAndProxyL2Addr);
 
         // Compute hashes from entries
-        bytes32 l1eh0 = _entryHash(l1[0].actionHash, l1[0].nextAction);
+        bytes32 l1eh0 = _entryHash(l1[0].actionHash, callToC1Scoped);
         bytes32 l1eh1 = _entryHash(l1[1].actionHash, l1[1].nextAction);
         bytes32 l2eh0 = _entryHash(l2[0].actionHash, l2[0].nextAction);
         bytes32 l2eh1 = _entryHash(l2[1].actionHash, l2[1].nextAction);
@@ -366,13 +369,13 @@ contract ComputeExpected is ComputeExpectedBase, NestedCounterActions {
         // Summary
         console.log("");
         console.log("=== EXPECTED SUMMARY ===");
-        _logEntrySummary(0, callToCAP2, l1[0].nextAction, false);
+        _logEntrySummary(0, callToCAP2, callToC1Scoped, false);
         _logEntrySummary(1, resultC1, resultC1, true);
 
         // Human-readable: L1 execution table (2 entries)
         console.log("");
         console.log("=== EXPECTED L1 EXECUTION TABLE (2 entries) ===");
-        _logEntry(0, l1[0].actionHash, l1[0].stateDeltas, _fmtCall(callToCAP2), _fmtCall(l1[0].nextAction));
+        _logEntry(0, l1[0].actionHash, l1[0].stateDeltas, _fmtCall(callToCAP2), _fmtCall(callToC1Scoped));
         _logEntry(
             1,
             l1[1].actionHash,
