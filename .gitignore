@@ -13,3 +13,5 @@ docs/
 lib
 devnet
 gh_issue
+run-e2e.md
+tmp
