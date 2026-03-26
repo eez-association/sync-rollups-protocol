@@ -5,9 +5,6 @@ out/
 # Ignores development broadcast logs
 broadcast/
 
-# Docs
-docs/
-
 # Dotenv file
 .env
 lib
@@ -15,3 +12,4 @@ devnet
 gh_issue
 run-e2e.md
 tmp
+todoignore
