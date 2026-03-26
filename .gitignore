@@ -9,7 +9,6 @@ broadcast/
 .env
 lib
 devnet
-gh_issue
-run-e2e.md
+.devnet.md
 tmp
 todoignore
