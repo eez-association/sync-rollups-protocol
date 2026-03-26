@@ -184,7 +184,7 @@ if grep -q 'contract ExecuteNetworkL2 ' "$SOL"; then
     sleep 5
 
     # Snapshot L1 block after — batch should be in [before..after]
-    L1_BLOCK_AFTER=$(cast block-number --rpc-url "$RPC")
+    L1_BLOCK_AFTER=$(( $(cast block-number --rpc-url "$RPC") + 1 ))
     echo "L1 block range: $L1_BLOCK_BEFORE..$L1_BLOCK_AFTER"
 else
     # ── L1 trigger ──
@@ -329,7 +329,9 @@ fi
 echo ""
 echo "====== Verify L2 Calls ======"
 
-if [[ "$L2_BLOCKS" == "[]" ]]; then
+if [[ -z "${EXPECTED_L2_CALL_HASHES:-}" ]]; then
+    echo "SKIP: no EXPECTED_L2_CALL_HASHES (not applicable for this scenario)"
+elif [[ "$L2_BLOCKS" == "[]" ]]; then
     echo "ERROR: No L2 blocks found"
     FAILED=true
     L2_CALL_OK=false

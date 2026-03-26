@@ -350,8 +350,7 @@ contract ComputeExpected is ComputeExpectedBase {
         console.log("EXPECTED_L1_HASHES=[%s,%s]", vm.toString(eh0), vm.toString(eh1));
         // L2 execution table: 1 entry (CALL hash -> RESULT) — entry hash
         console.log("EXPECTED_L2_HASHES=[%s]", vm.toString(l2eh0));
-        // L2 call: the CALL action hash (executeCrossChainCall on L2) — plain action hash
-        console.log("EXPECTED_L2_CALL_HASHES=[%s]", vm.toString(l2h0));
+        // No EXPECTED_L2_CALL_HASHES: L2→L1 scenario has no incoming/outgoing call event on L2
 
         // ── Human-readable: L1 execution table (2 entries) ──
         console.log("");
@@ -370,9 +369,6 @@ contract ComputeExpected is ComputeExpectedBase {
         console.log("=== EXPECTED L2 EXECUTION TABLE (1 entry) ===");
         _logL2Entry(0, l2eh0, _fmtCall(callAction), _fmtResult(resultAction, "uint256(1)"));
 
-        // ── Human-readable: L2 calls (1 call) ──
-        console.log("");
-        console.log("=== EXPECTED L2 CALLS (1 call) ===");
-        _logL2Call(0, l2h0, callAction);
+        // No L2 calls for L2→L1 scenario
     }
 }

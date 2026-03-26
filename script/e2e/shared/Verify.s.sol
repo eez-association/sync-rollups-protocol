@@ -315,14 +315,18 @@ contract VerifyL2Blocks is VerifyHelpers {
     }
 }
 
-/// @title VerifyL2Calls — Verify that IncomingCrossChainCallExecuted events match expected actionHashes
+/// @title VerifyL2Calls — Verify that cross-chain call events match expected actionHashes
 /// @dev Runs against L2 RPC. Checks across given blocks for matching events.
+///   Checks both IncomingCrossChainCallExecuted (L1→L2) and CrossChainCallExecuted (L2→L1).
+///   Both events have bytes32 indexed actionHash as topics[1].
 ///   forge script script/e2e/shared/Verify.s.sol:VerifyL2Calls \
 ///     --rpc-url $L2_RPC \
 ///     --sig "run(uint256[],address,bytes32[])" "[5,6]" $MANAGER_L2 "[$HASH1,$HASH2]"
 contract VerifyL2Calls is VerifyHelpers {
     bytes32 constant SIG_INCOMING_CALL =
         keccak256("IncomingCrossChainCallExecuted(bytes32,address,uint256,bytes,address,uint256,uint256[])");
+    bytes32 constant SIG_CROSS_CHAIN_CALL =
+        keccak256("CrossChainCallExecuted(bytes32,address,address,bytes,uint256)");
 
     function run(uint256[] calldata l2Blocks, address managerL2, bytes32[] calldata expectedCallHashes) external view {
         if (l2Blocks.length == 0) {
@@ -330,7 +334,7 @@ contract VerifyL2Calls is VerifyHelpers {
             revert("No L2 blocks");
         }
 
-        // Collect all IncomingCrossChainCallExecuted actionHashes across all blocks
+        // Collect actionHashes from both event types across all blocks
         bytes32[] memory found = _collectActionHashes(l2Blocks, managerL2);
 
         // Check all expected are present (subset match)
@@ -339,7 +343,7 @@ contract VerifyL2Calls is VerifyHelpers {
         if (missing.length > 0) {
             console.log("FAIL: %s/%s expected L2 calls missing", missing.length, expectedCallHashes.length);
             console.log("");
-            console.log("=== ACTUAL IncomingCrossChainCallExecuted HASHES ===");
+            console.log("=== ACTUAL CROSS-CHAIN CALL HASHES ===");
             for (uint256 i = 0; i < found.length; i++) {
                 console.log("  %s", vm.toString(found[i]));
             }
@@ -352,16 +356,20 @@ contract VerifyL2Calls is VerifyHelpers {
         }
 
         console.log("PASS: %s/%s expected L2 calls verified", expectedCallHashes.length, expectedCallHashes.length);
-        // Output tx hashes of the IncomingCrossChainCallExecuted events
+        // Output tx hashes of matching events
         for (uint256 i = 0; i < l2Blocks.length; i++) {
             bytes32[] memory topics = new bytes32[](0);
             Vm.EthGetLogs[] memory blkLogs = vm.eth_getLogs(l2Blocks[i], l2Blocks[i], managerL2, topics);
             for (uint256 j = 0; j < blkLogs.length; j++) {
-                if (blkLogs[j].topics[0] == SIG_INCOMING_CALL) {
+                if (_isCallEvent(blkLogs[j].topics[0])) {
                     console.log("L2_CALL_TX=%s", vm.toString(blkLogs[j].transactionHash));
                 }
             }
         }
+    }
+
+    function _isCallEvent(bytes32 sig) internal pure returns (bool) {
+        return sig == SIG_INCOMING_CALL || sig == SIG_CROSS_CHAIN_CALL;
     }
 
     function _collectActionHashes(uint256[] calldata blocks, address managerL2)
@@ -374,7 +382,7 @@ contract VerifyL2Calls is VerifyHelpers {
             bytes32[] memory topics = new bytes32[](0);
             Vm.EthGetLogs[] memory logs = vm.eth_getLogs(blocks[i], blocks[i], managerL2, topics);
             for (uint256 j = 0; j < logs.length; j++) {
-                if (logs[j].topics[0] == SIG_INCOMING_CALL) count++;
+                if (_isCallEvent(logs[j].topics[0])) count++;
             }
         }
         bytes32[] memory result = new bytes32[](count);
@@ -383,8 +391,8 @@ contract VerifyL2Calls is VerifyHelpers {
             bytes32[] memory topics = new bytes32[](0);
             Vm.EthGetLogs[] memory logs = vm.eth_getLogs(blocks[i], blocks[i], managerL2, topics);
             for (uint256 j = 0; j < logs.length; j++) {
-                if (logs[j].topics[0] == SIG_INCOMING_CALL) {
-                    // actionHash is topics[1] (first indexed parameter)
+                if (_isCallEvent(logs[j].topics[0])) {
+                    // actionHash is topics[1] (first indexed parameter) for both events
                     result[idx++] = logs[j].topics[1];
                 }
             }
