@@ -341,7 +341,7 @@ When the same proxy call happens N times in a single transaction (e.g., a contra
 First call: rollup state is S0 → matches entry [0] (currentState=S0) → applies S0→S1.
 Second call: rollup state is now S1 → matches entry [1] (currentState=S1) → applies S1→S2.
 
-**On L2**: Entries have no state deltas, so identical action hashes cannot be differentiated by state. `_consumeExecution` uses a linear scan and takes the first match. However, entries are deleted via swap-and-pop (the last entry fills the consumed slot), so ordering is not strictly preserved after the first consumption. In practice, the builder must ensure that entries with the same action hash have distinguishable `nextAction` values, or that the consumption order doesn't matter.
+**On L2**: Entries have no state deltas, so identical action hashes cannot be differentiated by state. `_consumeExecution` uses a linear scan, takes the first match, and marks the entry as consumed (sets `actionHash = 0`) without reordering. This preserves insertion order — entries with the same action hash are always consumed in the order they were loaded.
 
 ### Continuation (RESULT → CALL)
 
@@ -453,9 +453,9 @@ On L2, there is no ether accounting — ETH sent to `executeCrossChainCall` is b
 |---|---|---|
 | **How loaded** | `postBatch` with ZK proof | `loadExecutionTable` by SYSTEM address |
 | **State deltas** | Required — `currentState` verified against on-chain rollup state | Not used — empty by convention (`new StateDelta[](0)`). The L2 contract ignores `stateDeltas` entirely. |
-| **Matching logic** | `_findAndApplyExecution`: checks actionHash AND all state delta `currentState` values | `_consumeExecution`: checks actionHash only (first match wins) |
+| **Matching logic** | `_findAndApplyExecution`: checks actionHash AND all state delta `currentState` values | `_consumeExecution`: checks actionHash only, first match in insertion order |
 | **Ether accounting** | Verified via transient `_etherDelta` accumulator | None — ETH burned to SYSTEM_ADDRESS |
-| **Same action hash** | Differentiated by `currentState` in state deltas | Consumed in insertion order (first match) |
+| **Same action hash** | Differentiated by `currentState` in state deltas | Consumed in insertion order (marked as consumed, no reordering) |
 | **Revert state restore** | `_handleScopeRevert` restores `stateRoot` from `ScopeReverted` error data | No state to restore — only continuation action matters |
 
 ### Atomicity via Solidity revert
