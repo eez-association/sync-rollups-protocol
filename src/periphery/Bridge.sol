@@ -87,7 +87,7 @@ contract Bridge {
 
     event Initialized(address indexed manager, uint256 rollupId, address indexed admin);
     event CanonicalBridgeAddressSet(address indexed addr);
-    event EtherBridged(address indexed sender, uint256 indexed rollupId, uint256 amount);
+    event EtherBridged(address indexed destinationAddress, uint256 indexed rollupId, uint256 amount);
     event TokensBridged(address indexed token, address indexed sender, uint256 indexed rollupId, uint256 amount);
     event TokensReleased(address indexed token, address indexed to, uint256 amount);
     event WrappedTokensMinted(address indexed wrappedToken, address indexed to, uint256 amount);

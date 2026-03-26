@@ -10,3 +10,6 @@ docs/
 
 # Dotenv file
 .env
+lib
+devnet
+gh_issue
