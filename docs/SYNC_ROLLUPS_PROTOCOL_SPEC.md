@@ -923,6 +923,30 @@ action = Action{
 
 **Key rule**: the scope field in an action used as an execution table key is always `[]` (root). Only the `nextAction` returned from a table entry can have a non-empty scope (for routing nested calls).
 
+### C.6 Terminal RESULT for L2TX
+
+The last entry consumed during an `executeL2TX` flow must have a terminal RESULT as its `nextAction`. This terminal closes the L2TX execution and is what `_resolveScopes` returns to `executeL2TX`.
+
+The terminal RESULT uses the rollupId that triggered the L2TX (the `rollupId` parameter passed to `executeL2TX`) and carries no return data:
+
+```
+terminalResult = Action{
+  actionType:   RESULT,
+  rollupId:     rollupId,          // the rollupId that triggered the L2TX (e.g. 1 for L2)
+  destination:  address(0),
+  value:        0,
+  data:         "",                // always empty — L2TX terminals carry no return data
+  failed:       false,
+  sourceAddress: address(0),
+  sourceRollup: 0,
+  scope:         []
+}
+```
+
+This applies to all L2TX flows regardless of nesting depth. Even if inner calls return data (e.g. `Counter.increment()` returns `uint256(1)`), the terminal RESULT is always void with the triggering rollupId.
+
+**L1 only**: This convention applies exclusively to the L1 `executeL2TX` terminal. On L2, `executeCrossChainCall` and `executeIncomingCrossChainCall` terminals carry the actual outer call's return value and rollupId (per §C.2), not the L2TX terminal format.
+
 ---
 
 ## D. Scope Navigation

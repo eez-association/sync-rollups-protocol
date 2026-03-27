@@ -103,6 +103,7 @@ abstract contract NestedCounterActions {
         Action memory callToCAP2 = _callToCounterAndProxyL2(cap2Addr, sourceAddr);
         Action memory callToC1Scoped = _callToCounterL1(counterL1, cap2Addr, scope0);
         Action memory resultC1 = _resultFromCounterL1();
+        Action memory resultCAP2 = _resultFromCounterAndProxyL2();
 
         bytes32 s0 = keccak256("l2-initial-state");
         bytes32 s1 = keccak256("l2-state-s4-step1");
@@ -121,7 +122,7 @@ abstract contract NestedCounterActions {
 
         entries[1].stateDeltas = deltas1;
         entries[1].actionHash = keccak256(abi.encode(resultC1));
-        entries[1].nextAction = resultC1;
+        entries[1].nextAction = resultCAP2;
     }
 
     function _l2Entries(address counterL1, address cap2Addr)

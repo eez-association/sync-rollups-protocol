@@ -55,6 +55,20 @@ abstract contract CounterL2Actions is L2TXActionsBase {
         });
     }
 
+    function _terminalResultAction() internal pure returns (Action memory) {
+        return Action({
+            actionType: ActionType.RESULT,
+            rollupId: L2_ROLLUP_ID,
+            destination: address(0),
+            value: 0,
+            data: "",
+            failed: false,
+            sourceAddress: address(0),
+            sourceRollup: 0,
+            scope: new uint256[](0)
+        });
+    }
+
     function _l1Entries(address counterL1, address counterAndProxyL2, bytes memory rlpEncodedTx)
         internal
         pure
@@ -63,6 +77,7 @@ abstract contract CounterL2Actions is L2TXActionsBase {
         Action memory l2tx = _l2txAction(rlpEncodedTx);
         Action memory call_ = _callAction(counterL1, counterAndProxyL2);
         Action memory result = _resultAction();
+        Action memory terminal = _terminalResultAction();
 
         bytes32 s0 = keccak256("l2-initial-state");
         bytes32 s1 = keccak256("l2-state-before-call");
@@ -81,7 +96,7 @@ abstract contract CounterL2Actions is L2TXActionsBase {
 
         entries[1].stateDeltas = deltas1;
         entries[1].actionHash = keccak256(abi.encode(result));
-        entries[1].nextAction = result;
+        entries[1].nextAction = terminal;
     }
 
     function _l2Entries(address counterL1, address counterAndProxyL2)
@@ -244,6 +259,7 @@ contract ComputeExpected is ComputeExpectedBase, CounterL2Actions {
         Action memory l2txAction = _l2txAction(rlpTx);
         Action memory callAction = _callAction(counterL1Addr, counterAndProxyL2Addr);
         Action memory resultAction = _resultAction();
+        Action memory terminalAction = _terminalResultAction();
 
         // Entries (single source of truth)
         ExecutionEntry[] memory l1 = _l1Entries(counterL1Addr, counterAndProxyL2Addr, rlpTx);
@@ -262,7 +278,7 @@ contract ComputeExpected is ComputeExpectedBase, CounterL2Actions {
         console.log("");
         console.log("=== EXPECTED SUMMARY ===");
         _logEntrySummary(0, l2txAction, callAction, false);
-        _logEntrySummary(1, resultAction, resultAction, true);
+        _logEntrySummary(1, resultAction, terminalAction, true);
 
         // ── Human-readable: L1 execution table (2 entries) ──
         console.log("");
@@ -273,7 +289,7 @@ contract ComputeExpected is ComputeExpectedBase, CounterL2Actions {
             l1[1].actionHash,
             l1[1].stateDeltas,
             _fmtResult(resultAction, "uint256(1)"),
-            string.concat(_fmtResult(resultAction, "uint256(1)"), "  (terminal)")
+            string.concat(_fmtResult(terminalAction, "(void)"), "  (terminal)")
         );
 
         // ── Human-readable: L2 execution table (1 entry) ──

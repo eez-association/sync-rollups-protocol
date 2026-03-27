@@ -96,6 +96,23 @@ abstract contract NestedCounterL2Actions is L2TXActionsBase {
         });
     }
 
+    /// @dev Spec C.6: Terminal RESULT for L2TX flows.
+    ///   rollupId = L2_ROLLUP_ID (the rollup that triggered the L2TX),
+    ///   data = "" (empty), sourceAddress = address(0), sourceRollup = 0.
+    function _terminalResultAction() internal pure returns (Action memory) {
+        return Action({
+            actionType: ActionType.RESULT,
+            rollupId: L2_ROLLUP_ID,
+            destination: address(0),
+            value: 0,
+            data: "",
+            failed: false,
+            sourceAddress: address(0),
+            sourceRollup: 0,
+            scope: new uint256[](0)
+        });
+    }
+
     function _l1Entries(address counterL2, address cap1Addr, address alice, bytes memory rlpEncodedTx)
         internal
         pure
@@ -133,7 +150,7 @@ abstract contract NestedCounterL2Actions is L2TXActionsBase {
 
         entries[2].stateDeltas = deltas2;
         entries[2].actionHash = keccak256(abi.encode(resultCAP1));
-        entries[2].nextAction = resultCAP1;
+        entries[2].nextAction = _terminalResultAction();
     }
 
     function _l2Entries(address counterL2, address cap1Addr, address alice)
@@ -143,6 +160,7 @@ abstract contract NestedCounterL2Actions is L2TXActionsBase {
     {
         Action memory callToCAP1 = _callToCounterAndProxyL1Action(cap1Addr, alice);
         Action memory resultC2 = _resultFromCounterL2Action();
+        Action memory resultCAP1 = _resultFromCounterAndProxyL1Action();
 
         uint256[] memory scope0 = new uint256[](1);
         scope0[0] = 0;
@@ -156,7 +174,7 @@ abstract contract NestedCounterL2Actions is L2TXActionsBase {
 
         entries[1].stateDeltas = new StateDelta[](0);
         entries[1].actionHash = keccak256(abi.encode(resultC2));
-        entries[1].nextAction = _resultFromCounterAndProxyL1Action();
+        entries[1].nextAction = resultCAP1;
     }
 }
 
@@ -323,6 +341,7 @@ contract ComputeExpected is ComputeExpectedBase, NestedCounterL2Actions {
         Action memory callToCounterL2 = _callToCounterL2Action(counterL2Addr, counterAndProxyAddr, new uint256[](0));
         Action memory resultFromCounterL2 = _resultFromCounterL2Action();
         Action memory resultFromCounterAndProxyL1 = _resultFromCounterAndProxyL1Action();
+        Action memory terminalResult = _terminalResultAction();
 
         uint256[] memory scope0 = new uint256[](1);
         scope0[0] = 0;
@@ -350,7 +369,7 @@ contract ComputeExpected is ComputeExpectedBase, NestedCounterL2Actions {
         console.log("=== EXPECTED SUMMARY ===");
         _logEntrySummary(0, l2txAction, callToCounterAndProxyL1, false);
         _logEntrySummary(1, callToCounterL2, resultFromCounterL2, false);
-        _logEntrySummary(2, resultFromCounterAndProxyL1, resultFromCounterAndProxyL1, true);
+        _logEntrySummary(2, resultFromCounterAndProxyL1, terminalResult, true);
 
         // ── Human-readable: L1 execution table (3 entries) ──
         console.log("");
@@ -364,7 +383,7 @@ contract ComputeExpected is ComputeExpectedBase, NestedCounterL2Actions {
             l1[2].actionHash,
             l1[2].stateDeltas,
             _fmtResult(resultFromCounterAndProxyL1, "(void)"),
-            string.concat(_fmtResult(resultFromCounterAndProxyL1, "(void)"), "  (terminal)")
+            string.concat(_fmtResult(terminalResult, "(void)"), "  (terminal)")
         );
 
         // ── Human-readable: L2 execution table (2 entries) ──
@@ -375,7 +394,7 @@ contract ComputeExpected is ComputeExpectedBase, NestedCounterL2Actions {
             1,
             l2eh1,
             _fmtResult(resultFromCounterL2, "uint256(1)"),
-            string.concat(_fmtResult(resultFromCounterL2, "uint256(1)"), "  (terminal)")
+            string.concat(_fmtResult(resultFromCounterAndProxyL1, "(void)"), "  (terminal)")
         );
 
         // ── Human-readable: L2 calls (1 call) ──
