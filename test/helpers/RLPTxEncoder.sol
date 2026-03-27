@@ -23,7 +23,7 @@ library RLPTxEncoder {
     }
 
     /// @notice Encode and sign a legacy EIP-155 transaction.
-    function signLegacyTx(LegacyTx memory tx_, uint256 privateKey) internal pure returns (bytes memory) {
+    function signLegacyTx(LegacyTx memory tx_, uint256 privateKey) internal view returns (bytes memory) {
         // 1. Unsigned RLP for signing: [nonce, gasPrice, gasLimit, to, value, data, chainId, 0, 0]
         bytes memory unsignedRlp = RLP.encode(
             RLP.encoder()
@@ -62,11 +62,11 @@ library RLPTxEncoder {
     /// @notice Build a signed tx for a contract call with sensible defaults.
     function signedCallTx(address to, bytes memory callData, uint256 nonce, uint256 privateKey)
         internal
-        pure
+        view
         returns (bytes memory)
     {
         return signLegacyTx(
-            LegacyTx({nonce: nonce, gasPrice: 1 gwei, gasLimit: 100_000, to: to, value: 0, data: callData, chainId: 1}),
+            LegacyTx({nonce: nonce, gasPrice: 1 gwei, gasLimit: 500_000, to: to, value: 0, data: callData, chainId: block.chainid}),
             privateKey
         );
     }

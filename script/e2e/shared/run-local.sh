@@ -99,7 +99,7 @@ L1_BLOCK=$(cast block-number --rpc-url "$L1_RPC")
 echo "L1 execution at block $L1_BLOCK"
 
 # ══════════════════════════════════════════════
-#  6. Decode events
+#  7. Decode events
 # ══════════════════════════════════════════════
 decode_block "$L2_RPC" "$L2_BLOCK" "$MANAGER_L2" "L2 "
 decode_block "$L1_RPC" "$L1_BLOCK" "$ROLLUPS" "L1 "

@@ -243,6 +243,11 @@ publish_user_tx() {
     block_number=$(echo "$receipt" | jq -r '.blockNumber // empty')
     status=$(echo "$receipt" | jq -r '.status // empty')
 
+    if [[ -z "$block_number" ]]; then
+        echo "ERROR: could not get block number from receipt (tx: $tx_hash)"
+        return 1
+    fi
+
     echo "tx: $tx_hash"
     echo "block: $block_number (status: $status)"
 
