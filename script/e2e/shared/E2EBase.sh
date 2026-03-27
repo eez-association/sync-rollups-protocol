@@ -229,17 +229,28 @@ extract_l2_blocks_from_tx() {
 publish_user_tx() {
     local rpc="$1"
 
-    local tx_hash
-    tx_hash=$(cast publish "$RLP_ENCODED_TX" --rpc-url "$rpc" 2>&1) || true
+    local publish_out
+    publish_out=$(cast publish "$RLP_ENCODED_TX" --rpc-url "$rpc" 2>&1) || true
 
-    if [[ -z "$tx_hash" || "$tx_hash" == *"error"* || "$tx_hash" == *"Error"* ]]; then
+    if [[ -z "$publish_out" || "$publish_out" == *"error"* || "$publish_out" == *"Error"* ]]; then
         echo "ERROR: cast publish failed"
-        echo "$tx_hash"
+        echo "$publish_out"
         return 1
     fi
 
-    local receipt block_number status
-    receipt=$(cast receipt "$tx_hash" --rpc-url "$rpc" --json 2>&1) || true
+    local tx_hash receipt block_number status
+
+    # cast publish may return a full JSON receipt or just a tx hash
+    if echo "$publish_out" | jq -e '.transactionHash' > /dev/null 2>&1; then
+        # Full JSON receipt returned — extract fields directly
+        receipt="$publish_out"
+        tx_hash=$(echo "$receipt" | jq -r '.transactionHash')
+    else
+        # Plain tx hash returned — fetch the receipt separately
+        tx_hash="$publish_out"
+        receipt=$(cast receipt "$tx_hash" --rpc-url "$rpc" --json 2>&1) || true
+    fi
+
     block_number=$(echo "$receipt" | jq -r '.blockNumber // empty')
     status=$(echo "$receipt" | jq -r '.status // empty')
 
