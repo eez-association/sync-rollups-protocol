@@ -8,6 +8,7 @@ import {CrossChainProxy} from "../src/CrossChainProxy.sol";
 import {Action, ActionType, ExecutionEntry, StateDelta, ProxyInfo} from "../src/ICrossChainManager.sol";
 import {IZKVerifier} from "../src/IZKVerifier.sol";
 import {Counter, CounterAndProxy} from "./mocks/CounterContracts.sol";
+import {RLPTxEncoder} from "./helpers/RLPTxEncoder.sol";
 
 contract MockZKVerifier is IZKVerifier {
     function verify(bytes calldata, bytes32) external pure override returns (bool) {
@@ -60,6 +61,7 @@ contract IntegrationTest is Test {
     uint256 constant MAINNET_ROLLUP_ID = 0;
     address constant SYSTEM_ADDRESS = address(0xFFfFfFffFFfffFFfFFfFFFFFffFFFffffFfFFFfF);
     bytes32 constant DEFAULT_VK = keccak256("verificationKey");
+    uint256 constant TX_SIGNER_PK = 0xA11CE;
 
     address public alice = makeAddr("alice");
 
@@ -261,7 +263,13 @@ contract IntegrationTest is Test {
         //    5. D'.executeOnBehalf(C, increment) -> C.increment() returns 1
         //    6. Builds RESULT -> matches entry 2 -> terminal
 
-        bytes memory rlpEncodedTx = hex"01"; // arbitrary — only used for action hashing
+        // Real signed L2 tx: Alice calls D(CounterAndProxy).incrementProxy() on L2
+        bytes memory rlpEncodedTx = RLPTxEncoder.signedCallTx(
+            address(counterAndProxyL2),
+            abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),
+            0, // alice's nonce on L2
+            TX_SIGNER_PK
+        );
 
         // L2TX action that executeL2TX will reconstruct
         Action memory l2txAction = Action({
@@ -418,7 +426,13 @@ contract IntegrationTest is Test {
         //    Entry 2: CALL to B -> RESULT(1)   (consumed inside reentrant executeCrossChainCall)
         //    Entry 3: RESULT(void) -> terminal  (consumed after A returns)
 
-        bytes memory rlpAliceTx = hex"02"; // arbitrary — represents Alice's L2 tx
+        // Real signed L2 tx: Alice calls A'(proxy for CounterAndProxy).incrementProxy() on L2
+        bytes memory rlpAliceTx = RLPTxEncoder.signedCallTx(
+            counterAndProxyProxyL2,
+            incrementProxyCallData,
+            0, // alice's nonce on L2
+            TX_SIGNER_PK
+        );
 
         // L2TX action that executeL2TX will reconstruct
         Action memory l2txAction = Action({

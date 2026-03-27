@@ -7,7 +7,6 @@ import {Rollups} from "../../../src/Rollups.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
 import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
 import {Counter, CounterAndProxy} from "../../../test/mocks/CounterContracts.sol";
-
 // ═══════════════════════════════════════════════════════════════════════
 //  counterL2 — Scenario 2: L2 -> L1 (simple)
 //
@@ -27,15 +26,14 @@ import {Counter, CounterAndProxy} from "../../../test/mocks/CounterContracts.sol
 /// @dev Centralized action & entry definitions for the counterL2 scenario.
 abstract contract CounterL2Actions {
     uint256 internal constant L2_ROLLUP_ID = 1;
-    bytes internal constant RLP_ENCODED_TX = hex"01";
 
-    function _l2txAction() internal pure returns (Action memory) {
+    function _l2txAction(bytes memory rlpEncodedTx) internal pure returns (Action memory) {
         return Action({
             actionType: ActionType.L2TX,
             rollupId: L2_ROLLUP_ID,
             destination: address(0),
             value: 0,
-            data: RLP_ENCODED_TX,
+            data: rlpEncodedTx,
             failed: false,
             sourceAddress: address(0),
             sourceRollup: 0,
@@ -71,12 +69,12 @@ abstract contract CounterL2Actions {
         });
     }
 
-    function _l1Entries(address counterL1, address counterAndProxyL2)
+    function _l1Entries(address counterL1, address counterAndProxyL2, bytes memory rlpEncodedTx)
         internal
         pure
         returns (ExecutionEntry[] memory entries)
     {
-        Action memory l2tx = _l2txAction();
+        Action memory l2tx = _l2txAction(rlpEncodedTx);
         Action memory call_ = _callAction(counterL1, counterAndProxyL2);
         Action memory result = _resultAction();
 
@@ -230,9 +228,11 @@ contract Execute is Script, CounterL2Actions {
 
         vm.startBroadcast();
 
+        bytes memory rlpTx = vm.envBytes("RLP_ENCODED_TX");
+
         Batcher batcher = new Batcher();
         batcher.execute(
-            Rollups(rollupsAddr), _l1Entries(counterL1Addr, counterAndProxyL2Addr), L2_ROLLUP_ID, RLP_ENCODED_TX
+            Rollups(rollupsAddr), _l1Entries(counterL1Addr, counterAndProxyL2Addr, rlpTx), L2_ROLLUP_ID, rlpTx
         );
 
         console.log("done");
@@ -272,14 +272,15 @@ contract ComputeExpected is ComputeExpectedBase, CounterL2Actions {
     function run() external view {
         address counterL1Addr = vm.envAddress("COUNTER_L1");
         address counterAndProxyL2Addr = vm.envAddress("COUNTER_AND_PROXY_L2");
+        bytes memory rlpTx = vm.envBytes("RLP_ENCODED_TX");
 
         // Actions (single source of truth)
-        Action memory l2txAction = _l2txAction();
+        Action memory l2txAction = _l2txAction(rlpTx);
         Action memory callAction = _callAction(counterL1Addr, counterAndProxyL2Addr);
         Action memory resultAction = _resultAction();
 
         // Entries (single source of truth)
-        ExecutionEntry[] memory l1 = _l1Entries(counterL1Addr, counterAndProxyL2Addr);
+        ExecutionEntry[] memory l1 = _l1Entries(counterL1Addr, counterAndProxyL2Addr, rlpTx);
         ExecutionEntry[] memory l2 = _l2Entries(counterL1Addr, counterAndProxyL2Addr);
 
         // Compute hashes from entries

@@ -50,7 +50,33 @@ echo "====== Deploy App ======"
 deploy_contracts "$SOL" "$L1_RPC" "$L2_RPC" "$PK"
 
 # ══════════════════════════════════════════════
-#  5. Execute (L2 first, then L1)
+#  5. Create signed raw tx (RLP_ENCODED_TX)
+#     Used by the L1 Execute script for action hashing + executeL2TX.
+#     cast mktx creates a signed raw tx without broadcasting.
+# ══════════════════════════════════════════════
+if grep -q 'contract ExecuteNetworkL2 ' "$SOL"; then
+    echo ""
+    echo "====== Create Signed Transaction ======"
+    _EXEC_OUT=$(forge script "$SOL:ExecuteNetworkL2" --rpc-url "$L2_RPC" 2>&1)
+    _TX_TARGET=$(extract "$_EXEC_OUT" "TARGET")
+    _TX_CALLDATA=$(extract "$_EXEC_OUT" "CALLDATA")
+    _TX_VALUE=$(extract "$_EXEC_OUT" "VALUE")
+
+    # User tx nonce = current + 1 (loadExecutionTable runs first in ExecuteL2)
+    _SENDER=$(cast wallet address --private-key "$PK")
+    _NONCE=$(cast nonce "$_SENDER" --rpc-url "$L2_RPC")
+    _USER_NONCE=$((_NONCE + 1))
+
+    export RLP_ENCODED_TX=$(cast mktx "$_TX_TARGET" "$_TX_CALLDATA" \
+        --value "${_TX_VALUE}wei" \
+        --gas-limit 500000 \
+        --nonce "$_USER_NONCE" \
+        --private-key "$PK" \
+        --rpc-url "$L2_RPC")
+fi
+
+# ══════════════════════════════════════════════
+#  6. Execute (L2 first, then L1)
 # ══════════════════════════════════════════════
 FAILED=false
 

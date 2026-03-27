@@ -10,6 +10,7 @@ import {IZKVerifier} from "../src/IZKVerifier.sol";
 import {Bridge} from "../src/periphery/Bridge.sol";
 import {WrappedToken} from "../src/periphery/WrappedToken.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {RLPTxEncoder} from "./helpers/RLPTxEncoder.sol";
 
 contract MockZKVerifier is IZKVerifier {
     function verify(bytes calldata, bytes32) external pure override returns (bool) {
@@ -61,6 +62,7 @@ contract IntegrationTestBridge is Test {
     uint256 constant MAINNET_ROLLUP_ID = 0;
     address constant SYSTEM_ADDRESS = address(0xFFfFfFffFFfffFFfFFfFFFFFffFFFffffFfFFFfF);
     bytes32 constant DEFAULT_VK = keccak256("verificationKey");
+    uint256 constant TX_SIGNER_PK = 0xA11CE;
 
     address public alice = makeAddr("alice");
 
@@ -543,7 +545,13 @@ contract IntegrationTestBridge is Test {
         // Need new block for postBatch (StateAlreadyUpdatedThisBlock)
         vm.roll(block.number + 1);
 
-        bytes memory rlpData = hex"03";
+        // Real signed L2 tx: Alice calls bridgeL2.bridgeTokens() on L2
+        bytes memory rlpData = RLPTxEncoder.signedCallTx(
+            address(bridgeL2),
+            abi.encodeWithSelector(Bridge.bridgeTokens.selector, wrappedAddr, 100e18, MAINNET_ROLLUP_ID, alice),
+            0, // alice's first L2 tx
+            TX_SIGNER_PK
+        );
 
         Action memory l2txAction = Action({
             actionType: ActionType.L2TX,

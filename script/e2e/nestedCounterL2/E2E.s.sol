@@ -31,15 +31,14 @@ import {Counter, CounterAndProxy} from "../../../test/mocks/CounterContracts.sol
 ///   Single source of truth — used by Execute, ExecuteL2, and ComputeExpected.
 abstract contract NestedCounterL2Actions {
     uint256 internal constant L2_ROLLUP_ID = 1;
-    bytes internal constant RLP_ENCODED_TX = hex"02";
 
-    function _l2txAction() internal pure returns (Action memory) {
+    function _l2txAction(bytes memory rlpEncodedTx) internal pure returns (Action memory) {
         return Action({
             actionType: ActionType.L2TX,
             rollupId: L2_ROLLUP_ID,
             destination: address(0),
             value: 0,
-            data: RLP_ENCODED_TX,
+            data: rlpEncodedTx,
             failed: false,
             sourceAddress: address(0),
             sourceRollup: 0,
@@ -111,12 +110,12 @@ abstract contract NestedCounterL2Actions {
         });
     }
 
-    function _l1Entries(address counterL2, address cap1Addr, address alice)
+    function _l1Entries(address counterL2, address cap1Addr, address alice, bytes memory rlpEncodedTx)
         internal
         pure
         returns (ExecutionEntry[] memory entries)
     {
-        Action memory l2tx = _l2txAction();
+        Action memory l2tx = _l2txAction(rlpEncodedTx);
         Action memory callToCAP1 = _callToCounterAndProxyL1Action(cap1Addr, alice);
         Action memory callToC2 = _callToCounterL2Action(counterL2, cap1Addr, new uint256[](0));
         Action memory resultC2 = _resultFromCounterL2Action();
@@ -303,9 +302,11 @@ contract Execute is Script, NestedCounterL2Actions {
 
         vm.startBroadcast();
 
+        bytes memory rlpTx = vm.envBytes("RLP_ENCODED_TX");
+
         Batcher batcher = new Batcher();
         batcher.execute(
-            Rollups(rollupsAddr), _l1Entries(counterL2Addr, counterAndProxyAddr, alice), L2_ROLLUP_ID, RLP_ENCODED_TX
+            Rollups(rollupsAddr), _l1Entries(counterL2Addr, counterAndProxyAddr, alice, rlpTx), L2_ROLLUP_ID, rlpTx
         );
 
         console.log("done");
@@ -348,9 +349,10 @@ contract ComputeExpected is ComputeExpectedBase, NestedCounterL2Actions {
         address counterL2Addr = vm.envAddress("COUNTER_L2");
         address counterAndProxyAddr = vm.envAddress("COUNTER_AND_PROXY");
         address alice = vm.envAddress("ALICE");
+        bytes memory rlpTx = vm.envBytes("RLP_ENCODED_TX");
 
         // Actions (single source of truth)
-        Action memory l2txAction = _l2txAction();
+        Action memory l2txAction = _l2txAction(rlpTx);
         Action memory callToCounterAndProxyL1 = _callToCounterAndProxyL1Action(counterAndProxyAddr, alice);
         Action memory callToCounterL2 = _callToCounterL2Action(counterL2Addr, counterAndProxyAddr, new uint256[](0));
         Action memory resultFromCounterL2 = _resultFromCounterL2Action();
@@ -361,7 +363,7 @@ contract ComputeExpected is ComputeExpectedBase, NestedCounterL2Actions {
         Action memory callToCounterL2Scoped = _callToCounterL2Action(counterL2Addr, counterAndProxyAddr, scope0);
 
         // Entries (single source of truth)
-        ExecutionEntry[] memory l1 = _l1Entries(counterL2Addr, counterAndProxyAddr, alice);
+        ExecutionEntry[] memory l1 = _l1Entries(counterL2Addr, counterAndProxyAddr, alice, rlpTx);
         ExecutionEntry[] memory l2 = _l2Entries(counterL2Addr, counterAndProxyAddr, alice);
 
         // Compute hashes from entries

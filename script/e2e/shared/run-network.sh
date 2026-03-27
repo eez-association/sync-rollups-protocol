@@ -74,13 +74,47 @@ echo "====== Deploy ======"
 deploy_contracts "$SOL" "$RPC" "$L2_RPC" "$PK"
 
 # ══════════════════════════════════════════════
-#  2. Compute expected entries
+#  2. Create signed raw transaction
+#     Run ExecuteNetwork(L2) read-only to get target/value/calldata,
+#     then create a signed raw tx with `cast mktx`.
+#     This RLP-encoded tx is used for:
+#       a) Action hashing (passed to ComputeExpected & L1 scripts via env)
+#       b) Sending the user tx on-chain (via cast publish)
+# ══════════════════════════════════════════════
+echo ""
+echo "====== Create Signed Transaction ======"
+
+if grep -q 'contract ExecuteNetworkL2 ' "$SOL"; then
+    _TRIGGER_CHAIN="L2"
+    _TRIGGER_CONTRACT="ExecuteNetworkL2"
+    _TRIGGER_RPC="$L2_RPC"
+else
+    _TRIGGER_CHAIN="L1"
+    _TRIGGER_CONTRACT="ExecuteNetwork"
+    _TRIGGER_RPC="$RPC"
+fi
+
+_EXEC_OUT=$(forge script "$SOL:$_TRIGGER_CONTRACT" --rpc-url "$_TRIGGER_RPC" 2>&1)
+_TX_TARGET=$(extract "$_EXEC_OUT" "TARGET")
+_TX_VALUE=$(extract "$_EXEC_OUT" "VALUE")
+_TX_CALLDATA=$(extract "$_EXEC_OUT" "CALLDATA")
+
+echo "target: $_TX_TARGET"
+echo "calldata: $_TX_CALLDATA"
+echo "value: $_TX_VALUE"
+
+# cast mktx creates a signed raw tx (queries chain for nonce + gas price, does NOT broadcast)
+export RLP_ENCODED_TX=$(cast mktx "$_TX_TARGET" "$_TX_CALLDATA" \
+    --value "${_TX_VALUE}wei" \
+    --gas-limit 500000 \
+    --private-key "$PK" \
+    --rpc-url "$_TRIGGER_RPC")
+
+# ══════════════════════════════════════════════
+#  3. Compute expected entries
 #     Runs ComputeExpected (read-only) to get the
 #     action hashes we expect in the batch and L2 table.
-#     Three hash sets:
-#       EXPECTED_L1_HASHES      — deferred entries in postBatch (BatchPosted event)
-#       EXPECTED_L2_HASHES      — entries loaded on L2 (ExecutionTableLoaded event)
-#       EXPECTED_L2_CALL_HASHES — calls executed on L2 (IncomingCrossChainCallExecuted event)
+#     Reads RLP_ENCODED_TX from env for action hashing.
 # ══════════════════════════════════════════════
 echo ""
 echo "====== Compute Expected Entries ======"
@@ -105,77 +139,16 @@ if [[ -n "$SUMMARY" ]]; then
 fi
 
 # ══════════════════════════════════════════════
-#  3. Detect trigger chain & execute user tx
-#
-#     We can't use `forge script --broadcast` because the tx reverts in
-#     forge's local simulation (the execution table isn't loaded yet).
-#     Instead, ExecuteNetwork/ExecuteNetworkL2 outputs TARGET, VALUE, CALLDATA
-#     via console.log, and we send the tx with `cast send`.
-#
-#     The system/sequencer intercepts the tx from the mempool, constructs
-#     the matching batch, and inserts postBatch before the user tx in the
-#     same block — so the user tx succeeds on-chain.
-#
-#     L1 trigger (ExecuteNetwork):
-#       Send tx on L1 via cast send.
-#       The system includes postBatch + user tx in the same block.
-#
-#     L2 trigger (ExecuteNetworkL2):
-#       Bracket L1 blocks before/after the L2 tx.
-#       Send tx on L2 via cast send.
-#       The system posts a batch on L1 somewhere in that range.
+#  4. Send the pre-signed user tx
+#     Publishes the raw tx created in step 2.
+#     The system/sequencer intercepts it from the mempool, constructs
+#     the matching batch, and includes it in a block.
 # ══════════════════════════════════════════════
-L1_BLOCK=""       # set by range search in step 4
+L1_BLOCK=""       # set by range search in step 5
 L2_BLOCK=""       # set by L2 trigger receipt only
 L1_BATCH_TX=""    # set by VerifyL1Batch on PASS
 
-# Helper: run the Execute contract (read-only) to get target/value/calldata,
-# then send via cast send. Returns the tx hash.
-_send_user_tx() {
-    local sol="$1" contract="$2" rpc="$3" pk="$4"
-
-    # Run the script read-only to get TARGET, VALUE, CALLDATA
-    local out
-    out=$(forge script "$sol:$contract" --rpc-url "$rpc" 2>&1)
-    local target value calldata
-    target=$(extract "$out" "TARGET")
-    value=$(extract "$out" "VALUE")
-    calldata=$(extract "$out" "CALLDATA")
-
-    echo "target: $target"
-    echo "calldata: $calldata"
-    echo "value: $value"
-
-    # Send the tx via cast send (bypasses forge simulation entirely)
-    # --gas-limit: hardcode to avoid eth_estimateGas failure (tx would revert without the batch)
-    local send_out
-    send_out=$(cast send "$target" "$calldata" \
-        --value "${value}wei" \
-        --gas-limit 500000 \
-        --private-key "$pk" \
-        --rpc-url "$rpc" \
-        --json 2>&1) || true
-
-    local tx_hash block_number status
-    tx_hash=$(echo "$send_out" | jq -r '.transactionHash // empty')
-    block_number=$(echo "$send_out" | jq -r '.blockNumber // empty')
-    status=$(echo "$send_out" | jq -r '.status // empty')
-
-    if [[ -z "$tx_hash" ]]; then
-        echo "ERROR: cast send failed"
-        echo "$send_out"
-        return 1
-    fi
-
-    echo "tx: $tx_hash"
-    echo "block: $block_number (status: $status)"
-
-    # Return block number (decimal)
-    TX_HASH="$tx_hash"
-    TX_BLOCK_NUMBER=$(printf "%d" "$block_number")
-}
-
-if grep -q 'contract ExecuteNetworkL2 ' "$SOL"; then
+if [[ "$_TRIGGER_CHAIN" == "L2" ]]; then
     # ── L2 trigger ──
     echo ""
     echo "====== Execute L2 (user tx) ======"
@@ -183,7 +156,7 @@ if grep -q 'contract ExecuteNetworkL2 ' "$SOL"; then
     # Snapshot L1 block before L2 tx — we'll search [before..after] for the batch
     L1_BLOCK_BEFORE=$(cast block-number --rpc-url "$RPC")
 
-    _send_user_tx "$SOL" "ExecuteNetworkL2" "$L2_RPC" "$PK"
+    publish_user_tx "$L2_RPC"
     L2_BLOCK="$TX_BLOCK_NUMBER"
 
     # Wait for the system to see our tx and post the batch on L1
@@ -198,7 +171,7 @@ else
     echo ""
     echo "====== Execute L1 (user tx) ======"
 
-    _send_user_tx "$SOL" "ExecuteNetwork" "$RPC" "$PK"
+    publish_user_tx "$RPC"
     L1_BLOCK_BEFORE="$TX_BLOCK_NUMBER"
 
     # Wait for the system to include our tx + batch in a block

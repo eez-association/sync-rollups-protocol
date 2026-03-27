@@ -329,6 +329,8 @@ function executeL2TX(
 **Preconditions**:
 - `lastStateUpdateBlock == block.number`
 
+**`rlpEncodedTx` format**: The parameter is the user's original L2 transaction as a signed RLP-encoded transaction. Any Ethereum transaction type is valid (Legacy/EIP-155, EIP-1559, etc.). For example, a Legacy transaction is `rlp([nonce, gasPrice, gasLimit, to, value, calldata, v, r, s])`. The `to` and `calldata` fields correspond to the L2 contract and function the user called. The contract does not decode or validate the RLP — it is used as opaque bytes for action hash matching. The system/prover constructs it from the observed L2 transaction.
+
 **State transitions**:
 
 1. Construct L2TX action:

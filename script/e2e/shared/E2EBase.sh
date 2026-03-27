@@ -222,6 +222,34 @@ extract_l2_blocks_from_tx() {
     echo "${blocks_str:-[]}"
 }
 
+# ── Publish a pre-signed raw tx and extract receipt info ──
+# Requires RLP_ENCODED_TX env var (set by cast mktx).
+# Sets TX_HASH and TX_BLOCK_NUMBER for the caller.
+# Usage: publish_user_tx RPC_URL
+publish_user_tx() {
+    local rpc="$1"
+
+    local tx_hash
+    tx_hash=$(cast publish "$RLP_ENCODED_TX" --rpc-url "$rpc" 2>&1) || true
+
+    if [[ -z "$tx_hash" || "$tx_hash" == *"error"* || "$tx_hash" == *"Error"* ]]; then
+        echo "ERROR: cast publish failed"
+        echo "$tx_hash"
+        return 1
+    fi
+
+    local receipt block_number status
+    receipt=$(cast receipt "$tx_hash" --rpc-url "$rpc" --json 2>&1) || true
+    block_number=$(echo "$receipt" | jq -r '.blockNumber // empty')
+    status=$(echo "$receipt" | jq -r '.status // empty')
+
+    echo "tx: $tx_hash"
+    echo "block: $block_number (status: $status)"
+
+    TX_HASH="$tx_hash"
+    TX_BLOCK_NUMBER=$(printf "%d" "$block_number")
+}
+
 # ── Ensure CREATE2 factory exists on a chain ──
 ensure_create2_factory() {
     local rpc="$1"
