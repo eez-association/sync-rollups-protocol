@@ -163,8 +163,14 @@ if [[ "$_TRIGGER_CHAIN" == "L2" ]]; then
     echo "Waiting for system to process..."
     sleep 5
 
-    # Snapshot L1 block after — batch should be in [before..after]
+    # Snapshot L1 block after — wait for +1 block to exist so the range is fully mined
     L1_BLOCK_AFTER=$(( $(cast block-number --rpc-url "$RPC") + 1 ))
+    echo "Waiting for L1 block $L1_BLOCK_AFTER to appear..."
+    for _i in $(seq 1 30); do
+        _CURRENT=$(cast block-number --rpc-url "$RPC")
+        [[ "$_CURRENT" -ge "$L1_BLOCK_AFTER" ]] && break
+        sleep 1
+    done
     echo "L1 block range: $L1_BLOCK_BEFORE..$L1_BLOCK_AFTER"
 else
     # ── L1 trigger ──
