@@ -156,7 +156,7 @@ abstract contract NestedCounterL2Actions is L2TXActionsBase {
 
         entries[1].stateDeltas = new StateDelta[](0);
         entries[1].actionHash = keccak256(abi.encode(resultC2));
-        entries[1].nextAction = resultC2;
+        entries[1].nextAction = _resultFromCounterAndProxyL1Action();
     }
 }
 

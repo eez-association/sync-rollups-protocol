@@ -144,9 +144,9 @@ fi
 #     The system/sequencer intercepts it from the mempool, constructs
 #     the matching batch, and includes it in a block.
 # ══════════════════════════════════════════════
-L1_BLOCK=""       # set by range search in step 5
+L1_BLOCK=""       # set below: L1 trigger = user tx block, L2 trigger = found via L2 block ref
 L2_BLOCK=""       # set by L2 trigger receipt only
-L1_BATCH_TX=""    # set by VerifyL1Batch on PASS
+L1_BATCH_TX=""    # set by find_batch_block_by_l2_ref or VerifyL1Batch
 
 if [[ "$_TRIGGER_CHAIN" == "L2" ]]; then
     # ── L2 trigger ──
@@ -177,44 +177,63 @@ else
     echo ""
     echo "====== Execute L1 (user tx) ======"
 
-    publish_user_tx "$RPC"
-    L1_BLOCK_BEFORE="$TX_BLOCK_NUMBER"
+    publish_user_tx "$RPC"  # sets TX_HASH, TX_BLOCK_NUMBER
+    L1_BLOCK="$TX_BLOCK_NUMBER"  # batch is always in the same block as the user tx
 
-    # Wait for the system to include our tx + batch in a block
+    # Wait for the system to process
     echo "Waiting for system to process..."
     sleep 5
-
-    L1_BLOCK_AFTER=$(cast block-number --rpc-url "$RPC")
-    echo "Searching blocks $L1_BLOCK_BEFORE..$L1_BLOCK_AFTER for batch..."
 fi
 
 # ══════════════════════════════════════════════
-#  4. Verify L1 batch (BatchPosted event)
-#     Search [L1_BLOCK_BEFORE..L1_BLOCK_AFTER] for
-#     a block containing our expected entries.
-#     The system intercepts the user tx, constructs the batch,
-#     and includes it in a block within this range.
+#  4. Find & verify L1 batch (BatchPosted event)
+#     L1 trigger: batch is in the same block as the user tx.
+#     L2 trigger: find the batch whose callData references our L2 block.
+#     Then verify that the batch entries match expected hashes.
 # ══════════════════════════════════════════════
 FAILED=false
 L1_OK=true
 L2_OK=true
 L2_CALL_OK=true
 
-echo ""
-echo "====== Verify L1 Batch (range $L1_BLOCK_BEFORE..$L1_BLOCK_AFTER) ======"
-L1_VERIFY=$(forge script script/e2e/shared/Verify.s.sol:VerifyL1BatchRange \
-    --rpc-url "$RPC" \
-    --sig "run(uint256,uint256,address,bytes32[])" \
-    "$L1_BLOCK_BEFORE" "$L1_BLOCK_AFTER" "$ROLLUPS" "$EXPECTED_L1_HASHES" 2>&1) \
-    && L1_OK=true || L1_OK=false
+# ── Find the L1 batch block ──
+if [[ "$_TRIGGER_CHAIN" == "L2" ]]; then
+    # L2 trigger: find batch by L2 block reference
+    echo ""
+    echo "====== Find L1 Batch (L2 block $L2_BLOCK in L1 range $L1_BLOCK_BEFORE..$L1_BLOCK_AFTER) ======"
+    if find_batch_block_by_l2_ref "$L2_BLOCK" "$L1_BLOCK_BEFORE" "$L1_BLOCK_AFTER" "$ROLLUPS" "$RPC"; then
+        L1_BLOCK="$FOUND_L1_BLOCK"
+        L1_BATCH_TX="$FOUND_BATCH_TX"
+        echo "Found batch in L1 block $L1_BLOCK (tx $L1_BATCH_TX)"
+    else
+        # This should not happen — we already waited for L1_BLOCK_AFTER (+1) to exist.
+        # If we still can't find the batch, the system likely didn't process the L2 tx.
+        # No L1 diagnostic info is available since we couldn't identify the batch block.
+        echo "ERROR: No batch found referencing L2 block $L2_BLOCK in L1 range $L1_BLOCK_BEFORE..$L1_BLOCK_AFTER"
+        echo "  (no L1 diagnostic info available — could not identify the batch block)"
+        FAILED=true
+        L1_OK=false
+    fi
+fi
 
+# ── Verify L1 batch entries ──
+echo ""
+echo "====== Verify L1 Batch (block $L1_BLOCK) ======"
 if $L1_OK; then
-    echo "$L1_VERIFY" | grep "PASS"
-    L1_BATCH_TX=$(extract "$L1_VERIFY" "L1_BATCH_TX")
-    L1_BLOCK=$(extract "$L1_VERIFY" "L1_MATCH_BLOCK")
-else
-    FAILED=true
-    echo "L1 VERIFICATION FAILED"
+    L1_VERIFY=$(forge script script/e2e/shared/Verify.s.sol:VerifyL1Batch \
+        --rpc-url "$RPC" \
+        --sig "run(uint256,address,bytes32[])" \
+        "$L1_BLOCK" "$ROLLUPS" "$EXPECTED_L1_HASHES" 2>&1) \
+        && L1_OK=true || L1_OK=false
+
+    if $L1_OK; then
+        echo "$L1_VERIFY" | grep "PASS"
+        # For L1 trigger, extract batch tx from verify output
+        [[ -z "${L1_BATCH_TX:-}" ]] && L1_BATCH_TX=$(extract "$L1_VERIFY" "L1_BATCH_TX")
+    else
+        FAILED=true
+        echo "L1 VERIFICATION FAILED"
+    fi
 fi
 
 # ══════════════════════════════════════════════

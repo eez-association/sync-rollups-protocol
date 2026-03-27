@@ -222,6 +222,40 @@ extract_l2_blocks_from_tx() {
     echo "${blocks_str:-[]}"
 }
 
+# ── Find the L1 batch block that references a specific L2 block ──
+# Searches [L1_FROM..L1_TO] for a BatchPosted tx whose callData contains L2_BLOCK.
+# Sets FOUND_L1_BLOCK and FOUND_BATCH_TX on success.
+# Usage: find_batch_block_by_l2_ref L2_BLOCK L1_FROM L1_TO ROLLUPS_ADDR RPC_URL
+find_batch_block_by_l2_ref() {
+    local l2_block="$1" l1_from="$2" l1_to="$3" rollups="$4" rpc="$5"
+    local SIG_BATCH="0x2f482312f12dceb86aac9ef0e0e1d9421ac62910326b3d50695d63117321b520"
+
+    # Single RPC call to get all BatchPosted logs in range
+    local logs_json
+    logs_json=$(cast logs --from-block "$l1_from" --to-block "$l1_to" \
+        --address "$rollups" --rpc-url "$rpc" --json 2>/dev/null) || return 1
+
+    # Filter BatchPosted events, get unique (txHash, blockNumber) pairs
+    local tx_pairs
+    tx_pairs=$(echo "$logs_json" | jq -r \
+        "[.[] | select(.topics[0] == \"$SIG_BATCH\") | {tx: .transactionHash, block: .blockNumber}] | unique_by(.tx) | .[] | \"\(.tx) \(.block)\"") || return 1
+
+    [[ -z "$tx_pairs" ]] && return 1
+
+    while IFS=' ' read -r tx_hash block_hex; do
+        local l2_blocks
+        l2_blocks=$(extract_l2_blocks_from_tx "$tx_hash" "$rpc")
+        # Check if our L2 block is in the array (e.g. "[51]" or "[49, 51]")
+        if echo "$l2_blocks" | grep -qE "(^|\[|,) *${l2_block} *(,|\]|$)"; then
+            FOUND_L1_BLOCK=$(printf "%d" "$block_hex")
+            FOUND_BATCH_TX="$tx_hash"
+            return 0
+        fi
+    done <<< "$tx_pairs"
+
+    return 1
+}
+
 # ── Publish a pre-signed raw tx and extract receipt info ──
 # Requires RLP_ENCODED_TX env var (set by cast mktx).
 # Sets TX_HASH and TX_BLOCK_NUMBER for the caller.
