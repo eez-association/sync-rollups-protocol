@@ -229,28 +229,35 @@ extract_l2_blocks_from_tx() {
 publish_user_tx() {
     local rpc="$1"
 
-    local publish_out
-    publish_out=$(cast publish "$RLP_ENCODED_TX" --rpc-url "$rpc" 2>&1) || true
-
-    if [[ -z "$publish_out" || "$publish_out" == *"error"* || "$publish_out" == *"Error"* ]]; then
-        echo "ERROR: cast publish failed"
-        echo "$publish_out"
+    local rpc_out tx_hash
+    # Use cast rpc directly instead of cast publish to avoid wrapper hangs
+    if ! rpc_out=$(cast rpc eth_sendRawTransaction "$RLP_ENCODED_TX" --rpc-url "$rpc" 2>&1); then
+        echo "ERROR: eth_sendRawTransaction failed"
+        echo "$rpc_out"
         return 1
     fi
 
-    local tx_hash receipt block_number status
+    # cast rpc returns the tx hash wrapped in double quotes — strip them
+    tx_hash="${rpc_out%\"}"
+    tx_hash="${tx_hash#\"}"
+    tx_hash=$(echo "$tx_hash" | tr -d '[:space:]')
 
-    # cast publish may return a full JSON receipt or just a tx hash
-    if echo "$publish_out" | jq -e '.transactionHash' > /dev/null 2>&1; then
-        # Full JSON receipt returned — extract fields directly
-        receipt="$publish_out"
-        tx_hash=$(echo "$receipt" | jq -r '.transactionHash')
-    else
-        # Plain tx hash returned — fetch the receipt separately
-        tx_hash="$publish_out"
-        receipt=$(cast receipt "$tx_hash" --rpc-url "$rpc" --json 2>&1) || true
+    if [[ -z "$tx_hash" || "$tx_hash" == "null" ]]; then
+        echo "ERROR: Could not extract tx hash from RPC response."
+        echo "Output was: $rpc_out"
+        return 1
     fi
 
+    local receipt block_number status
+
+    # cast receipt will poll the network until the tx is mined
+    if ! receipt=$(cast receipt "$tx_hash" --rpc-url "$rpc" --json 2>&1); then
+        echo "ERROR: cast receipt failed for tx: $tx_hash"
+        echo "$receipt"
+        return 1
+    fi
+
+    # Extract fields (cast receipt returns blockNumber and status as hex strings)
     block_number=$(echo "$receipt" | jq -r '.blockNumber // empty')
     status=$(echo "$receipt" | jq -r '.status // empty')
 
@@ -263,6 +270,7 @@ publish_user_tx() {
     echo "block: $block_number (status: $status)"
 
     TX_HASH="$tx_hash"
+    # printf "%d" properly converts hex (0x...) to decimal integers
     TX_BLOCK_NUMBER=$(printf "%d" "$block_number")
 }
 
