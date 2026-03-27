@@ -7,6 +7,7 @@ import {Rollups} from "../../../src/Rollups.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
 import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
 import {Counter, CounterAndProxy} from "../../../test/mocks/CounterContracts.sol";
+import {L2TXBatcher, L2TXActionsBase, getOrCreateProxy} from "../shared/E2EHelpers.sol";
 // ═══════════════════════════════════════════════════════════════════════
 //  counterL2 — Scenario 2: L2 -> L1 (simple)
 //
@@ -24,22 +25,7 @@ import {Counter, CounterAndProxy} from "../../../test/mocks/CounterContracts.sol
 // ═══════════════════════════════════════════════════════════════════════
 
 /// @dev Centralized action & entry definitions for the counterL2 scenario.
-abstract contract CounterL2Actions {
-    uint256 internal constant L2_ROLLUP_ID = 1;
-
-    function _l2txAction(bytes memory rlpEncodedTx) internal pure returns (Action memory) {
-        return Action({
-            actionType: ActionType.L2TX,
-            rollupId: L2_ROLLUP_ID,
-            destination: address(0),
-            value: 0,
-            data: rlpEncodedTx,
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-    }
+abstract contract CounterL2Actions is L2TXActionsBase {
 
     function _callAction(address counterL1, address counterAndProxyL2) internal pure returns (Action memory) {
         return Action({
@@ -113,16 +99,6 @@ abstract contract CounterL2Actions {
     }
 }
 
-/// @notice Batcher: postBatch + executeL2TX in one tx (local mode only)
-contract Batcher {
-    function execute(Rollups rollups, ExecutionEntry[] calldata entries, uint256 rollupId, bytes calldata rlpTx)
-        external
-    {
-        rollups.postBatch(entries, 0, "", "proof");
-        rollups.executeL2TX(rollupId, rlpTx);
-    }
-}
-
 /// @title Deploy — Deploy Counter on L1
 /// @dev Env: ROLLUPS
 /// Outputs: COUNTER_L1
@@ -151,12 +127,7 @@ contract DeployL2 is Script {
         CrossChainManagerL2 manager = CrossChainManagerL2(managerL2Addr);
 
         // C': proxy for C(Counter on L1), deployed on L2
-        address counterProxyL2;
-        try manager.createCrossChainProxy(counterL1Addr, 0) returns (address proxy) {
-            counterProxyL2 = proxy;
-        } catch {
-            counterProxyL2 = manager.computeCrossChainProxyAddress(counterL1Addr, 0);
-        }
+        address counterProxyL2 = getOrCreateProxy(manager, counterL1Addr, 0);
 
         // D: CounterAndProxy on L2, target = C'
         CounterAndProxy counterAndProxyL2 = new CounterAndProxy(Counter(counterProxyL2));
@@ -181,12 +152,7 @@ contract Deploy2 is Script {
         // D': proxy for D(CounterAndProxy on L2), deployed on L1
         // Needed for scope navigation: D'.executeOnBehalf(C, increment)
         Rollups rollups = Rollups(rollupsAddr);
-        address counterAndProxyL2ProxyL1;
-        try rollups.createCrossChainProxy(counterAndProxyL2Addr, 1) returns (address proxy) {
-            counterAndProxyL2ProxyL1 = proxy;
-        } catch {
-            counterAndProxyL2ProxyL1 = rollups.computeCrossChainProxyAddress(counterAndProxyL2Addr, 1);
-        }
+        address counterAndProxyL2ProxyL1 = getOrCreateProxy(rollups, counterAndProxyL2Addr, 1);
         console.log("COUNTER_AND_PROXY_L2_PROXY_L1=%s", counterAndProxyL2ProxyL1);
 
         vm.stopBroadcast();
@@ -230,7 +196,7 @@ contract Execute is Script, CounterL2Actions {
 
         bytes memory rlpTx = vm.envBytes("RLP_ENCODED_TX");
 
-        Batcher batcher = new Batcher();
+        L2TXBatcher batcher = new L2TXBatcher();
         batcher.execute(
             Rollups(rollupsAddr), _l1Entries(counterL1Addr, counterAndProxyL2Addr, rlpTx), L2_ROLLUP_ID, rlpTx
         );

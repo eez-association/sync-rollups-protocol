@@ -7,6 +7,7 @@ import {Rollups} from "../../../src/Rollups.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
 import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
 import {Counter, CounterAndProxy} from "../../../test/mocks/CounterContracts.sol";
+import {L2TXBatcher, L2TXActionsBase, getOrCreateProxy} from "../shared/E2EHelpers.sol";
 
 // ═══════════════════════════════════════════════════════════════════════
 //  nestedCounterL2 — Scenario 3: L2 -> L1 -> L2 (nested scope)
@@ -29,22 +30,7 @@ import {Counter, CounterAndProxy} from "../../../test/mocks/CounterContracts.sol
 
 /// @dev Centralized action & entry definitions for the nestedCounterL2 scenario.
 ///   Single source of truth — used by Execute, ExecuteL2, and ComputeExpected.
-abstract contract NestedCounterL2Actions {
-    uint256 internal constant L2_ROLLUP_ID = 1;
-
-    function _l2txAction(bytes memory rlpEncodedTx) internal pure returns (Action memory) {
-        return Action({
-            actionType: ActionType.L2TX,
-            rollupId: L2_ROLLUP_ID,
-            destination: address(0),
-            value: 0,
-            data: rlpEncodedTx,
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-    }
+abstract contract NestedCounterL2Actions is L2TXActionsBase {
 
     function _callToCounterAndProxyL1Action(address cap1Addr, address alice)
         internal
@@ -77,7 +63,7 @@ abstract contract NestedCounterL2Actions {
             data: abi.encodeWithSelector(Counter.increment.selector),
             failed: false,
             sourceAddress: cap1Addr, // CounterAndProxyL1
-            sourceRollup: 0, // MAINNET
+            sourceRollup: MAINNET_ROLLUP_ID,
             scope: scope
         });
     }
@@ -174,16 +160,6 @@ abstract contract NestedCounterL2Actions {
     }
 }
 
-/// @notice Batcher: postBatch + executeL2TX in one tx (local mode only)
-contract Batcher {
-    function execute(Rollups rollups, ExecutionEntry[] calldata entries, uint256 rollupId, bytes calldata rlpTx)
-        external
-    {
-        rollups.postBatch(entries, 0, "", "proof");
-        rollups.executeL2TX(rollupId, rlpTx);
-    }
-}
-
 /// @title DeployL2 — Deploy CounterL2 on L2
 /// Outputs: COUNTER_L2, ALICE
 contract DeployL2 is Script {
@@ -211,12 +187,7 @@ contract Deploy is Script {
         Rollups rollups = Rollups(rollupsAddr);
 
         // Proxy for CounterL2, deployed on L1
-        address counterProxy;
-        try rollups.createCrossChainProxy(counterL2Addr, 1) returns (address proxy) {
-            counterProxy = proxy;
-        } catch {
-            counterProxy = rollups.computeCrossChainProxyAddress(counterL2Addr, 1);
-        }
+        address counterProxy = getOrCreateProxy(rollups, counterL2Addr, 1);
 
         // CounterAndProxyL1: target = CounterL2 proxy
         CounterAndProxy counterAndProxy = new CounterAndProxy(Counter(counterProxy));
@@ -241,12 +212,7 @@ contract Deploy2L2 is Script {
         CrossChainManagerL2 manager = CrossChainManagerL2(managerL2Addr);
 
         // Proxy for CounterAndProxyL1, deployed on L2
-        address counterAndProxyProxyL2;
-        try manager.createCrossChainProxy(counterAndProxyAddr, 0) returns (address proxy) {
-            counterAndProxyProxyL2 = proxy;
-        } catch {
-            counterAndProxyProxyL2 = manager.computeCrossChainProxyAddress(counterAndProxyAddr, 0);
-        }
+        address counterAndProxyProxyL2 = getOrCreateProxy(manager, counterAndProxyAddr, 0);
         console.log("COUNTER_AND_PROXY_PROXY_L2=%s", counterAndProxyProxyL2);
 
         vm.stopBroadcast();
@@ -304,7 +270,7 @@ contract Execute is Script, NestedCounterL2Actions {
 
         bytes memory rlpTx = vm.envBytes("RLP_ENCODED_TX");
 
-        Batcher batcher = new Batcher();
+        L2TXBatcher batcher = new L2TXBatcher();
         batcher.execute(
             Rollups(rollupsAddr), _l1Entries(counterL2Addr, counterAndProxyAddr, alice, rlpTx), L2_ROLLUP_ID, rlpTx
         );

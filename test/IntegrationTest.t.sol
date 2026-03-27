@@ -1,20 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Test, console} from "forge-std/Test.sol";
+import {console} from "forge-std/Test.sol";
 import {Rollups, RollupConfig} from "../src/Rollups.sol";
 import {CrossChainManagerL2} from "../src/CrossChainManagerL2.sol";
 import {CrossChainProxy} from "../src/CrossChainProxy.sol";
 import {Action, ActionType, ExecutionEntry, StateDelta, ProxyInfo} from "../src/ICrossChainManager.sol";
-import {IZKVerifier} from "../src/IZKVerifier.sol";
 import {Counter, CounterAndProxy} from "./mocks/CounterContracts.sol";
 import {RLPTxEncoder} from "./helpers/RLPTxEncoder.sol";
-
-contract MockZKVerifier is IZKVerifier {
-    function verify(bytes calldata, bytes32) external pure override returns (bool) {
-        return true;
-    }
-}
+import {MockZKVerifier, IntegrationTestBase} from "./helpers/TestBase.sol";
 
 /// @title IntegrationTest
 /// @notice End-to-end tests of L1 <-> L2 cross-chain call flows using Counter contracts
@@ -36,11 +30,7 @@ contract MockZKVerifier is IZKVerifier {
 /// │  3 │ Alice -> A' (-> A  -> B') -> B   │ L2 -> L1 ->L2│ Nested scope     │
 /// │  4 │ Alice -> D' (-> D  -> C') -> C   │ L1 -> L2 ->L1│ Nested scope     │
 /// └────┴──────────────────────────────────┴──────────────┴──────────────────┘
-contract IntegrationTest is Test {
-    // ── L1 contracts ──
-    Rollups public rollups;
-    MockZKVerifier public verifier;
-
+contract IntegrationTest is IntegrationTestBase {
     // ── L2 contracts ──
     CrossChainManagerL2 public managerL2;
 
@@ -55,13 +45,6 @@ contract IntegrationTest is Test {
     address public counterProxyL2;            // C' — proxy for C, deployed on L2
     address public counterAndProxyProxyL2;    // A' — proxy for A, deployed on L2
     address public counterAndProxyL2ProxyL1;  // D' — proxy for D, deployed on L1
-
-    // ── Constants ──
-    uint256 constant L2_ROLLUP_ID = 1;
-    uint256 constant MAINNET_ROLLUP_ID = 0;
-    address constant SYSTEM_ADDRESS = address(0xFFfFfFffFFfffFFfFFfFFFFFffFFFffffFfFFFfF);
-    bytes32 constant DEFAULT_VK = keccak256("verificationKey");
-    uint256 constant TX_SIGNER_PK = 0xA11CE;
 
     address public alice = makeAddr("alice");
 
@@ -98,11 +81,6 @@ contract IntegrationTest is Test {
 
         // D': proxy for D(CounterAndProxy on L2), lives on L1 — for Scenarios 2 & 4
         counterAndProxyL2ProxyL1 = rollups.createCrossChainProxy(address(counterAndProxyL2), L2_ROLLUP_ID);
-    }
-
-    function _getRollupState(uint256 rollupId) internal view returns (bytes32) {
-        (,, bytes32 stateRoot,) = rollups.rollups(rollupId);
-        return stateRoot;
     }
 
     // ═══════════════════════════════════════════════════════════════════════

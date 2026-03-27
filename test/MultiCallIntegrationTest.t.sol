@@ -1,20 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Test, console} from "forge-std/Test.sol";
+import {console} from "forge-std/Test.sol";
 import {Rollups, RollupConfig} from "../src/Rollups.sol";
 import {CrossChainManagerL2} from "../src/CrossChainManagerL2.sol";
 import {CrossChainProxy} from "../src/CrossChainProxy.sol";
 import {Action, ActionType, ExecutionEntry, StateDelta, ProxyInfo} from "../src/ICrossChainManager.sol";
-import {IZKVerifier} from "../src/IZKVerifier.sol";
 import {Counter} from "./mocks/CounterContracts.sol";
 import {CallTwice, CallTwoDifferent, ConditionalCallTwice} from "./mocks/MultiCallContracts.sol";
-
-contract MockZKVerifier is IZKVerifier {
-    function verify(bytes calldata, bytes32) external pure override returns (bool) {
-        return true;
-    }
-}
+import {MockZKVerifier, IntegrationTestBase} from "./helpers/TestBase.sol";
 
 /// @title MultiCallIntegrationTest
 /// @notice Tests for issue #256: multiple cross-chain calls in a single execution.
@@ -40,11 +34,7 @@ contract MockZKVerifier is IZKVerifier {
 /// │  7a│ Alice -> G (-> B1',B2')-> B1,B2 (ok)      │L1 -> L2 │ Conditional pass │
 /// │  7b│ Alice -> G (-> B1',B2')-> B1,B2 (revert)  │L1 -> L2 │ Atomicity revert │
 /// └────┴───────────────────────────────────────────┴──────────┴──────────────────┘
-contract MultiCallIntegrationTest is Test {
-    // ── L1 contracts ──
-    Rollups public rollups;
-    MockZKVerifier public verifier;
-
+contract MultiCallIntegrationTest is IntegrationTestBase {
     // ── L2 contracts ──
     CrossChainManagerL2 public managerL2;
 
@@ -60,12 +50,6 @@ contract MultiCallIntegrationTest is Test {
     address public counterProxy;     // B'  — proxy for B, on L1
     address public counterAProxy;    // B1' — proxy for B1, on L1
     address public counterBProxy;    // B2' — proxy for B2, on L1
-
-    // ── Constants ──
-    uint256 constant L2_ROLLUP_ID = 1;
-    uint256 constant MAINNET_ROLLUP_ID = 0;
-    address constant SYSTEM_ADDRESS = address(0xFFfFfFffFFfffFFfFFfFFFFFffFFFffffFfFFFfF);
-    bytes32 constant DEFAULT_VK = keccak256("verificationKey");
 
     address public alice = makeAddr("alice");
 
@@ -90,11 +74,6 @@ contract MultiCallIntegrationTest is Test {
         counterProxy = rollups.createCrossChainProxy(address(counterL2), L2_ROLLUP_ID);     // B'
         counterAProxy = rollups.createCrossChainProxy(address(counterL2_A), L2_ROLLUP_ID);  // B1'
         counterBProxy = rollups.createCrossChainProxy(address(counterL2_B), L2_ROLLUP_ID);  // B2'
-    }
-
-    function _getRollupState(uint256 rollupId) internal view returns (bytes32) {
-        (,, bytes32 stateRoot,) = rollups.rollups(rollupId);
-        return stateRoot;
     }
 
     // ═══════════════════════════════════════════════════════════════════════

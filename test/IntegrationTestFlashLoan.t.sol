@@ -1,24 +1,18 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Test, console} from "forge-std/Test.sol";
+import {console} from "forge-std/Test.sol";
 import {Rollups, RollupConfig} from "../src/Rollups.sol";
 import {CrossChainManagerL2} from "../src/CrossChainManagerL2.sol";
 import {CrossChainProxy} from "../src/CrossChainProxy.sol";
 import {Action, ActionType, ExecutionEntry, StateDelta, ProxyInfo} from "../src/ICrossChainManager.sol";
-import {IZKVerifier} from "../src/IZKVerifier.sol";
 import {Bridge} from "../src/periphery/Bridge.sol";
 import {WrappedToken} from "../src/periphery/WrappedToken.sol";
 import {FlashLoan} from "../src/periphery/defiMock/FlashLoan.sol";
 import {FlashLoanBridgeExecutor} from "../src/periphery/defiMock/FlashLoanBridgeExecutor.sol";
 import {FlashLoanersNFT} from "../src/periphery/defiMock/FlashLoanersNFT.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-
-contract MockZKVerifier is IZKVerifier {
-    function verify(bytes calldata, bytes32) external pure override returns (bool) {
-        return true;
-    }
-}
+import {MockZKVerifier, IntegrationTestBase} from "./helpers/TestBase.sol";
 
 contract TestToken is ERC20 {
     constructor() ERC20("Test Token", "TT") {
@@ -51,11 +45,7 @@ contract TestToken is ERC20 {
 /// │           On L2: claim NFT, bridge tokens back → CALL#3 (scope=[0])                │
 /// │        3. repay flash loan                                                         │
 /// └────────────────────────────────────────────────────────────────────────────────────┘
-contract IntegrationTestFlashLoan is Test {
-    // ── L1 contracts ──
-    Rollups public rollups;
-    MockZKVerifier public verifier;
-
+contract IntegrationTestFlashLoan is IntegrationTestBase {
     // ── L2 contracts ──
     CrossChainManagerL2 public managerL2;
 
@@ -73,12 +63,6 @@ contract IntegrationTestFlashLoan is Test {
     // ── Pre-computed addresses ──
     address public wrappedTokenL2;
     address public executorL2Proxy;
-
-    // ── Constants ──
-    uint256 constant L2_ROLLUP_ID = 1;
-    uint256 constant MAINNET_ROLLUP_ID = 0;
-    address constant SYSTEM_ADDRESS = address(0xFFfFfFffFFfffFFfFFfFFFFFffFFFffffFfFFFfF);
-    bytes32 constant DEFAULT_VK = keccak256("verificationKey");
 
     address public alice = makeAddr("alice");
 
@@ -146,11 +130,6 @@ contract IntegrationTestFlashLoan is Test {
             L2_ROLLUP_ID,
             address(token)
         );
-    }
-
-    function _getRollupState(uint256 rollupId) internal view returns (bytes32) {
-        (,, bytes32 stateRoot,) = rollups.rollups(rollupId);
-        return stateRoot;
     }
 
     // ═══════════════════════════════════════════════════════════════════════
