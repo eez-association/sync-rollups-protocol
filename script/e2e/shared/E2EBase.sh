@@ -222,6 +222,92 @@ extract_l2_blocks_from_tx() {
     echo "${blocks_str:-[]}"
 }
 
+# ── Find the L1 batch block that references a specific L2 block ──
+# Searches [L1_FROM..L1_TO] for a BatchPosted tx whose callData contains L2_BLOCK.
+# Sets FOUND_L1_BLOCK and FOUND_BATCH_TX on success.
+# Usage: find_batch_block_by_l2_ref L2_BLOCK L1_FROM L1_TO ROLLUPS_ADDR RPC_URL
+find_batch_block_by_l2_ref() {
+    local l2_block="$1" l1_from="$2" l1_to="$3" rollups="$4" rpc="$5"
+    local SIG_BATCH="0x2f482312f12dceb86aac9ef0e0e1d9421ac62910326b3d50695d63117321b520"
+
+    # Single RPC call to get all BatchPosted logs in range
+    local logs_json
+    logs_json=$(cast logs --from-block "$l1_from" --to-block "$l1_to" \
+        --address "$rollups" --rpc-url "$rpc" --json 2>/dev/null) || return 1
+
+    # Filter BatchPosted events, get unique (txHash, blockNumber) pairs
+    local tx_pairs
+    tx_pairs=$(echo "$logs_json" | jq -r \
+        "[.[] | select(.topics[0] == \"$SIG_BATCH\") | {tx: .transactionHash, block: .blockNumber}] | unique_by(.tx) | .[] | \"\(.tx) \(.block)\"") || return 1
+
+    [[ -z "$tx_pairs" ]] && return 1
+
+    while IFS=' ' read -r tx_hash block_hex; do
+        local l2_blocks
+        l2_blocks=$(extract_l2_blocks_from_tx "$tx_hash" "$rpc")
+        # Check if our L2 block is in the array (e.g. "[51]" or "[49, 51]")
+        if echo "$l2_blocks" | grep -qE "(^|\[|,) *${l2_block} *(,|\]|$)"; then
+            FOUND_L1_BLOCK=$(printf "%d" "$block_hex")
+            FOUND_BATCH_TX="$tx_hash"
+            return 0
+        fi
+    done <<< "$tx_pairs"
+
+    return 1
+}
+
+# ── Publish a pre-signed raw tx and extract receipt info ──
+# Requires RLP_ENCODED_TX env var (set by cast mktx).
+# Sets TX_HASH and TX_BLOCK_NUMBER for the caller.
+# Usage: publish_user_tx RPC_URL
+publish_user_tx() {
+    local rpc="$1"
+
+    local rpc_out tx_hash
+    # Use cast rpc directly instead of cast publish to avoid wrapper hangs
+    if ! rpc_out=$(cast rpc eth_sendRawTransaction "$RLP_ENCODED_TX" --rpc-url "$rpc" 2>&1); then
+        echo "ERROR: eth_sendRawTransaction failed"
+        echo "$rpc_out"
+        return 1
+    fi
+
+    # cast rpc returns the tx hash wrapped in double quotes — strip them
+    tx_hash="${rpc_out%\"}"
+    tx_hash="${tx_hash#\"}"
+    tx_hash=$(echo "$tx_hash" | tr -d '[:space:]')
+
+    if [[ -z "$tx_hash" || "$tx_hash" == "null" ]]; then
+        echo "ERROR: Could not extract tx hash from RPC response."
+        echo "Output was: $rpc_out"
+        return 1
+    fi
+
+    local receipt block_number status
+
+    # cast receipt will poll the network until the tx is mined
+    if ! receipt=$(cast receipt "$tx_hash" --rpc-url "$rpc" --json 2>&1); then
+        echo "ERROR: cast receipt failed for tx: $tx_hash"
+        echo "$receipt"
+        return 1
+    fi
+
+    # Extract fields (cast receipt returns blockNumber and status as hex strings)
+    block_number=$(echo "$receipt" | jq -r '.blockNumber // empty')
+    status=$(echo "$receipt" | jq -r '.status // empty')
+
+    if [[ -z "$block_number" ]]; then
+        echo "ERROR: could not get block number from receipt (tx: $tx_hash)"
+        return 1
+    fi
+
+    echo "tx: $tx_hash"
+    echo "block: $block_number (status: $status)"
+
+    TX_HASH="$tx_hash"
+    # printf "%d" properly converts hex (0x...) to decimal integers
+    TX_BLOCK_NUMBER=$(printf "%d" "$block_number")
+}
+
 # ── Ensure CREATE2 factory exists on a chain ──
 ensure_create2_factory() {
     local rpc="$1"

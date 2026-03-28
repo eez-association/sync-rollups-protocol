@@ -1,21 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Test, console} from "forge-std/Test.sol";
+import {console} from "forge-std/Test.sol";
 import {Rollups, RollupConfig} from "../src/Rollups.sol";
 import {CrossChainManagerL2} from "../src/CrossChainManagerL2.sol";
 import {CrossChainProxy} from "../src/CrossChainProxy.sol";
 import {Action, ActionType, ExecutionEntry, StateDelta, ProxyInfo} from "../src/ICrossChainManager.sol";
-import {IZKVerifier} from "../src/IZKVerifier.sol";
 import {Bridge} from "../src/periphery/Bridge.sol";
 import {WrappedToken} from "../src/periphery/WrappedToken.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-
-contract MockZKVerifier is IZKVerifier {
-    function verify(bytes calldata, bytes32) external pure override returns (bool) {
-        return true;
-    }
-}
+import {RLPTxEncoder} from "./helpers/RLPTxEncoder.sol";
+import {MockZKVerifier, IntegrationTestBase} from "./helpers/TestBase.sol";
 
 contract TestToken is ERC20 {
     constructor() ERC20("Test Token", "TT") {
@@ -41,11 +36,7 @@ contract TestToken is ERC20 {
 /// │  2 │ Alice bridges 100 tokens to herself   │ L1 → L2  │ ERC20            │
 /// │  3 │ Alice bridges tokens then back again  │ L1→L2→L1 │ ERC20 roundtrip  │
 /// └────┴───────────────────────────────────────┴──────────┴──────────────────┘
-contract IntegrationTestBridge is Test {
-    // ── L1 contracts ──
-    Rollups public rollups;
-    MockZKVerifier public verifier;
-
+contract IntegrationTestBridge is IntegrationTestBase {
     // ── L2 contracts ──
     CrossChainManagerL2 public managerL2;
 
@@ -55,12 +46,6 @@ contract IntegrationTestBridge is Test {
 
     // ── Test token ──
     TestToken public token;
-
-    // ── Constants ──
-    uint256 constant L2_ROLLUP_ID = 1;
-    uint256 constant MAINNET_ROLLUP_ID = 0;
-    address constant SYSTEM_ADDRESS = address(0xFFfFfFffFFfffFFfFFfFFFFFffFFFffffFfFFFfF);
-    bytes32 constant DEFAULT_VK = keccak256("verificationKey");
 
     address public alice = makeAddr("alice");
 
@@ -86,11 +71,6 @@ contract IntegrationTestBridge is Test {
 
         // ── Fund alice ──
         vm.deal(alice, 10 ether);
-    }
-
-    function _getRollupState(uint256 rollupId) internal view returns (bytes32) {
-        (,, bytes32 stateRoot,) = rollups.rollups(rollupId);
-        return stateRoot;
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -543,7 +523,13 @@ contract IntegrationTestBridge is Test {
         // Need new block for postBatch (StateAlreadyUpdatedThisBlock)
         vm.roll(block.number + 1);
 
-        bytes memory rlpData = hex"03";
+        // Real signed L2 tx: Alice calls bridgeL2.bridgeTokens() on L2
+        bytes memory rlpData = RLPTxEncoder.signedCallTx(
+            address(bridgeL2),
+            abi.encodeWithSelector(Bridge.bridgeTokens.selector, wrappedAddr, 100e18, MAINNET_ROLLUP_ID, alice),
+            0, // alice's first L2 tx
+            TX_SIGNER_PK
+        );
 
         Action memory l2txAction = Action({
             actionType: ActionType.L2TX,

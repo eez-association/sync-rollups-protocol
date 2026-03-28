@@ -59,8 +59,9 @@ This way `tmp/e2e-failures/` only has failures + their diagnosis, and `tmp/e2e-s
 
 ### 5. On failure — diagnose
 
-#### 5a. Decode the block
-Use the block numbers from the test output:
+#### 5a. Decode the postBatch block
+Always decode the L1 block containing the postBatch. The decoded output includes L2 block numbers extracted from the postBatch callData — use these to definitively match which L1 batch corresponds to the test's L2 user tx (by comparing the extracted L2 block with the L2 tx receipt block).
+
 ```bash
 bash script/e2e/shared/decode-block.sh \
     --l1-block <BLOCK> --l1-rpc $L1_RPC --l2-rpc $L2_RPC \

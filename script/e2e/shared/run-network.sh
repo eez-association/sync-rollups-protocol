@@ -74,17 +74,52 @@ echo "====== Deploy ======"
 deploy_contracts "$SOL" "$RPC" "$L2_RPC" "$PK"
 
 # ══════════════════════════════════════════════
-#  2. Compute expected entries
+#  2. Create signed raw transaction
+#     Run ExecuteNetwork(L2) read-only to get target/value/calldata,
+#     then create a signed raw tx with `cast mktx`.
+#     This RLP-encoded tx is used for:
+#       a) Action hashing (passed to ComputeExpected & L1 scripts via env)
+#       b) Sending the user tx on-chain (via cast publish)
+# ══════════════════════════════════════════════
+echo ""
+echo "====== Create Signed Transaction ======"
+
+if grep -q 'contract ExecuteNetworkL2 ' "$SOL"; then
+    _TRIGGER_CHAIN="L2"
+    _TRIGGER_CONTRACT="ExecuteNetworkL2"
+    _TRIGGER_RPC="$L2_RPC"
+else
+    _TRIGGER_CHAIN="L1"
+    _TRIGGER_CONTRACT="ExecuteNetwork"
+    _TRIGGER_RPC="$RPC"
+fi
+
+_EXEC_OUT=$(forge script "$SOL:$_TRIGGER_CONTRACT" --rpc-url "$_TRIGGER_RPC" 2>&1)
+_TX_TARGET=$(extract "$_EXEC_OUT" "TARGET")
+_TX_VALUE=$(extract "$_EXEC_OUT" "VALUE")
+_TX_CALLDATA=$(extract "$_EXEC_OUT" "CALLDATA")
+
+echo "target: $_TX_TARGET"
+echo "calldata: $_TX_CALLDATA"
+echo "value: $_TX_VALUE"
+
+# cast mktx creates a signed raw tx (queries chain for nonce + gas price, does NOT broadcast)
+export RLP_ENCODED_TX=$(cast mktx "$_TX_TARGET" "$_TX_CALLDATA" \
+    --value "${_TX_VALUE}wei" \
+    --gas-limit 2000000 \
+    --private-key "$PK" \
+    --rpc-url "$_TRIGGER_RPC")
+
+# ══════════════════════════════════════════════
+#  3. Compute expected entries
 #     Runs ComputeExpected (read-only) to get the
 #     action hashes we expect in the batch and L2 table.
-#     Three hash sets:
-#       EXPECTED_L1_HASHES      — deferred entries in postBatch (BatchPosted event)
-#       EXPECTED_L2_HASHES      — entries loaded on L2 (ExecutionTableLoaded event)
-#       EXPECTED_L2_CALL_HASHES — calls executed on L2 (IncomingCrossChainCallExecuted event)
+#     Reads RLP_ENCODED_TX from env for action hashing.
 # ══════════════════════════════════════════════
 echo ""
 echo "====== Compute Expected Entries ======"
-COMPUTE_OUT=$(forge script "$SOL:ComputeExpected" --rpc-url "$RPC" 2>&1)
+_SENDER=$(cast wallet address --private-key "$PK")
+COMPUTE_OUT=$(forge script "$SOL:ComputeExpected" --rpc-url "$RPC" --sender "$_SENDER" 2>&1)
 
 EXPECTED_L1_HASHES=$(extract "$COMPUTE_OUT" "EXPECTED_L1_HASHES")
 echo "L1 expected: $EXPECTED_L1_HASHES"
@@ -105,77 +140,16 @@ if [[ -n "$SUMMARY" ]]; then
 fi
 
 # ══════════════════════════════════════════════
-#  3. Detect trigger chain & execute user tx
-#
-#     We can't use `forge script --broadcast` because the tx reverts in
-#     forge's local simulation (the execution table isn't loaded yet).
-#     Instead, ExecuteNetwork/ExecuteNetworkL2 outputs TARGET, VALUE, CALLDATA
-#     via console.log, and we send the tx with `cast send`.
-#
-#     The system/sequencer intercepts the tx from the mempool, constructs
-#     the matching batch, and inserts postBatch before the user tx in the
-#     same block — so the user tx succeeds on-chain.
-#
-#     L1 trigger (ExecuteNetwork):
-#       Send tx on L1 via cast send.
-#       The system includes postBatch + user tx in the same block.
-#
-#     L2 trigger (ExecuteNetworkL2):
-#       Bracket L1 blocks before/after the L2 tx.
-#       Send tx on L2 via cast send.
-#       The system posts a batch on L1 somewhere in that range.
+#  4. Send the pre-signed user tx
+#     Publishes the raw tx created in step 2.
+#     The system/sequencer intercepts it from the mempool, constructs
+#     the matching batch, and includes it in a block.
 # ══════════════════════════════════════════════
-L1_BLOCK=""       # set by range search in step 4
+L1_BLOCK=""       # set below: L1 trigger = user tx block, L2 trigger = found via L2 block ref
 L2_BLOCK=""       # set by L2 trigger receipt only
-L1_BATCH_TX=""    # set by VerifyL1Batch on PASS
+L1_BATCH_TX=""    # set by find_batch_block_by_l2_ref or VerifyL1Batch
 
-# Helper: run the Execute contract (read-only) to get target/value/calldata,
-# then send via cast send. Returns the tx hash.
-_send_user_tx() {
-    local sol="$1" contract="$2" rpc="$3" pk="$4"
-
-    # Run the script read-only to get TARGET, VALUE, CALLDATA
-    local out
-    out=$(forge script "$sol:$contract" --rpc-url "$rpc" 2>&1)
-    local target value calldata
-    target=$(extract "$out" "TARGET")
-    value=$(extract "$out" "VALUE")
-    calldata=$(extract "$out" "CALLDATA")
-
-    echo "target: $target"
-    echo "calldata: $calldata"
-    echo "value: $value"
-
-    # Send the tx via cast send (bypasses forge simulation entirely)
-    # --gas-limit: hardcode to avoid eth_estimateGas failure (tx would revert without the batch)
-    local send_out
-    send_out=$(cast send "$target" "$calldata" \
-        --value "${value}wei" \
-        --gas-limit 500000 \
-        --private-key "$pk" \
-        --rpc-url "$rpc" \
-        --json 2>&1) || true
-
-    local tx_hash block_number status
-    tx_hash=$(echo "$send_out" | jq -r '.transactionHash // empty')
-    block_number=$(echo "$send_out" | jq -r '.blockNumber // empty')
-    status=$(echo "$send_out" | jq -r '.status // empty')
-
-    if [[ -z "$tx_hash" ]]; then
-        echo "ERROR: cast send failed"
-        echo "$send_out"
-        return 1
-    fi
-
-    echo "tx: $tx_hash"
-    echo "block: $block_number (status: $status)"
-
-    # Return block number (decimal)
-    TX_HASH="$tx_hash"
-    TX_BLOCK_NUMBER=$(printf "%d" "$block_number")
-}
-
-if grep -q 'contract ExecuteNetworkL2 ' "$SOL"; then
+if [[ "$_TRIGGER_CHAIN" == "L2" ]]; then
     # ── L2 trigger ──
     echo ""
     echo "====== Execute L2 (user tx) ======"
@@ -183,59 +157,84 @@ if grep -q 'contract ExecuteNetworkL2 ' "$SOL"; then
     # Snapshot L1 block before L2 tx — we'll search [before..after] for the batch
     L1_BLOCK_BEFORE=$(cast block-number --rpc-url "$RPC")
 
-    _send_user_tx "$SOL" "ExecuteNetworkL2" "$L2_RPC" "$PK"
+    publish_user_tx "$L2_RPC"
     L2_BLOCK="$TX_BLOCK_NUMBER"
 
     # Wait for the system to see our tx and post the batch on L1
     echo "Waiting for system to process..."
     sleep 5
 
-    # Snapshot L1 block after — batch should be in [before..after]
+    # Snapshot L1 block after — wait for +1 block to exist so the range is fully mined
     L1_BLOCK_AFTER=$(( $(cast block-number --rpc-url "$RPC") + 1 ))
+    echo "Waiting for L1 block $L1_BLOCK_AFTER to appear..."
+    for _i in $(seq 1 30); do
+        _CURRENT=$(cast block-number --rpc-url "$RPC")
+        [[ "$_CURRENT" -ge "$L1_BLOCK_AFTER" ]] && break
+        sleep 1
+    done
     echo "L1 block range: $L1_BLOCK_BEFORE..$L1_BLOCK_AFTER"
 else
     # ── L1 trigger ──
     echo ""
     echo "====== Execute L1 (user tx) ======"
 
-    _send_user_tx "$SOL" "ExecuteNetwork" "$RPC" "$PK"
-    L1_BLOCK_BEFORE="$TX_BLOCK_NUMBER"
+    publish_user_tx "$RPC"  # sets TX_HASH, TX_BLOCK_NUMBER
+    L1_BLOCK="$TX_BLOCK_NUMBER"  # batch is always in the same block as the user tx
 
-    # Wait for the system to include our tx + batch in a block
+    # Wait for the system to process
     echo "Waiting for system to process..."
     sleep 5
-
-    L1_BLOCK_AFTER=$(cast block-number --rpc-url "$RPC")
-    echo "Searching blocks $L1_BLOCK_BEFORE..$L1_BLOCK_AFTER for batch..."
 fi
 
 # ══════════════════════════════════════════════
-#  4. Verify L1 batch (BatchPosted event)
-#     Search [L1_BLOCK_BEFORE..L1_BLOCK_AFTER] for
-#     a block containing our expected entries.
-#     The system intercepts the user tx, constructs the batch,
-#     and includes it in a block within this range.
+#  4. Find & verify L1 batch (BatchPosted event)
+#     L1 trigger: batch is in the same block as the user tx.
+#     L2 trigger: find the batch whose callData references our L2 block.
+#     Then verify that the batch entries match expected hashes.
 # ══════════════════════════════════════════════
 FAILED=false
 L1_OK=true
 L2_OK=true
 L2_CALL_OK=true
 
-echo ""
-echo "====== Verify L1 Batch (range $L1_BLOCK_BEFORE..$L1_BLOCK_AFTER) ======"
-L1_VERIFY=$(forge script script/e2e/shared/Verify.s.sol:VerifyL1BatchRange \
-    --rpc-url "$RPC" \
-    --sig "run(uint256,uint256,address,bytes32[])" \
-    "$L1_BLOCK_BEFORE" "$L1_BLOCK_AFTER" "$ROLLUPS" "$EXPECTED_L1_HASHES" 2>&1) \
-    && L1_OK=true || L1_OK=false
+# ── Find the L1 batch block ──
+if [[ "$_TRIGGER_CHAIN" == "L2" ]]; then
+    # L2 trigger: find batch by L2 block reference
+    echo ""
+    echo "====== Find L1 Batch (L2 block $L2_BLOCK in L1 range $L1_BLOCK_BEFORE..$L1_BLOCK_AFTER) ======"
+    if find_batch_block_by_l2_ref "$L2_BLOCK" "$L1_BLOCK_BEFORE" "$L1_BLOCK_AFTER" "$ROLLUPS" "$RPC"; then
+        L1_BLOCK="$FOUND_L1_BLOCK"
+        L1_BATCH_TX="$FOUND_BATCH_TX"
+        echo "Found batch in L1 block $L1_BLOCK (tx $L1_BATCH_TX)"
+    else
+        # This should not happen — we already waited for L1_BLOCK_AFTER (+1) to exist.
+        # If we still can't find the batch, the system likely didn't process the L2 tx.
+        # No L1 diagnostic info is available since we couldn't identify the batch block.
+        echo "ERROR: No batch found referencing L2 block $L2_BLOCK in L1 range $L1_BLOCK_BEFORE..$L1_BLOCK_AFTER"
+        echo "  (no L1 diagnostic info available — could not identify the batch block)"
+        FAILED=true
+        L1_OK=false
+    fi
+fi
 
+# ── Verify L1 batch entries ──
+echo ""
+echo "====== Verify L1 Batch (block $L1_BLOCK) ======"
 if $L1_OK; then
-    echo "$L1_VERIFY" | grep "PASS"
-    L1_BATCH_TX=$(extract "$L1_VERIFY" "L1_BATCH_TX")
-    L1_BLOCK=$(extract "$L1_VERIFY" "L1_MATCH_BLOCK")
-else
-    FAILED=true
-    echo "L1 VERIFICATION FAILED"
+    L1_VERIFY=$(forge script script/e2e/shared/Verify.s.sol:VerifyL1Batch \
+        --rpc-url "$RPC" \
+        --sig "run(uint256,address,bytes32[])" \
+        "$L1_BLOCK" "$ROLLUPS" "$EXPECTED_L1_HASHES" 2>&1) \
+        && L1_OK=true || L1_OK=false
+
+    if $L1_OK; then
+        echo "$L1_VERIFY" | grep "PASS"
+        # For L1 trigger, extract batch tx from verify output
+        [[ -z "${L1_BATCH_TX:-}" ]] && L1_BATCH_TX=$(extract "$L1_VERIFY" "L1_BATCH_TX")
+    else
+        FAILED=true
+        echo "L1 VERIFICATION FAILED"
+    fi
 fi
 
 # ══════════════════════════════════════════════

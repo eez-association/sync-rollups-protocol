@@ -314,6 +314,22 @@ L2 table (2 entries, chained in a single executeIncomingCrossChainCall tx):
 
 The L2 table entry trigger is always a **RESULT** hash (what the previous call produced), not a CALL hash. The `nextAction` is either a CALL (chaining) or a RESULT (terminal). `EXPECTED_L2_CALL_HASHES` always has exactly **1 entry** — the initial `executeIncomingCrossChainCall` / `executeCrossChainCall`.
 
+## Pitfall: Terminal RESULT in Nested Calls
+
+When a scenario has **nested calls** (e.g. L2→L1→L2), the terminal `nextAction` of the innermost entry must reflect the **outer** call's return, not the inner call's.
+
+Example from `nestedCounterL2`: Alice calls `incrementProxy()` (void) on L2, which internally calls `CounterL2.increment()` (returns `uint256(1)`). On L2, the execution table has:
+
+```
+entry[0]: trigger=hash(CALL to CAP1)       → nextAction=CALL to CounterL2 (scope=[0])
+entry[1]: trigger=hash(RESULT(uint256(1)))  → nextAction=RESULT(void)  ← terminal
+```
+
+- The **trigger** hash of entry[1] uses the inner RESULT (`_processCallAtScope` builds `RESULT{rollupId: action.rollupId, data: uint256(1)}`). This is correct.
+- The **terminal** nextAction must carry the outer call's return: `incrementProxy()` is void, so `data: ""`. The `rollupId` matches the outer CALL's rollupId (0 in this case).
+
+If you reuse the inner RESULT as the terminal, `_resolveScopes` will return the wrong data to the caller.
+
 ## Key Invariants
 
 - **One execution tx per chain**: Each scenario produces exactly 1 execution tx on L1 and 1 on L2. All cross-chain actions (including nested scoped calls) are chained within those txs. Splitting a single flow into multiple execution txs is a bug. (This does not count the `postBatch`/`loadExecutionTable` txs which are separate setup txs in the same block.)

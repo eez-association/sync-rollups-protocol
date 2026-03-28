@@ -5,20 +5,7 @@ import {Test, Vm} from "forge-std/Test.sol";
 import {Rollups, RollupConfig} from "../src/Rollups.sol";
 import {Action, ActionType, ExecutionEntry, StateDelta, ProxyInfo} from "../src/ICrossChainManager.sol";
 import {CrossChainProxy} from "../src/CrossChainProxy.sol";
-import {IZKVerifier} from "../src/IZKVerifier.sol";
-
-/// @notice Mock ZK verifier that always returns true
-contract MockZKVerifier is IZKVerifier {
-    bool public shouldVerify = true;
-
-    function setVerifyResult(bool _shouldVerify) external {
-        shouldVerify = _shouldVerify;
-    }
-
-    function verify(bytes calldata, bytes32) external view override returns (bool) {
-        return shouldVerify;
-    }
-}
+import {MockZKVerifier} from "./helpers/TestBase.sol";
 
 /// @notice Simple target contract for testing
 contract TestTarget {

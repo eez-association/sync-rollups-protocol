@@ -7,6 +7,7 @@ import {Rollups} from "../../../src/Rollups.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
 import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
 import {Counter, CounterAndProxy} from "../../../test/mocks/CounterContracts.sol";
+import {L2TXBatcher, L2TXActionsBase, getOrCreateProxy} from "../shared/E2EHelpers.sol";
 
 // ═══════════════════════════════════════════════════════════════════════
 //  nestedCounterL2 — Scenario 3: L2 -> L1 -> L2 (nested scope)
@@ -29,23 +30,7 @@ import {Counter, CounterAndProxy} from "../../../test/mocks/CounterContracts.sol
 
 /// @dev Centralized action & entry definitions for the nestedCounterL2 scenario.
 ///   Single source of truth — used by Execute, ExecuteL2, and ComputeExpected.
-abstract contract NestedCounterL2Actions {
-    uint256 internal constant L2_ROLLUP_ID = 1;
-    bytes internal constant RLP_ENCODED_TX = hex"02";
-
-    function _l2txAction() internal pure returns (Action memory) {
-        return Action({
-            actionType: ActionType.L2TX,
-            rollupId: L2_ROLLUP_ID,
-            destination: address(0),
-            value: 0,
-            data: RLP_ENCODED_TX,
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-    }
+abstract contract NestedCounterL2Actions is L2TXActionsBase {
 
     function _callToCounterAndProxyL1Action(address cap1Addr, address alice)
         internal
@@ -78,7 +63,7 @@ abstract contract NestedCounterL2Actions {
             data: abi.encodeWithSelector(Counter.increment.selector),
             failed: false,
             sourceAddress: cap1Addr, // CounterAndProxyL1
-            sourceRollup: 0, // MAINNET
+            sourceRollup: MAINNET_ROLLUP_ID,
             scope: scope
         });
     }
@@ -111,12 +96,29 @@ abstract contract NestedCounterL2Actions {
         });
     }
 
-    function _l1Entries(address counterL2, address cap1Addr, address alice)
+    /// @dev Spec C.6: Terminal RESULT for L2TX flows.
+    ///   rollupId = L2_ROLLUP_ID (the rollup that triggered the L2TX),
+    ///   data = "" (empty), sourceAddress = address(0), sourceRollup = 0.
+    function _terminalResultAction() internal pure returns (Action memory) {
+        return Action({
+            actionType: ActionType.RESULT,
+            rollupId: L2_ROLLUP_ID,
+            destination: address(0),
+            value: 0,
+            data: "",
+            failed: false,
+            sourceAddress: address(0),
+            sourceRollup: 0,
+            scope: new uint256[](0)
+        });
+    }
+
+    function _l1Entries(address counterL2, address cap1Addr, address alice, bytes memory rlpEncodedTx)
         internal
         pure
         returns (ExecutionEntry[] memory entries)
     {
-        Action memory l2tx = _l2txAction();
+        Action memory l2tx = _l2txAction(rlpEncodedTx);
         Action memory callToCAP1 = _callToCounterAndProxyL1Action(cap1Addr, alice);
         Action memory callToC2 = _callToCounterL2Action(counterL2, cap1Addr, new uint256[](0));
         Action memory resultC2 = _resultFromCounterL2Action();
@@ -148,7 +150,7 @@ abstract contract NestedCounterL2Actions {
 
         entries[2].stateDeltas = deltas2;
         entries[2].actionHash = keccak256(abi.encode(resultCAP1));
-        entries[2].nextAction = resultCAP1;
+        entries[2].nextAction = _terminalResultAction();
     }
 
     function _l2Entries(address counterL2, address cap1Addr, address alice)
@@ -158,6 +160,7 @@ abstract contract NestedCounterL2Actions {
     {
         Action memory callToCAP1 = _callToCounterAndProxyL1Action(cap1Addr, alice);
         Action memory resultC2 = _resultFromCounterL2Action();
+        Action memory resultCAP1 = _resultFromCounterAndProxyL1Action();
 
         uint256[] memory scope0 = new uint256[](1);
         scope0[0] = 0;
@@ -171,17 +174,7 @@ abstract contract NestedCounterL2Actions {
 
         entries[1].stateDeltas = new StateDelta[](0);
         entries[1].actionHash = keccak256(abi.encode(resultC2));
-        entries[1].nextAction = resultC2;
-    }
-}
-
-/// @notice Batcher: postBatch + executeL2TX in one tx (local mode only)
-contract Batcher {
-    function execute(Rollups rollups, ExecutionEntry[] calldata entries, uint256 rollupId, bytes calldata rlpTx)
-        external
-    {
-        rollups.postBatch(entries, 0, "", "proof");
-        rollups.executeL2TX(rollupId, rlpTx);
+        entries[1].nextAction = resultCAP1;
     }
 }
 
@@ -212,12 +205,7 @@ contract Deploy is Script {
         Rollups rollups = Rollups(rollupsAddr);
 
         // Proxy for CounterL2, deployed on L1
-        address counterProxy;
-        try rollups.createCrossChainProxy(counterL2Addr, 1) returns (address proxy) {
-            counterProxy = proxy;
-        } catch {
-            counterProxy = rollups.computeCrossChainProxyAddress(counterL2Addr, 1);
-        }
+        address counterProxy = getOrCreateProxy(rollups, counterL2Addr, 1);
 
         // CounterAndProxyL1: target = CounterL2 proxy
         CounterAndProxy counterAndProxy = new CounterAndProxy(Counter(counterProxy));
@@ -242,12 +230,7 @@ contract Deploy2L2 is Script {
         CrossChainManagerL2 manager = CrossChainManagerL2(managerL2Addr);
 
         // Proxy for CounterAndProxyL1, deployed on L2
-        address counterAndProxyProxyL2;
-        try manager.createCrossChainProxy(counterAndProxyAddr, 0) returns (address proxy) {
-            counterAndProxyProxyL2 = proxy;
-        } catch {
-            counterAndProxyProxyL2 = manager.computeCrossChainProxyAddress(counterAndProxyAddr, 0);
-        }
+        address counterAndProxyProxyL2 = getOrCreateProxy(manager, counterAndProxyAddr, 0);
         console.log("COUNTER_AND_PROXY_PROXY_L2=%s", counterAndProxyProxyL2);
 
         vm.stopBroadcast();
@@ -303,9 +286,11 @@ contract Execute is Script, NestedCounterL2Actions {
 
         vm.startBroadcast();
 
-        Batcher batcher = new Batcher();
+        bytes memory rlpTx = vm.envBytes("RLP_ENCODED_TX");
+
+        L2TXBatcher batcher = new L2TXBatcher();
         batcher.execute(
-            Rollups(rollupsAddr), _l1Entries(counterL2Addr, counterAndProxyAddr, alice), L2_ROLLUP_ID, RLP_ENCODED_TX
+            Rollups(rollupsAddr), _l1Entries(counterL2Addr, counterAndProxyAddr, alice, rlpTx), L2_ROLLUP_ID, rlpTx
         );
 
         console.log("done");
@@ -348,20 +333,22 @@ contract ComputeExpected is ComputeExpectedBase, NestedCounterL2Actions {
         address counterL2Addr = vm.envAddress("COUNTER_L2");
         address counterAndProxyAddr = vm.envAddress("COUNTER_AND_PROXY");
         address alice = vm.envAddress("ALICE");
+        bytes memory rlpTx = vm.envBytes("RLP_ENCODED_TX");
 
         // Actions (single source of truth)
-        Action memory l2txAction = _l2txAction();
+        Action memory l2txAction = _l2txAction(rlpTx);
         Action memory callToCounterAndProxyL1 = _callToCounterAndProxyL1Action(counterAndProxyAddr, alice);
         Action memory callToCounterL2 = _callToCounterL2Action(counterL2Addr, counterAndProxyAddr, new uint256[](0));
         Action memory resultFromCounterL2 = _resultFromCounterL2Action();
         Action memory resultFromCounterAndProxyL1 = _resultFromCounterAndProxyL1Action();
+        Action memory terminalResult = _terminalResultAction();
 
         uint256[] memory scope0 = new uint256[](1);
         scope0[0] = 0;
         Action memory callToCounterL2Scoped = _callToCounterL2Action(counterL2Addr, counterAndProxyAddr, scope0);
 
         // Entries (single source of truth)
-        ExecutionEntry[] memory l1 = _l1Entries(counterL2Addr, counterAndProxyAddr, alice);
+        ExecutionEntry[] memory l1 = _l1Entries(counterL2Addr, counterAndProxyAddr, alice, rlpTx);
         ExecutionEntry[] memory l2 = _l2Entries(counterL2Addr, counterAndProxyAddr, alice);
 
         // Compute hashes from entries
@@ -382,7 +369,7 @@ contract ComputeExpected is ComputeExpectedBase, NestedCounterL2Actions {
         console.log("=== EXPECTED SUMMARY ===");
         _logEntrySummary(0, l2txAction, callToCounterAndProxyL1, false);
         _logEntrySummary(1, callToCounterL2, resultFromCounterL2, false);
-        _logEntrySummary(2, resultFromCounterAndProxyL1, resultFromCounterAndProxyL1, true);
+        _logEntrySummary(2, resultFromCounterAndProxyL1, terminalResult, true);
 
         // ── Human-readable: L1 execution table (3 entries) ──
         console.log("");
@@ -396,7 +383,7 @@ contract ComputeExpected is ComputeExpectedBase, NestedCounterL2Actions {
             l1[2].actionHash,
             l1[2].stateDeltas,
             _fmtResult(resultFromCounterAndProxyL1, "(void)"),
-            string.concat(_fmtResult(resultFromCounterAndProxyL1, "(void)"), "  (terminal)")
+            string.concat(_fmtResult(terminalResult, "(void)"), "  (terminal)")
         );
 
         // ── Human-readable: L2 execution table (2 entries) ──
@@ -407,7 +394,7 @@ contract ComputeExpected is ComputeExpectedBase, NestedCounterL2Actions {
             1,
             l2eh1,
             _fmtResult(resultFromCounterL2, "uint256(1)"),
-            string.concat(_fmtResult(resultFromCounterL2, "uint256(1)"), "  (terminal)")
+            string.concat(_fmtResult(resultFromCounterAndProxyL1, "(void)"), "  (terminal)")
         );
 
         // ── Human-readable: L2 calls (1 call) ──

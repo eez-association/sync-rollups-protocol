@@ -329,6 +329,8 @@ function executeL2TX(
 **Preconditions**:
 - `lastStateUpdateBlock == block.number`
 
+**`rlpEncodedTx` format**: The parameter is the user's original L2 transaction as a signed RLP-encoded transaction. Any Ethereum transaction type is valid (Legacy/EIP-155, EIP-1559, etc.). For example, a Legacy transaction is `rlp([nonce, gasPrice, gasLimit, to, value, calldata, v, r, s])`. The `to` and `calldata` fields correspond to the L2 contract and function the user called. The contract does not decode or validate the RLP — it is used as opaque bytes for action hash matching. The system/prover constructs it from the observed L2 transaction.
+
 **State transitions**:
 
 1. Construct L2TX action:
@@ -920,6 +922,30 @@ action = Action{
 ```
 
 **Key rule**: the scope field in an action used as an execution table key is always `[]` (root). Only the `nextAction` returned from a table entry can have a non-empty scope (for routing nested calls).
+
+### C.6 Terminal RESULT for L2TX
+
+The last entry consumed during an `executeL2TX` flow must have a terminal RESULT as its `nextAction`. This terminal closes the L2TX execution and is what `_resolveScopes` returns to `executeL2TX`.
+
+The terminal RESULT uses the rollupId that triggered the L2TX (the `rollupId` parameter passed to `executeL2TX`) and carries no return data:
+
+```
+terminalResult = Action{
+  actionType:   RESULT,
+  rollupId:     rollupId,          // the rollupId that triggered the L2TX (e.g. 1 for L2)
+  destination:  address(0),
+  value:        0,
+  data:         "",                // always empty — L2TX terminals carry no return data
+  failed:       false,
+  sourceAddress: address(0),
+  sourceRollup: 0,
+  scope:         []
+}
+```
+
+This applies to all L2TX flows regardless of nesting depth. Even if inner calls return data (e.g. `Counter.increment()` returns `uint256(1)`), the terminal RESULT is always void with the triggering rollupId.
+
+**L1 only**: This convention applies exclusively to the L1 `executeL2TX` terminal. On L2, `executeCrossChainCall` and `executeIncomingCrossChainCall` terminals carry the actual outer call's return value and rollupId (per §C.2), not the L2TX terminal format.
 
 ---
 

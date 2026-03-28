@@ -40,7 +40,31 @@ Example: `CALL(rollupId=0, sourceRollup=1)` (L2 calling L1) produces `RESULT(rol
 - `rollupId`: the target L2 rollup ID (e.g., `1`)
 - `sourceRollup`: always `MAINNET_ROLLUP_ID` (0) — L2TX is triggered from L1
 - All address fields are `address(0)` — L2TX has no specific caller/destination
-- `data`: RLP-encoded transaction bytes
+- `data`: the RLP-encoded signed L2 transaction (see below)
+
+### L2TX `data` encoding
+
+The `data` field of an L2TX action contains the user's original L2 transaction as a **signed RLP-encoded transaction**. The contract does not decode or validate the RLP — it is used as an opaque byte sequence for action hash matching via `keccak256(abi.encode(l2txAction))`. The system/prover constructs the RLP from the observed L2 transaction and includes it in the batch.
+
+Any Ethereum transaction type is valid. The two most common formats:
+
+**Legacy (Type 0, EIP-155)**:
+```
+rlp([nonce, gasPrice, gasLimit, to, value, calldata, v, r, s])
+```
+Signing hash: `keccak256(rlp([nonce, gasPrice, gasLimit, to, value, calldata, chainId, 0, 0]))`
+
+**EIP-1559 (Type 2)**:
+```
+0x02 || rlp([chainId, nonce, maxPriorityFeePerGas, maxFeePerGas, gasLimit, to, value, calldata, accessList, v, r, s])
+```
+Signing hash: `keccak256(0x02 || rlp([chainId, nonce, maxPriorityFeePerGas, maxFeePerGas, gasLimit, to, value, calldata, accessList]))`
+
+In both cases:
+- `to`: the L2 contract the user called (e.g., `CounterAndProxy` address on L2)
+- `calldata`: the function call data (e.g., `abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector)`)
+- `nonce`: the sender's L2 nonce at the time of signing
+- `v`, `r`, `s`: ECDSA signature components
 
 ### REVERT field rules
 
