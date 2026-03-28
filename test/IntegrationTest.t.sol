@@ -87,7 +87,7 @@ contract IntegrationTest is IntegrationTestBase {
         // D': proxy for D(CounterAndProxy on L2), lives on L1 — for Scenarios 2 & 4
         counterAndProxyL2ProxyL1 = rollups.createCrossChainProxy(address(counterAndProxyL2), L2_ROLLUP_ID);
 
-        // ── Scenario 5: REVERT_CONTINUE (L2TX cannot end with failed RESULT) ──
+        // ── Scenario 5: REVERT_CONTINUE (L2TX with failed inner call) ──
         revertCounterL1 = new RevertCounter();  // RC on L1
         revertCounterProxyL2 = managerL2.createCrossChainProxy(address(revertCounterL1), MAINNET_ROLLUP_ID);  // RC' on L2
     }
@@ -810,20 +810,18 @@ contract IntegrationTest is IntegrationTestBase {
     // ═══════════════════════════════════════════════════════════════════════
     //  Scenario 5: Alice -> RC' -> RC (reverts)  [L2 -> L1, REVERT_CONTINUE]
     //
-    //  RC reverts locally on L1 inside executeL2TX. Since L2TX cannot end
-    //  with a failed RESULT, REVERT_CONTINUE handles the failure so
-    //  executeL2TX succeeds. The L2 side is terminal failure.
+    //  RC reverts locally on L1 inside executeL2TX. L2TX applies state deltas
+    //  on consumption — ScopeReverted is needed to roll them back.
+    //  REVERT_CONTINUE provides the continuation so executeL2TX succeeds.
     //
     //  Phase 1 — L1 execution via executeL2TX (REVERT_CONTINUE):
     //    executeL2TX(rlpAliceTx) -> L2TX matched -> CALL to RC at scope [0]
     //    -> newScope([0]) -> _processCallAtScope:
     //       - auto-creates proxy for Alice on L1
     //       - proxy.executeOnBehalf(RC, increment) -> RC.increment() REVERTS
-    //       - RESULT(failed) consumed -> REVERT(scope=[0])
-    //       - _getRevertContinuation -> REVERT_CONTINUE consumed
-    //       - ScopeReverted(RESULT(ok), S2, L2) thrown
-    //    -> Parent newScope([]) catches -> _handleScopeRevert -> state = S2
-    //    -> Terminal RESULT(ok) -> executeL2TX succeeds
+    //       - RESULT(failed) consumed (S1→S2) -> REVERT(scope=[0])
+    //       - REVERT_CONTINUE consumed (S2→S3) -> ScopeReverted -> state restored to S2
+    //    -> executeL2TX succeeds
     //
     //  Phase 2 — L2 execution via executeCrossChainCall (terminal failure):
     //    Alice calls RC'(proxy for RC on L1) on L2
@@ -934,7 +932,7 @@ contract IntegrationTest is IntegrationTestBase {
         bytes32 s2 = keccak256("l2-state-s5-step2");
         bytes32 s3 = keccak256("l2-state-s5-step3");
 
-        // postBatch: 3 deferred entries — L2TX cannot end with failed RESULT
+        // postBatch: 3 entries — L2TX applies deltas, ScopeReverted needed to roll back
         {
             StateDelta[] memory deltas0 = new StateDelta[](1);
             deltas0[0] = StateDelta({ rollupId: L2_ROLLUP_ID, currentState: s0, newState: s1, etherDelta: 0 });
@@ -971,7 +969,7 @@ contract IntegrationTest is IntegrationTestBase {
         // RC.counter should still be 0 — increment() reverted inside the scope
         assertEq(revertCounterL1.counter(), 0, "RC counter should be 0 (reverted)");
         // State should be S2 — restored by _handleScopeRevert after ScopeReverted
-        assertEq(_getRollupState(L2_ROLLUP_ID), s2, "L2 state should be S2 (restored after revert)");
+        assertEq(_getRollupState(L2_ROLLUP_ID), s2, "L2 state should be S2 (restored after ScopeReverted)");
 
         // ════════════════════════════════════════════
         //  Phase 2: L2 — Alice calls RC' (expected to revert)

@@ -14,6 +14,16 @@ gh auth login
 
 All issues go to: `https://github.com/eez-association/sync-rollup-composer`
 
+## Check Devnet Health
+
+Before creating an issue, verify the devnet is alive and capture the running git commit:
+
+```bash
+curl -s https://eez.dev/health
+```
+
+This returns the current git commit of the deployed devnet. Include this commit in the issue body so the team knows exactly which version exhibited the bug.
+
 ## Creating an Issue from a Problem File
 
 Each problem file in `gh_issue/` can be used directly as the issue body:

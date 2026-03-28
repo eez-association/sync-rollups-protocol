@@ -10,11 +10,12 @@ import {RevertCounter} from "../../../test/mocks/CounterContracts.sol";
 import {L2TXBatcher, L2TXActionsBase, getOrCreateProxy} from "../shared/E2EHelpers.sol";
 
 // ═══════════════════════════════════════════════════════════════════════
-//  revertCounterL2 — L2 -> L1 with scoped REVERT_CONTINUE on L1
+//  revertCounterL2 — L2 -> L1 with REVERT_CONTINUE on L1 (L2TX)
 //
-//  RevertCounter reverts locally on L1 inside executeL2TX. Since L2TX
-//  cannot end with a failed RESULT, REVERT_CONTINUE handles the failure
-//  so executeL2TX succeeds. The L2 side is terminal failure.
+//  RC reverts locally on L1 inside executeL2TX. L2TX applies state deltas
+//  when consuming entries — even though RC failed, the deltas from entry[0]
+//  are committed within the scope. REVERT_CONTINUE is needed so
+//  ScopeReverted can roll back those committed deltas.
 //
 //  Alice calls RevertCounter's proxy on L2
 //    -> executeCrossChainCall -> CALL consumed -> RESULT(failed=true)
@@ -24,11 +25,11 @@ import {L2TXBatcher, L2TXActionsBase, getOrCreateProxy} from "../shared/E2EHelpe
 //  Meanwhile on L1 (system posts batch + executeL2TX):
 //    postBatch stores 3 deferred entries
 //    executeL2TX triggers scope navigation:
-//      -> L2TX consumed -> CALL(RevertCounter, scope=[0])
+//      -> L2TX consumed (S0→S1) -> CALL(RevertCounter, scope=[0])
 //      -> newScope([0]): RevertCounter.increment() reverts on L1
-//      -> RESULT(failed) consumed -> REVERT(scope=[0])
-//      -> _getRevertContinuation -> REVERT_CONTINUE consumed
-//      -> ScopeReverted caught -> state restored to S2
+//      -> RESULT(failed) consumed (S1→S2) -> REVERT(scope=[0])
+//      -> _getRevertContinuation -> REVERT_CONTINUE consumed (S2→S3)
+//      -> ScopeReverted: rolls back S2,S3 -> state restored to S2
 //      -> continuation RESULT(ok) -> executeL2TX succeeds
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -167,7 +168,7 @@ abstract contract RevertCounterL2Actions is L2TXActionsBase {
         entries[1].nextAction = revertAct;
 
         // Entry 2: REVERT_CONTINUE -> final RESULT(ok)
-        // L2TX cannot end with failed RESULT — REVERT_CONTINUE ensures executeL2TX succeeds.
+        // L2TX applies deltas on consumption — ScopeReverted needed to roll them back.
         entries[2].stateDeltas = deltas2;
         entries[2].actionHash = keccak256(abi.encode(revertCont));
         entries[2].nextAction = finalResult;
@@ -264,7 +265,7 @@ contract ExecuteL2 is Script, RevertCounterL2Actions {
 }
 
 /// @title Execute — Local mode: postBatch + executeL2TX via L2TXBatcher on L1
-/// @dev executeL2TX succeeds — REVERT_CONTINUE ensures L2TX ends with RESULT(ok).
+/// @dev executeL2TX succeeds — REVERT_CONTINUE handles RC's failure within scope.
 /// Env: ROLLUPS, REVERT_COUNTER_L1, ALICE
 contract Execute is Script, RevertCounterL2Actions {
     function run() external {

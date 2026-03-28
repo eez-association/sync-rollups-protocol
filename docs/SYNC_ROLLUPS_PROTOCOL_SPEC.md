@@ -1058,11 +1058,16 @@ Example: on L2, SCA calls SCB which makes a cross-chain call to L1. The L1 call 
 6. The parent `newScope` (or `_resolveScopes`) catches it via try/catch and calls `_handleScopeRevert`
 7. `_handleScopeRevert` restores `rollups[rollupId].stateRoot = stateRoot` and returns continuation
 
-This implements scope-level atomicity: previously-committed cross-chain results are rolled back, and execution continues with the REVERT_CONTINUE path.
+This implements scope-level atomicity: previously-committed results are rolled back, and execution continues with the REVERT_CONTINUE path.
+
+**REVERT_CONTINUE is also required for L2TX with failed inner calls.** `executeL2TX` applies state deltas when consuming entries. Even if the inner call fails, the deltas are committed within the scope. `ScopeReverted` must roll them back.
+
+**RESULT(failed) → RESULT(ok) (no REVERT_CONTINUE):** When an inner call fails inside `executeCrossChainCall` (not `executeL2TX`), no state deltas were committed — `executeCrossChainCall` reverts entirely on failure. The entry can map `RESULT(failed)` directly to `RESULT(ok)` without `ScopeReverted`.
 
 **When to use which:**
-- **Terminal RESULT(failed)**: call reverted locally — nothing to undo
-- **REVERT/REVERT_CONTINUE**: scope reverted after containing successful cross-chain calls — committed state must be undone
+- **Terminal RESULT(failed)**: call failed, caller should fail too
+- **RESULT(failed) → RESULT(ok)**: inner call failed in `executeCrossChainCall` — no deltas to undo
+- **REVERT/REVERT_CONTINUE**: scope has committed state deltas that must be undone (L2TX, or successful calls)
 
 ---
 

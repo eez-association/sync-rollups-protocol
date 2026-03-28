@@ -405,12 +405,30 @@ On L1, `executeL2TX` processes this via scope navigation:
 
 **REVERT at parent scope**: A REVERT can target a scope higher than the current one. For example, REVERT at `[0]` while inside `newScope([0,0])` — the REVERT doesn't match scope `[0,0]`, so execution breaks out, and it's caught at `newScope([0])`.
 
+### Failed inner call without REVERT_CONTINUE (executeCrossChainCall only)
+
+When a scoped call **fails** inside `executeCrossChainCall` (not `executeL2TX`), no state deltas were committed within the scope — `executeCrossChainCall` reverts entirely on failure. The entry can map `RESULT(failed)` directly to `RESULT(ok)`:
+
+**Note**: This does NOT apply to `executeL2TX`. L2TX applies state deltas on entry consumption. Even if the inner call fails, the deltas from consumed entries are committed within the scope. `ScopeReverted` (via REVERT_CONTINUE) is needed to roll them back.
+
+```
+[0] DEFERRED   trigger: CALL(rollupId=L2, dest=D, scope=[])
+                next:    CALL(rollupId=MAINNET, dest=RC, scope=[0])
+                         — state delta S0→S1
+[1] DEFERRED   trigger: RESULT(rollupId=MAINNET, failed=true, data=<revert data>)
+                next:    RESULT(rollupId=L2, failed=false, data="")
+                         — state delta S1→S2
+```
+
+Flow: RC fails at scope `[0]` → RESULT(failed) consumed → nextAction is RESULT(ok) → `newScope([0])` breaks and returns RESULT(ok) → parent continues. No ScopeReverted needed — the EVM already rolled back RC's call effects when it reverted.
+
 ### When to use which revert pattern
 
 | Pattern | When | Result |
 |---------|------|--------|
-| **Terminal RESULT(failed)** | Call reverted locally — nothing to undo | Both sides revert |
-| **REVERT_CONTINUE** | Scope reverted after containing successful cross-chain calls — committed state must be undone | Scope rolled back, parent continues |
+| **Terminal RESULT(failed)** | Call failed, caller should fail too | Both sides revert |
+| **RESULT(failed) → RESULT(ok)** | Inner call failed in `executeCrossChainCall` — no deltas to undo | Parent succeeds |
+| **REVERT_CONTINUE** | Scope has committed state deltas that must be undone (L2TX, or successful calls) | ScopeReverted rolls back, parent continues |
 
 ### Same action executed multiple times
 
