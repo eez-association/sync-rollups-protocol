@@ -10,6 +10,14 @@ contract Counter {
     }
 }
 
+contract RevertCounter {
+    uint256 public counter;
+
+    function increment() external returns (uint256) {
+        revert("always reverts");
+    }
+}
+
 contract CounterAndProxy {
     Counter public target;
     uint256 public targetCounter;

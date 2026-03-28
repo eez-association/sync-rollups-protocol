@@ -8,10 +8,12 @@
 | B | `counterL2` | Counter | L2 | Simple increment, returns new value |
 | C | `counterL1` | Counter | L1 | Simple increment, returns new value |
 | D | `counterAndProxyL2` | CounterAndProxy | L2 | Calls C' proxy, updates local counter |
+| RC | `revertCounterL1` | RevertCounter | L1 | Always reverts on increment() |
 | B' | `counterProxy` | CrossChainProxy for B | L1 | Proxy so A can call B cross-chain |
 | C' | `counterProxyL2` | CrossChainProxy for C | L2 | Proxy so D can call C cross-chain |
 | A' | `counterAndProxyProxyL2` | CrossChainProxy for A | L2 | Proxy for Scenario 3 |
 | D' | `counterAndProxyL2ProxyL1` | CrossChainProxy for D | L1 | Proxy for Scenarios 2 & 4 |
+| RC' | `revertCounterProxyL2` | CrossChainProxy for RC | L2 | Proxy for Scenario 5 |
 
 ## The 4 Scenarios
 
@@ -23,6 +25,7 @@ Every scenario executes on BOTH L1 and L2.
 | 2 | Alice -> D (-> C') -> C | L2 -> L1 | Simple reverse: Phase 1: L1 executes C via `executeL2TX` + scope nav. Phase 2: L2 resolves via execution table. |
 | 3 | Alice -> A' (-> A -> B') -> B | L2 -> L1 -> L2 | Nested: Phase 1: L1 runs A via `executeL2TX` (A calls B' reentrant). Phase 2: L2 runs B via scope navigation through A'. |
 | 4 | Alice -> D' (-> D -> C') -> C | L1 -> L2 -> L1 | Nested: Phase 1: L2 runs D via `executeIncomingCrossChainCall` (D calls C' reentrant). Phase 2: L1 runs C via scope navigation through D'. |
+| 5 | Alice -> RC' -> RC (reverts) | L2 -> L1 | REVERT_CONTINUE: Phase 1: L1 runs RC via `executeL2TX` — RC reverts locally, REVERT_CONTINUE ensures executeL2TX succeeds (L2TX cannot end with failed RESULT). Phase 2: L2 Alice calls RC' — terminal failure (executeCrossChainCall can fail). |
 
 ## Design Decisions
 
@@ -356,6 +359,47 @@ Execution: Alice calls D' -> `executeCrossChainCall` -> CALL#1 matches -> CALL#2
 
 Assertions: `counterL1.counter() == 1`, L2 rollup stateRoot updated.
 
+### Scenario 5: Alice -> RC' -> RC (reverts) — REVERT_CONTINUE
+
+**Phase 1 (L1): Execute RC via executeL2TX — REVERT_CONTINUE (L2TX must succeed)**
+
+postBatch entries (3 deferred):
+```
+Entry 0: hash(L2TX) -> CALL(RC, scope=[0])
+  L2TX = {L2TX, rollupId=L2_ROLLUP_ID, dest=0, data=rlpEncodedTx, source=0, sourceRollup=MAINNET}
+  CALL = {CALL, rollupId=MAINNET_ROLLUP_ID, dest=revertCounterL1, data=increment,
+          source=Alice, sourceRollup=L2_ROLLUP_ID, scope=[0]}
+  stateDeltas = [{rollupId=L2, currentState=S0, newState=S1, etherDelta=0}]
+
+Entry 1: hash(RESULT(failed)) -> REVERT(scope=[0])
+  RESULT = {RESULT, rollupId=MAINNET_ROLLUP_ID, data=Error("always reverts"), failed=true}
+  REVERT = {REVERT, rollupId=L2_ROLLUP_ID, scope=[0]}
+  stateDeltas = [{rollupId=L2, currentState=S1, newState=S2, etherDelta=0}]
+
+Entry 2: hash(REVERT_CONTINUE) -> RESULT(ok, terminal)
+  REVERT_CONTINUE = {REVERT_CONTINUE, rollupId=L2_ROLLUP_ID, failed=true}
+  RESULT = {RESULT, rollupId=L2_ROLLUP_ID, data="", failed=false}
+  stateDeltas = [{rollupId=L2, currentState=S2, newState=S3, etherDelta=0}]
+```
+
+Execution: `executeL2TX` -> L2TX matched -> CALL(RC, scope=[0]) -> `newScope([0])` -> RC.increment() reverts -> RESULT(failed) consumes entry 1 -> REVERT(scope=[0]) -> `_getRevertContinuation` consumes entry 2 -> `ScopeReverted(RESULT(ok), S2, L2)` -> parent catches -> `_handleScopeRevert` restores state to S2 -> terminal RESULT(ok) -> success.
+
+L2TX cannot end with failed RESULT — REVERT_CONTINUE ensures executeL2TX succeeds. Entries [1] and [2] are consumed inside the reverting scope and rolled back by ScopeReverted. Final L2 state = S2.
+
+**Phase 2 (L2): Alice calls RC' — terminal failure**
+
+L2 execution table (1 entry):
+```
+Entry: hash(CALL) -> RESULT(failed)
+  CALL = {CALL, rollupId=MAINNET_ROLLUP_ID, dest=revertCounterL1, data=increment,
+          source=Alice, sourceRollup=L2_ROLLUP_ID, scope=[]}
+  RESULT = {RESULT, rollupId=MAINNET_ROLLUP_ID, data=Error("always reverts"), failed=true}
+```
+
+Execution: Alice calls RC' -> `executeCrossChainCall` -> CALL consumed -> RESULT(failed) -> `_resolveScopes` -> `CallExecutionFailed` -> reverts. Terminal failure is OK for `executeCrossChainCall` (unlike L2TX).
+
+Assertions: `revertCounterL1.counter() == 0`, L2 rollup stateRoot == S2.
+
 ## Visualizer Presentation Order
 
 The visualizer (`visualizator/index.html`) shows steps sequentially. The order follows the **arrow direction** of each scenario, NOT a fixed "always L1 first" or "always L2 first" rule.
@@ -396,8 +440,9 @@ For a new scenario with flow `X -> Y -> Z`:
 3. **Deeper nesting:** Current nested tests go 2 levels deep (scope=[0]). Should we test:
    - 3+ levels of nesting (scope=[0,0])
    - Multiple sibling calls (scope=[0], scope=[1])
-   - Mixed success/revert with `REVERT` and `REVERT_CONTINUE` actions
 
-4. **Multiple rollups:** All tests use a single L2 rollup. Should we test cross-chain calls spanning 3+ rollups?
+4. **Nested cross-chain reverts (TODO):** Scenario 5 covers single-hop REVERT_CONTINUE (L2→L1, the reverting call is the leaf). The hard unsupported case is **nested cross-chain reverts**: e.g. L2 → L1 → L2 where the inner L2 call reverts, and the REVERT/REVERT_CONTINUE chain must propagate back through scope navigation across multiple chains and execution tables. Also: REVERT_CONTINUE on L2 via `executeIncomingCrossChainCall` (B calls A cross-chain, A reverts on L1, B's scope handles it on L2).
 
-5. **Multiple entries in a batch:** Current tests post 1-2 entries per batch. Should we test batches with many entries, some immediate (actionHash=0) and some deferred?
+5. **Multiple rollups:** All tests use a single L2 rollup. Should we test cross-chain calls spanning 3+ rollups?
+
+6. **Multiple entries in a batch:** Current tests post 1-2 entries per batch. Should we test batches with many entries, some immediate (actionHash=0) and some deferred?
