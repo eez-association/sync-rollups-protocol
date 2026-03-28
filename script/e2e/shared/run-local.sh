@@ -69,7 +69,7 @@ if grep -q 'contract ExecuteNetworkL2 ' "$SOL"; then
 
     export RLP_ENCODED_TX=$(cast mktx "$_TX_TARGET" "$_TX_CALLDATA" \
         --value "${_TX_VALUE}wei" \
-        --gas-limit 500000 \
+        --gas-limit 2000000 \
         --nonce "$_USER_NONCE" \
         --private-key "$PK" \
         --rpc-url "$L2_RPC")

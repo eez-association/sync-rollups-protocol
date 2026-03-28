@@ -106,7 +106,7 @@ echo "value: $_TX_VALUE"
 # cast mktx creates a signed raw tx (queries chain for nonce + gas price, does NOT broadcast)
 export RLP_ENCODED_TX=$(cast mktx "$_TX_TARGET" "$_TX_CALLDATA" \
     --value "${_TX_VALUE}wei" \
-    --gas-limit 500000 \
+    --gas-limit 2000000 \
     --private-key "$PK" \
     --rpc-url "$_TRIGGER_RPC")
 
@@ -118,7 +118,8 @@ export RLP_ENCODED_TX=$(cast mktx "$_TX_TARGET" "$_TX_CALLDATA" \
 # ══════════════════════════════════════════════
 echo ""
 echo "====== Compute Expected Entries ======"
-COMPUTE_OUT=$(forge script "$SOL:ComputeExpected" --rpc-url "$RPC" 2>&1)
+_SENDER=$(cast wallet address --private-key "$PK")
+COMPUTE_OUT=$(forge script "$SOL:ComputeExpected" --rpc-url "$RPC" --sender "$_SENDER" 2>&1)
 
 EXPECTED_L1_HASHES=$(extract "$COMPUTE_OUT" "EXPECTED_L1_HASHES")
 echo "L1 expected: $EXPECTED_L1_HASHES"
