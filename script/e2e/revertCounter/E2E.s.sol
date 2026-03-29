@@ -84,17 +84,8 @@ abstract contract RevertCounterActions {
         entries[0].nextAction = result;
     }
 
-    function _l2Entries() internal pure returns (ExecutionEntry[] memory entries) {
-        Action memory result = _resultFailedAction();
-
-        entries = new ExecutionEntry[](1);
-
-        // Entry 0: RESULT(failed) -> RESULT(failed) (terminal, self-referencing)
-        // No REVERT/REVERT_CONTINUE — the call reverted locally on L2, no cross-chain call to propagate.
-        entries[0].stateDeltas = new StateDelta[](0);
-        entries[0].actionHash = keccak256(abi.encode(result));
-        entries[0].nextAction = result;
-    }
+    // No _l2Entries — terminal revert means no L2 execution table.
+    // The call reverts on L1, no state change propagated to L2.
 }
 
 /// @notice Batcher: postBatch + proxy call in one tx (local mode only)
@@ -139,42 +130,15 @@ contract Deploy is Script {
     }
 }
 
-/// @title ExecuteL2 — Load L2 execution table + executeIncomingCrossChainCall on L2
-/// @dev The incoming call reverts — RESULT(failed=true) is terminal (no scope nesting).
-///   1. Load L2 table: 1 entry (self-referencing terminal)
-///      - RESULT(failed) -> RESULT(failed) (terminal)
-///   2. System calls executeIncomingCrossChainCall(RevertCounter, increment, ...)
-///      -> RevertCounter reverts -> RESULT(failed=true) -> CallExecutionFailed
-///      -> executeIncomingCrossChainCall reverts (expected, caught by low-level call)
-/// Env: MANAGER_L2, REVERT_COUNTER_L2, REVERT_COUNTER_PROXY
-contract ExecuteL2 is Script, RevertCounterActions {
+/// @title ExecuteL2 — No-op: terminal revert means no L2 execution
+/// @dev The call reverts on L1 — no state change is propagated to L2.
+///      In network mode, the system does NOT load an execution table or call
+///      executeIncomingCrossChainCall for terminal reverts.
+///      This is a no-op so the local runner can proceed.
+contract ExecuteL2 is Script {
     function run() external {
-        address managerL2Addr = vm.envAddress("MANAGER_L2");
-        address revertCounterL2Addr = vm.envAddress("REVERT_COUNTER_L2");
-        address revertCounterProxyAddr = vm.envAddress("REVERT_COUNTER_PROXY");
-
-        CrossChainManagerL2 manager = CrossChainManagerL2(managerL2Addr);
-
         vm.startBroadcast();
-
-        manager.loadExecutionTable(_l2Entries());
-
-        // System executes the incoming cross-chain call.
-        // RevertCounter.increment() reverts on L2 — RESULT(failed=true) is terminal.
-        // executeIncomingCrossChainCall reverts with CallExecutionFailed (expected).
-        // Use low-level call so forge sees a successful tx and continues.
-        (bool success,) = address(manager).call(
-            abi.encodeCall(
-                CrossChainManagerL2.executeIncomingCrossChainCall,
-                (revertCounterL2Addr, 0, abi.encodeWithSelector(RevertCounter.increment.selector), revertCounterProxyAddr, 0, new uint256[](0))
-            )
-        );
-        success; // Expected to revert — suppress unused warning
-
-        console.log("done");
-        // counter should still be 0 — increment() reverted
-        console.log("counter=%s", RevertCounter(revertCounterL2Addr).counter());
-
+        console.log("done (no-op: terminal revert, no L2 activity)");
         vm.stopBroadcast();
     }
 }
@@ -245,22 +209,21 @@ contract ComputeExpected is ComputeExpectedBase, RevertCounterActions {
 
         // Entries (single source of truth)
         ExecutionEntry[] memory l1 = _l1Entries(revertCounterL2Addr, alice);
-        ExecutionEntry[] memory l2 = _l2Entries();
 
         // Compute hashes from entries
         bytes32 l1Hash = _entryHash(l1[0].actionHash, l1[0].nextAction);
-        bytes32 l2eh0 = _entryHash(l2[0].actionHash, l2[0].nextAction);
-        bytes32 callActionHash = l1[0].actionHash;
 
         // Parseable lines
+        // Terminal revert: no L2 activity — the call reverts, no state change propagated to L2.
         console.log("EXPECTED_L1_HASHES=[%s]", vm.toString(l1Hash));
-        console.log("EXPECTED_L2_HASHES=[%s]", vm.toString(l2eh0));
-        console.log("EXPECTED_L2_CALL_HASHES=[%s]", vm.toString(callActionHash));
+        console.log("EXPECTED_L2_HASHES=[]");
+        console.log("EXPECTED_L2_CALL_HASHES=[]");
 
         // Summary
         console.log("");
         console.log("=== EXPECTED SUMMARY ===");
         _logEntrySummary(0, callAction, resultFailed, false);
+        console.log("  L2: (none) -- terminal revert, no L2 state change");
 
         // Human-readable: L1 execution table (1 entry)
         console.log("");
@@ -269,17 +232,9 @@ contract ComputeExpected is ComputeExpectedBase, RevertCounterActions {
             0, l1[0].actionHash, l1[0].stateDeltas, _fmtCall(callAction), _fmtResult(resultFailed, "(revert data)")
         );
 
-        // Human-readable: L2 execution table (1 entry)
+        // No L2 execution table — terminal revert
         console.log("");
-        console.log("=== EXPECTED L2 EXECUTION TABLE (1 entry) ===");
-        _logL2Entry(
-            0, l2eh0, _fmtResult(resultFailed, "(revert data)"),
-            string.concat(_fmtResult(resultFailed, "(revert data)"), "  (terminal)")
-        );
-
-        // Human-readable: L2 calls (1 call)
-        console.log("");
-        console.log("=== EXPECTED L2 CALLS (1 call) ===");
-        _logL2Call(0, callActionHash, callAction);
+        console.log("=== EXPECTED L2 EXECUTION TABLE (0 entries -- terminal revert) ===");
+        console.log("  (none)");
     }
 }

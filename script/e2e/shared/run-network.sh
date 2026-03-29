@@ -300,6 +300,7 @@ fi
 #  6. Verify L2 table (ExecutionTableLoaded event)
 #     The system must have loaded the execution table on L2.
 #     Missing EXPECTED_L2_HASHES or blocks is an error.
+#     Empty [] = no L2 activity expected (e.g. terminal revert — skip verification).
 # ══════════════════════════════════════════════
 echo ""
 echo "====== Verify L2 Table ======"
@@ -307,6 +308,9 @@ if [[ -z "${EXPECTED_L2_HASHES:-}" ]]; then
     echo "ERROR: No EXPECTED_L2_HASHES — add to ComputeExpected"
     FAILED=true
     L2_OK=false
+elif [[ "$EXPECTED_L2_HASHES" == "[]" ]]; then
+    echo "SKIP: No L2 entries expected (terminal revert — no L2 state change)"
+    L2_OK=true
 elif [[ "$L2_BLOCKS" == "[]" ]]; then
     echo "ERROR: No L2 blocks found"
     FAILED=true
@@ -333,8 +337,8 @@ fi
 echo ""
 echo "====== Verify L2 Calls ======"
 
-if [[ -z "${EXPECTED_L2_CALL_HASHES:-}" ]]; then
-    echo "SKIP: no EXPECTED_L2_CALL_HASHES (not applicable for this scenario)"
+if [[ -z "${EXPECTED_L2_CALL_HASHES:-}" || "${EXPECTED_L2_CALL_HASHES}" == "[]" ]]; then
+    echo "SKIP: no L2 calls expected"
 elif [[ "$L2_BLOCKS" == "[]" ]]; then
     echo "ERROR: No L2 blocks found"
     FAILED=true

@@ -353,6 +353,8 @@ Both sides see failure. No cross-chain revert to propagate — the call failed o
 
 **Terminal failure = no state changes.** When `executeCrossChainCall` or `executeIncomingCrossChainCall` reverts with `CallExecutionFailed`, the entire call is rolled back by the EVM — including any state deltas that were applied during entry consumption. The entries remain in the table (consumption undone), and no rollup state is modified. The Batcher catches the revert via low-level call so `postBatch` effects persist.
 
+**Terminal failure = no L2 execution table.** Because a terminal revert causes no state change on L2, the system does **not** load an execution table or call `executeIncomingCrossChainCall` on L2. The L1 batch is posted (with the revert state delta), but L2 has nothing to execute — the call would just revert. E2E verification should confirm the **absence** of L2 entries for terminal revert scenarios.
+
 **L2TX cannot end with a failed RESULT.** `executeL2TX` represents an L2 transaction being committed on L1. If it reverted with `CallExecutionFailed`, the entire L2TX would be un-processed — state deltas rolled back, entries unconsumed. A batcher should never post an L2TX entry whose execution chain ends in terminal failure. If an inner call within an L2TX fails, it must be handled via REVERT_CONTINUE (scope unwound, L2TX continues to a successful terminal RESULT).
 
 ### Revert flow — REVERT_CONTINUE (scope revert after successful cross-chain calls)
