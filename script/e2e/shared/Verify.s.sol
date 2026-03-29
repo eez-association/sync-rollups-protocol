@@ -437,6 +437,72 @@ contract VerifyL2Calls is VerifyHelpers {
     }
 }
 
+/// @title VerifyL2Absent — Verify that specific entry hashes are NOT present on L2
+/// @dev Used for terminal revert scenarios: the L1 batch is posted but no L2 table should exist.
+///   Scans the given L2 blocks for ExecutionTableLoaded events and checks that NONE of the
+///   given entry hashes appear. PASS = none found, FAIL = at least one unexpected entry present.
+///   forge script script/e2e/shared/Verify.s.sol:VerifyL2Absent \
+///     --rpc-url $L2_RPC \
+///     --sig "run(uint256[],address,bytes32[])" "[5,6]" $MANAGER_L2 "[$HASH1]"
+contract VerifyL2Absent is VerifyHelpers {
+    bytes32 constant SIG_TABLE_LOADED = keccak256(
+        "ExecutionTableLoaded(((uint256,bytes32,bytes32,int256)[],bytes32,(uint8,uint256,address,uint256,bytes,bool,address,uint256,uint256[]))[])"
+    );
+
+    function run(uint256[] calldata l2Blocks, address managerL2, bytes32[] calldata absentEntryHashes) external view {
+        // Collect all entry hashes from L2 ExecutionTableLoaded events
+        bytes32[] memory actualHashes = _collectEntryHashes(l2Blocks, managerL2);
+
+        // Check none of the absent hashes are present
+        for (uint256 i = 0; i < absentEntryHashes.length; i++) {
+            for (uint256 j = 0; j < actualHashes.length; j++) {
+                if (actualHashes[j] == absentEntryHashes[i]) {
+                    console.log("FAIL: unexpected L2 entry found: %s", vm.toString(absentEntryHashes[i]));
+                    console.log("  Entry should NOT be in L2 table (terminal revert)");
+                    revert("Unexpected L2 entry");
+                }
+            }
+        }
+
+        if (actualHashes.length == 0) {
+            console.log("PASS: no L2 table entries found (expected for terminal revert)");
+        } else {
+            console.log("PASS: %s L2 entries found but none match the %s absent hashes", actualHashes.length, absentEntryHashes.length);
+        }
+    }
+
+    function _collectEntryHashes(uint256[] calldata blocks, address managerL2) internal view returns (bytes32[] memory) {
+        uint256 count;
+        for (uint256 i = 0; i < blocks.length; i++) {
+            bytes32[] memory topics = new bytes32[](0);
+            Vm.EthGetLogs[] memory logs = vm.eth_getLogs(blocks[i], blocks[i], managerL2, topics);
+            for (uint256 j = 0; j < logs.length; j++) {
+                if (logs[j].topics[0] == SIG_TABLE_LOADED) {
+                    ExecutionEntry[] memory entries = abi.decode(logs[j].data, (ExecutionEntry[]));
+                    count += entries.length;
+                }
+            }
+        }
+        bytes32[] memory result = new bytes32[](count);
+        uint256 idx;
+        for (uint256 i = 0; i < blocks.length; i++) {
+            bytes32[] memory topics = new bytes32[](0);
+            Vm.EthGetLogs[] memory logs = vm.eth_getLogs(blocks[i], blocks[i], managerL2, topics);
+            for (uint256 j = 0; j < logs.length; j++) {
+                if (logs[j].topics[0] == SIG_TABLE_LOADED) {
+                    ExecutionEntry[] memory entries = abi.decode(logs[j].data, (ExecutionEntry[]));
+                    for (uint256 k = 0; k < entries.length; k++) {
+                        result[idx++] = keccak256(
+                            abi.encode(entries[k].actionHash, keccak256(abi.encode(entries[k].nextAction)))
+                        );
+                    }
+                }
+            }
+        }
+        return result;
+    }
+}
+
 /// @title VerifyL1BatchRange — Verify expected entries exist in any block within a range
 /// @dev Scans [blockFrom..blockTo] for BatchPosted events. On success, prints PASS + block/tx.
 ///   On failure, prints per-block inventory using _printEntryDetailed for full diagnostics.

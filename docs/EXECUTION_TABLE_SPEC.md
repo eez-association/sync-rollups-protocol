@@ -112,18 +112,16 @@ Applied during `postBatch` without any trigger. Used for state commitments. Thei
 
 Stored in the execution table, consumed when the matching action hash is produced during execution. The `actionHash` is `keccak256(abi.encode(action))` of the trigger action.
 
-### Terminal entries (self-referencing RESULT)
+### Terminal entries
 
-Every execution chain must end with a **terminal entry** where the trigger and the nextAction are the same RESULT:
+Every execution chain must end with a **terminal entry** whose `nextAction` is a RESULT (not a CALL), so execution stops — there's nothing left to resolve. Without a terminal entry, the last RESULT would have no matching entry and execution would revert with `ExecutionNotFound`.
+
+**Simple flows** (no nesting): the terminal is self-referencing — trigger and nextAction are the same RESULT:
 
 ```
 actionHash:  keccak256(abi.encode(resultAction))
 nextAction:  resultAction                         ← same action
 ```
-
-When the execution produces this RESULT (e.g., after a CALL completes), its hash matches the entry's `actionHash`. The entry is consumed and returns the same RESULT as `nextAction`. Since the nextAction is a RESULT (not a CALL), execution stops — there's nothing left to resolve.
-
-This is how the system knows the chain is done. Without a terminal entry, the last RESULT would have no matching entry and execution would revert with `ExecutionNotFound`.
 
 Example (from L1→L2 simple):
 ```solidity
@@ -131,6 +129,17 @@ Example (from L1→L2 simple):
 entries[1].actionHash = keccak256(abi.encode(resultAction));
 entries[1].nextAction = resultAction;  // same object
 ```
+
+**Nested flows** (e.g., L1→L2→L1): the terminal maps the nested call's RESULT to the outer call's RESULT. The trigger is the inner call's result; the nextAction is the outer call's result (different rollupId and/or data):
+
+```
+actionHash:  keccak256(abi.encode(innerResult))   ← inner call's RESULT
+nextAction:  outerResult                           ← outer call's RESULT (different action)
+```
+
+This ensures the caller receives a RESULT for the outer CALL, not the nested one. See the L1→L2→L1 flow pattern for a full example.
+
+**L2TX flows**: the terminal uses the C.6 format — see §C.6 in the protocol spec.
 
 ### `executeIncomingCrossChainCall` does not consume from the table
 
@@ -251,9 +260,11 @@ Alice on L1 calls D' (proxy for D on L2). D executes on L2 and calls C' (proxy f
                 next:    CALL(rollupId=MAINNET, dest=C, from=D, sourceRollup=L2, scope=[0])
                          — state delta (L2 state transition)
 [1] DEFERRED   trigger: RESULT(rollupId=MAINNET, data=<C's return>)
-                next:    RESULT(rollupId=MAINNET, data=<C's return>)  (terminal)
+                next:    RESULT(rollupId=L2, data=<D's return>)  (terminal)
                          — state delta
 ```
+
+Entry [1]'s nextAction is the RESULT for the **outer** call (CALL to D on L2), not a self-referencing copy of the trigger. The trigger is the nested call's result (C on MAINNET); the nextAction is the outer call's result (D on L2). Without this mapping, the caller on L1 would never receive a RESULT for the outer CALL(rollupId=L2).
 
 (An IMMEDIATE entry for the initial state commit may also be included in the same batch.)
 
@@ -270,12 +281,13 @@ executeIncomingCrossChainCall(dest=D, value=0, data=<incrementProxy>, sourceAddr
                 next:    RESULT(rollupId=L2, data=<D's return>)  (terminal)
 ```
 
-**L1 execution**: Alice calls D' proxy → `executeCrossChainCall` → consumes entry [0] → nextAction is CALL to C at scope `[0]` → `newScope([0])` navigates to C → C executes on L1 → RESULT consumed from entry [1] → returns.
+**L1 execution**: Alice calls D' proxy → `executeCrossChainCall` → consumes entry [0] → nextAction is CALL to C at scope `[0]` → `newScope([0])` navigates to C → C executes on L1 → RESULT consumed from entry [1] → returns RESULT(L2, D's return) to caller.
 
 **L2 execution**: System calls `executeIncomingCrossChainCall` (see above) → builds CALL(L2, D) internally, enters `_resolveScopes` without consuming → D executes, calls C' proxy → `executeCrossChainCall` → consumes entry [0] → returns RESULT. Then D returns → RESULT consumed from entry [1] (terminal).
 
 **Cross-chain hash matches**:
 - `RESULT(rollupId=MAINNET, data=<C's return>)` — L1 entry [1] trigger = L2 entry [0] next ✓
+- `RESULT(rollupId=L2, data=<D's return>)` — L1 entry [1] next = L2 entry [1] trigger ✓
 
 **Scope difference for inner CALL**: L1 entry [0] next is `CALL(MAINNET, C, scope=[0])` (scope added for L1 scope navigation). L2 entry [0] trigger is `CALL(MAINNET, C, scope=[])` (produced by L2's `executeCrossChainCall`, which always uses empty scope). Different hashes — each consumed on its own chain.
 
@@ -316,37 +328,109 @@ Alice on L2 calls A' (proxy for A on L1). A executes on L1 and calls B' (proxy f
 
 **Scope difference for inner CALL**: L1 entry [1] trigger is `CALL(L2, B, scope=[])` (produced by L1's reentrant `executeCrossChainCall`, which always uses empty scope). L2 entry [0] next is `CALL(L2, B, scope=[0])` (scope added for L2's own scope navigation). These are different hashes — each is consumed on its own chain only.
 
-### Revert flow (scoped call reverts)
+### Revert flow — terminal failure
 
-A scoped call can be reverted by the protocol via REVERT/REVERT_CONTINUE actions. This is different from a Solidity-level revert (see Atomicity section).
+When a call reverts **locally** (no cross-chain call was made that needs revert propagation), the RESULT(failed=true) is a **self-referencing terminal**. The call simply fails.
 
-Example: `executeL2TX` triggers a CALL at scope `[0]`, the call executes successfully, but the protocol decides to revert that scope.
+**L1 execution table** (postBatch) — L1→L2 revert, terminal:
+```
+[0] DEFERRED   trigger: CALL(rollupId=L2, dest=B, from=Alice, sourceRollup=MAINNET)
+                next:    RESULT(rollupId=L2, failed=true, data=<revert data>)
+                         — state delta
+```
+
+**L2 execution table** (loadExecutionTable):
+```
+[0] DEFERRED   trigger: RESULT(rollupId=L2, failed=true, data=<revert data>)
+                next:    RESULT(rollupId=L2, failed=true, data=<revert data>)  (terminal)
+```
+
+**L1 flow**: Alice calls proxy → `executeCrossChainCall` → consumes entry [0] → RESULT(failed) → `_resolveScopes` reverts with `CallExecutionFailed` → Alice's call reverts (Batcher catches it).
+
+**L2 flow**: `executeIncomingCrossChainCall` → `_processCallAtScope` → B.increment() reverts → RESULT(failed) built → consumed from entry [0] (self-referencing terminal) → returned to `_resolveScopes` → `CallExecutionFailed` → `executeIncomingCrossChainCall` reverts.
+
+Both sides see failure. No cross-chain revert to propagate — the call failed on the chain where it executed.
+
+**Terminal failure = no state changes.** When `executeCrossChainCall` or `executeIncomingCrossChainCall` reverts with `CallExecutionFailed`, the entire call is rolled back by the EVM — including any state deltas that were applied during entry consumption. The entries remain in the table (consumption undone), and no rollup state is modified. The Batcher catches the revert via low-level call so `postBatch` effects persist.
+
+**Terminal failure = no L2 execution table.** Because a terminal revert causes no state change on L2, the system does **not** load an execution table or call `executeIncomingCrossChainCall` on L2. The L1 batch is posted (with the revert state delta), but L2 has nothing to execute — the call would just revert. E2E verification should confirm the **absence** of L2 entries for terminal revert scenarios.
+
+**L2TX cannot end with a failed RESULT.** `executeL2TX` represents an L2 transaction being committed on L1. If it reverted with `CallExecutionFailed`, the entire L2TX would be un-processed — state deltas rolled back, entries unconsumed. A batcher should never post an L2TX entry whose execution chain ends in terminal failure. If an inner call within an L2TX fails, it must be handled via REVERT_CONTINUE (scope unwound, L2TX continues to a successful terminal RESULT).
+
+### Revert flow — REVERT_CONTINUE (scope revert after successful cross-chain calls)
+
+REVERT/REVERT_CONTINUE is the protocol-level mechanism for **undoing already-committed cross-chain state changes** when the scope that triggered them gets reverted. It handles the case where a cross-chain call **succeeded**, but the scope containing it is later reverted — so the committed results must be rolled back.
+
+**When it happens**: A scope contains a successful cross-chain call (state deltas applied), but then the scope itself reverts. REVERT_CONTINUE tells the scope navigation to unwind the committed state and provides a continuation for the parent scope.
+
+**Example**:
+```
+L2:
+SCA
+  --> SCB
+       ---> L1 Counter.increment()   ← succeeds, L1 state changed (S0→S1→S2)
+  SCA reverts                         ← scope unwound, L1 state rolled back
+return 3                              ← parent continues with data=3
+```
+
+On L1, `executeL2TX` processes this via scope navigation:
 
 **L1 execution table** (postBatch):
 ```
-[0] DEFERRED   trigger: L2TX(rollupId=X, data=<rlpTx>)
-                next:    CALL(rollupId=X, dest=target, scope=[0])
+[0] DEFERRED   trigger: L2TX(rollupId=L2, data=<rlpTx>)
+                next:    CALL(rollupId=MAINNET, dest=Counter, from=SCB, sourceRollup=L2, scope=[0,0])
                          — state delta S0→S1
-[1] DEFERRED   trigger: RESULT(rollupId=X, data=<return>)
-                next:    REVERT(rollupId=X, scope=[0])
+[1] DEFERRED   trigger: RESULT(rollupId=MAINNET, failed=false, data=<return data>)
+                next:    REVERT(rollupId=L2, scope=[0])
                          — state delta S1→S2
-[2] DEFERRED   trigger: REVERT_CONTINUE(rollupId=X, failed=true)
-                next:    RESULT (final)
+[2] DEFERRED   trigger: REVERT_CONTINUE(rollupId=L2, failed=true)
+                next:    RESULT(rollupId=L2, failed=false, data=<3>)  (terminal)
                          — state delta S2→S3
 ```
 
-**Flow**:
-1. `executeL2TX` → consumes entry [0] → CALL at scope `[0]`
-2. `newScope([0])` processes the CALL → target executes → RESULT produced
-3. RESULT consumes entry [1] → nextAction is REVERT at scope `[0]`
-4. REVERT scope matches current scope → `_getRevertContinuation()` looks up the REVERT_CONTINUE entry [2] and encodes the continuation action
-5. `revert ScopeReverted(encodedAction, stateRoot=S2, rollupId=X)` is thrown — the EVM reverts all state changes in this call frame, including entry [2]'s consumption (swap-and-pop) and its state delta application. Entry [2] remains in the table after the revert.
-6. Parent `newScope([])` catches `ScopeReverted` → `_handleScopeRevert` decodes the continuation action from the revert data and restores rollup state to S2 (the stateRoot carried in the error)
-7. Execution continues with the decoded continuation action's `nextAction` (final RESULT)
+**L1 flow**:
+1. `executeL2TX` → consumes entry [0] (S0→S1) → CALL(Counter, scope=[0,0])
+2. Scope navigation: `newScope([])` → `newScope([0])` → `newScope([0,0])`
+3. `_processCallAtScope` → Counter.increment() **succeeds** → RESULT(ok) produced
+4. RESULT consumes entry [1] (S1→S2) → nextAction is REVERT(scope=[0])
+5. REVERT scope `[0]` doesn't match current scope `[0,0]` → breaks out to `newScope([0])`
+6. `newScope([0])`: REVERT scope matches → `_getRevertContinuation()` consumes entry [2] (S2→S3) → continuation = RESULT(ok, data=3)
+7. `revert ScopeReverted(continuation, stateRoot=S2, rollupId=L2)` — EVM reverts ALL state in `newScope([0])`: entry [1]'s delta S1→S2 undone, entry [2]'s delta S2→S3 undone, Counter.increment() effects undone
+8. Parent `newScope([])` catches → `_handleScopeRevert` restores state to S2 → returns continuation RESULT(ok, data=3)
+9. `executeL2TX` succeeds with data=3
 
-**Important**: Entry [2]'s `currentState` must be S2 (the state after entry [1]'s deltas) because `_getRevertContinuation` runs inside the reverting scope where those deltas are still applied. Although the EVM revert rolls back the entry consumption, the continuation action survives via the `ScopeReverted` error data. After the catch, `_handleScopeRevert` restores the rollup state to S2 — the state captured just before the revert.
+**Key**: The cross-chain call to Counter **succeeded** at step 3. But SCA's scope `[0]` is reverted at step 7 — rolling back Counter's effects. The continuation provides the value (3) that the outer scope returns.
 
-**REVERT at parent scope**: A REVERT can target a scope higher than the current one. For example, REVERT at `[]` while inside `newScope([0])` — the REVERT doesn't match scope `[0]`, so execution breaks out, and it's caught at the root level.
+**Important**: Entry [2]'s `currentState` must be S2 (the state after entry [1]'s deltas) because `_getRevertContinuation` runs inside the reverting scope where those deltas are still applied. The continuation action survives the EVM revert via `ScopeReverted` error data. After the catch, `_handleScopeRevert` restores the rollup state to S2.
+
+**On L2**: The same mechanism works via `executeIncomingCrossChainCall`. If SCA is executed on L2, its cross-chain call to L1 succeeded (entry consumed, result returned), but SCA later reverts — the REVERT_CONTINUE mechanism unwinds the scope. On L2, `ScopeReverted` only carries the continuation action (no state root), and `_handleScopeRevert` is pure.
+
+**REVERT at parent scope**: A REVERT can target a scope higher than the current one. For example, REVERT at `[0]` while inside `newScope([0,0])` — the REVERT doesn't match scope `[0,0]`, so execution breaks out, and it's caught at `newScope([0])`.
+
+### Failed inner call without REVERT_CONTINUE (executeCrossChainCall only)
+
+When a scoped call **fails** inside `executeCrossChainCall` (not `executeL2TX`), no state deltas were committed within the scope — `executeCrossChainCall` reverts entirely on failure. The entry can map `RESULT(failed)` directly to `RESULT(ok)`:
+
+**Note**: This does NOT apply to `executeL2TX`. L2TX applies state deltas on entry consumption. Even if the inner call fails, the deltas from consumed entries are committed within the scope. `ScopeReverted` (via REVERT_CONTINUE) is needed to roll them back.
+
+```
+[0] DEFERRED   trigger: CALL(rollupId=L2, dest=D, scope=[])
+                next:    CALL(rollupId=MAINNET, dest=RC, scope=[0])
+                         — state delta S0→S1
+[1] DEFERRED   trigger: RESULT(rollupId=MAINNET, failed=true, data=<revert data>)
+                next:    RESULT(rollupId=L2, failed=false, data="")
+                         — state delta S1→S2
+```
+
+Flow: RC fails at scope `[0]` → RESULT(failed) consumed → nextAction is RESULT(ok) → `newScope([0])` breaks and returns RESULT(ok) → parent continues. No ScopeReverted needed — the EVM already rolled back RC's call effects when it reverted.
+
+### When to use which revert pattern
+
+| Pattern | When | Result |
+|---------|------|--------|
+| **Terminal RESULT(failed)** | Call failed, caller should fail too | Both sides revert |
+| **RESULT(failed) → RESULT(ok)** | Inner call failed in `executeCrossChainCall` — no deltas to undo | Parent succeeds |
+| **REVERT_CONTINUE** | Scope has committed state deltas that must be undone (L2TX, or successful calls) | ScopeReverted rolls back, parent continues |
 
 ### Same action executed multiple times
 

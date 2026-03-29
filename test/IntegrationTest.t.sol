@@ -6,7 +6,7 @@ import {Rollups, RollupConfig} from "../src/Rollups.sol";
 import {CrossChainManagerL2} from "../src/CrossChainManagerL2.sol";
 import {CrossChainProxy} from "../src/CrossChainProxy.sol";
 import {Action, ActionType, ExecutionEntry, StateDelta, ProxyInfo} from "../src/ICrossChainManager.sol";
-import {Counter, CounterAndProxy} from "./mocks/CounterContracts.sol";
+import {Counter, RevertCounter, CounterAndProxy} from "./mocks/CounterContracts.sol";
 import {RLPTxEncoder} from "./helpers/RLPTxEncoder.sol";
 import {MockZKVerifier, IntegrationTestBase} from "./helpers/TestBase.sol";
 
@@ -29,6 +29,7 @@ import {MockZKVerifier, IntegrationTestBase} from "./helpers/TestBase.sol";
 /// │  2 │ Alice -> D  (-> C') -> C         │ L2 -> L1     │ Simple (reverse) │
 /// │  3 │ Alice -> A' (-> A  -> B') -> B   │ L2 -> L1 ->L2│ Nested scope     │
 /// │  4 │ Alice -> D' (-> D  -> C') -> C   │ L1 -> L2 ->L1│ Nested scope     │
+/// │  5 │ Alice -> RC' -> RC (reverts)     │ L2 -> L1     │ REVERT_CONTINUE  │
 /// └────┴──────────────────────────────────┴──────────────┴──────────────────┘
 contract IntegrationTest is IntegrationTestBase {
     // ── L2 contracts ──
@@ -39,6 +40,10 @@ contract IntegrationTest is IntegrationTestBase {
     Counter public counterL2;               // B  — Counter on L2
     Counter public counterL1;               // C  — Counter on L1
     CounterAndProxy public counterAndProxyL2; // D — CounterAndProxy on L2, target = C'
+
+    // ── Revert contracts (Scenario 5) ──
+    RevertCounter public revertCounterL1;     // RC — RevertCounter on L1
+    address public revertCounterProxyL2;      // RC' — proxy for RC, deployed on L2
 
     // ── Proxies (see legend) ──
     address public counterProxy;              // B' — proxy for B, deployed on L1
@@ -81,6 +86,10 @@ contract IntegrationTest is IntegrationTestBase {
 
         // D': proxy for D(CounterAndProxy on L2), lives on L1 — for Scenarios 2 & 4
         counterAndProxyL2ProxyL1 = rollups.createCrossChainProxy(address(counterAndProxyL2), L2_ROLLUP_ID);
+
+        // ── Scenario 5: REVERT_CONTINUE (L2TX with failed inner call) ──
+        revertCounterL1 = new RevertCounter();  // RC on L1
+        revertCounterProxyL2 = managerL2.createCrossChainProxy(address(revertCounterL1), MAINNET_ROLLUP_ID);  // RC' on L2
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -796,5 +805,207 @@ contract IntegrationTest is IntegrationTestBase {
         assertEq(counterAndProxyL2.counter(), 1, "D.counter should be 1");
         assertEq(counterAndProxyL2.targetCounter(), 1, "D.targetCounter should be 1");
         assertEq(counterL1.counter(), 1, "C(Counter on L1) should still be 1");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  Scenario 5: Alice -> RC' -> RC (reverts)  [L2 -> L1, REVERT_CONTINUE]
+    //
+    //  RC reverts locally on L1 inside executeL2TX. L2TX applies state deltas
+    //  on consumption — ScopeReverted is needed to roll them back.
+    //  REVERT_CONTINUE provides the continuation so executeL2TX succeeds.
+    //
+    //  Phase 1 — L1 execution via executeL2TX (REVERT_CONTINUE):
+    //    executeL2TX(rlpAliceTx) -> L2TX matched -> CALL to RC at scope [0]
+    //    -> newScope([0]) -> _processCallAtScope:
+    //       - auto-creates proxy for Alice on L1
+    //       - proxy.executeOnBehalf(RC, increment) -> RC.increment() REVERTS
+    //       - RESULT(failed) consumed (S1→S2) -> REVERT(scope=[0])
+    //       - REVERT_CONTINUE consumed (S2→S3) -> ScopeReverted -> state restored to S2
+    //    -> executeL2TX succeeds
+    //
+    //  Phase 2 — L2 execution via executeCrossChainCall (terminal failure):
+    //    Alice calls RC'(proxy for RC on L1) on L2
+    //    -> executeCrossChainCall -> CALL consumed -> RESULT(failed)
+    //    -> _resolveScopes: failed -> CallExecutionFailed -> reverts (expected)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    function test_Scenario5_RevertContinue() public {
+        bytes memory incrementCallData = abi.encodeWithSelector(RevertCounter.increment.selector);
+
+        // ════════════════════════════════════════════
+        //  Phase 1: L1 — executeL2TX with REVERT_CONTINUE
+        // ════════════════════════════════════════════
+
+        // RLP tx: Alice calls RC' on L2
+        bytes memory rlpEncodedTx = RLPTxEncoder.signedCallTx(
+            revertCounterProxyL2,
+            incrementCallData,
+            0,
+            TX_SIGNER_PK
+        );
+
+        // L2TX action
+        Action memory l2txAction = Action({
+            actionType: ActionType.L2TX,
+            rollupId: L2_ROLLUP_ID,
+            destination: address(0),
+            value: 0,
+            data: rlpEncodedTx,
+            failed: false,
+            sourceAddress: address(0),
+            sourceRollup: MAINNET_ROLLUP_ID,
+            scope: new uint256[](0)
+        });
+
+        // CALL to RC at scope [0]
+        uint256[] memory scope0 = new uint256[](1);
+        scope0[0] = 0;
+
+        Action memory callToRC = Action({
+            actionType: ActionType.CALL,
+            rollupId: MAINNET_ROLLUP_ID,
+            destination: address(revertCounterL1),
+            value: 0,
+            data: incrementCallData,
+            failed: false,
+            sourceAddress: alice,
+            sourceRollup: L2_ROLLUP_ID,
+            scope: scope0
+        });
+
+        // RESULT(failed): built by _processCallAtScope after RC.increment() reverts
+        bytes memory revertData = abi.encodeWithSignature("Error(string)", "always reverts");
+
+        Action memory resultFailed = Action({
+            actionType: ActionType.RESULT,
+            rollupId: MAINNET_ROLLUP_ID,
+            destination: address(0),
+            value: 0,
+            data: revertData,
+            failed: true,
+            sourceAddress: address(0),
+            sourceRollup: 0,
+            scope: new uint256[](0)
+        });
+
+        // REVERT at scope [0]
+        Action memory revertAction = Action({
+            actionType: ActionType.REVERT,
+            rollupId: L2_ROLLUP_ID,
+            destination: address(0),
+            value: 0,
+            data: "",
+            failed: false,
+            sourceAddress: address(0),
+            sourceRollup: 0,
+            scope: scope0
+        });
+
+        // REVERT_CONTINUE
+        Action memory revertContinue = Action({
+            actionType: ActionType.REVERT_CONTINUE,
+            rollupId: L2_ROLLUP_ID,
+            destination: address(0),
+            value: 0,
+            data: "",
+            failed: true,
+            sourceAddress: address(0),
+            sourceRollup: 0,
+            scope: new uint256[](0)
+        });
+
+        // Terminal RESULT(ok) — L2TX must end with success
+        Action memory terminalResult = Action({
+            actionType: ActionType.RESULT,
+            rollupId: L2_ROLLUP_ID,
+            destination: address(0),
+            value: 0,
+            data: "",
+            failed: false,
+            sourceAddress: address(0),
+            sourceRollup: 0,
+            scope: new uint256[](0)
+        });
+
+        bytes32 s0 = keccak256("l2-initial-state");
+        bytes32 s1 = keccak256("l2-state-s5-step1");
+        bytes32 s2 = keccak256("l2-state-s5-step2");
+        bytes32 s3 = keccak256("l2-state-s5-step3");
+
+        // postBatch: 3 entries — L2TX applies deltas, ScopeReverted needed to roll back
+        {
+            StateDelta[] memory deltas0 = new StateDelta[](1);
+            deltas0[0] = StateDelta({ rollupId: L2_ROLLUP_ID, currentState: s0, newState: s1, etherDelta: 0 });
+
+            StateDelta[] memory deltas1 = new StateDelta[](1);
+            deltas1[0] = StateDelta({ rollupId: L2_ROLLUP_ID, currentState: s1, newState: s2, etherDelta: 0 });
+
+            StateDelta[] memory deltas2 = new StateDelta[](1);
+            deltas2[0] = StateDelta({ rollupId: L2_ROLLUP_ID, currentState: s2, newState: s3, etherDelta: 0 });
+
+            ExecutionEntry[] memory entries = new ExecutionEntry[](3);
+
+            // Entry 0: L2TX -> CALL(RC, scope=[0])
+            entries[0].stateDeltas = deltas0;
+            entries[0].actionHash = keccak256(abi.encode(l2txAction));
+            entries[0].nextAction = callToRC;
+
+            // Entry 1: RESULT(failed) -> REVERT(scope=[0])
+            entries[1].stateDeltas = deltas1;
+            entries[1].actionHash = keccak256(abi.encode(resultFailed));
+            entries[1].nextAction = revertAction;
+
+            // Entry 2: REVERT_CONTINUE -> terminal RESULT(ok)
+            entries[2].stateDeltas = deltas2;
+            entries[2].actionHash = keccak256(abi.encode(revertContinue));
+            entries[2].nextAction = terminalResult;
+
+            rollups.postBatch(entries, 0, "", "proof");
+        }
+
+        // Trigger: executeL2TX -> CALL(RC) -> reverts -> REVERT -> REVERT_CONTINUE -> ok
+        rollups.executeL2TX(L2_ROLLUP_ID, rlpEncodedTx);
+
+        // RC.counter should still be 0 — increment() reverted inside the scope
+        assertEq(revertCounterL1.counter(), 0, "RC counter should be 0 (reverted)");
+        // State should be S2 — restored by _handleScopeRevert after ScopeReverted
+        assertEq(_getRollupState(L2_ROLLUP_ID), s2, "L2 state should be S2 (restored after ScopeReverted)");
+
+        // ════════════════════════════════════════════
+        //  Phase 2: L2 — Alice calls RC' (expected to revert)
+        // ════════════════════════════════════════════
+        //
+        //  Terminal failure on L2 — executeCrossChainCall can end with failed RESULT.
+
+        // CALL that executeCrossChainCall will build on L2 (scope=[] on L2 side)
+        Action memory l2CallAction = Action({
+            actionType: ActionType.CALL,
+            rollupId: MAINNET_ROLLUP_ID,
+            destination: address(revertCounterL1),
+            value: 0,
+            data: incrementCallData,
+            failed: false,
+            sourceAddress: alice,
+            sourceRollup: L2_ROLLUP_ID,
+            scope: new uint256[](0)
+        });
+
+        {
+            ExecutionEntry[] memory l2Entries = new ExecutionEntry[](1);
+            l2Entries[0].stateDeltas = new StateDelta[](0);
+            l2Entries[0].actionHash = keccak256(abi.encode(l2CallAction));
+            l2Entries[0].nextAction = resultFailed;
+
+            vm.prank(SYSTEM_ADDRESS);
+            managerL2.loadExecutionTable(l2Entries);
+        }
+
+        // Alice calls RC' — expected to revert (terminal failure on L2)
+        vm.prank(alice);
+        (bool l2Success,) = revertCounterProxyL2.call(incrementCallData);
+        assertFalse(l2Success, "RC' call should revert (terminal failure on L2)");
+
+        // RC counter should still be 0
+        assertEq(revertCounterL1.counter(), 0, "RC counter should still be 0");
     }
 }

@@ -45,7 +45,7 @@ struct Action {
     address    destination;  // contract to call (CALL) or address(0) (RESULT/L2TX/REVERT*)
     uint256    value;        // ETH to send with CALL; 0 otherwise
     bytes      data;         // calldata (CALL), return data (RESULT), RLP tx (L2TX), or "" (REVERT*)
-    bool       failed;       // false for CALL/L2TX; success flag for RESULT; true for REVERT*
+    bool       failed;       // false for CALL/L2TX/REVERT; success flag for RESULT; true for REVERT_CONTINUE
     address    sourceAddress;// immediate caller identity (CALL only); address(0) otherwise
     uint256    sourceRollup; // caller's rollup ID (CALL only); 0 otherwise
     uint256[]  scope;        // hierarchical nesting path (see §D); empty for root-level actions
@@ -60,7 +60,7 @@ Field semantics by ActionType:
 | destination | callee address | address(0) | address(0) | address(0) | address(0) |
 | value | ETH sent | 0 | 0 | 0 | 0 |
 | data | calldata | return bytes | RLP-encoded tx | "" | "" |
-| failed | false | !success | false | true | true |
+| failed | false | !success | false | false | true |
 | sourceAddress | caller address | address(0) | address(0) | address(0) | address(0) |
 | sourceRollup | caller's rollupId | 0 | MAINNET_ROLLUP_ID | 0 | 0 |
 | scope | target scope path | [] | [] | target scope | [] |
@@ -1027,18 +1027,47 @@ Execution flow when `executeCrossChainCall` finds CALL_B's entry:
 6. `newScope([], ...)` sees RESULT → breaks, returns RESULT
 7. `_resolveScopes` asserts RESULT is not failed → returns data
 
-### D.5 Revert Handling
+### D.5 Terminal Revert: RESULT(failed)
 
-When `_processCallAtScope` executes `executeOnBehalf` and the call succeeds, but the builder had precomputed a `REVERT` action as nextAction:
+When a call reverts **locally** (no cross-chain call was made that needs revert propagation), the RESULT(failed=true) is terminal:
 
-1. `_findAndApplyExecution(resultHash)` finds an entry whose `nextAction` is `REVERT{scope: S}`
-2. The REVERT propagates up: `newScope` at scope `S` catches it
-3. At the matching scope, `_getRevertContinuation` looks up `REVERT_CONTINUE` in the table
-4. `ScopeReverted(continuation, stateRoot, rollupId)` is thrown
-5. The parent `newScope` catches it via try/catch and calls `_handleScopeRevert`
-6. `_handleScopeRevert` restores `rollups[rollupId].stateRoot = stateRoot` and returns continuation
+1. `_processCallAtScope` executes `executeOnBehalf` — call reverts
+2. RESULT{failed: true, data: revertData} is built and consumed
+3. The entry's `nextAction` is the same RESULT(failed=true) — self-referencing terminal
+4. `newScope` returns RESULT(failed=true) to `_resolveScopes`
+5. `_resolveScopes` checks `nextAction.failed == true` → reverts with `CallExecutionFailed`
+6. The outer call (`executeCrossChainCall` / `executeIncomingCrossChainCall`) reverts
 
-This implements cross-chain atomic revert: the rollup state is rolled back to its pre-revert value, and execution continues with the REVERT_CONTINUE path (which may execute cleanup logic or skip remaining steps).
+No cross-chain revert to propagate — the call failed on the chain where it executed.
+
+**Terminal failure = no state changes.** The entire `executeCrossChainCall` / `executeIncomingCrossChainCall` call reverts, rolling back all state deltas that were applied during entry consumption. No rollup state is modified.
+
+**L2TX cannot end with a failed RESULT.** `executeL2TX` represents an L2 transaction being committed on L1. If the execution chain ended in terminal failure, `executeL2TX` would revert entirely — state deltas rolled back, entries unconsumed. A batcher must never post an L2TX entry whose execution chain ends in terminal failure. If an inner call within an L2TX fails, it must be handled via REVERT_CONTINUE (scope unwound, L2TX continues to a successful terminal RESULT).
+
+### D.6 Scope Revert: REVERT / REVERT_CONTINUE / ScopeReverted
+
+REVERT/REVERT_CONTINUE handles the case where a scope is reverted **after it already contains successful cross-chain call results**. The cross-chain call succeeded and state deltas were applied, but the scope containing it later reverts — so those committed results must be undone.
+
+Example: on L2, SCA calls SCB which makes a cross-chain call to L1. The L1 call succeeds (state changed). Then SCA reverts. The REVERT_CONTINUE mechanism unwinds the scope, rolling back the L1 state changes, and the parent scope continues.
+
+1. A cross-chain call within the scope **succeeds** — RESULT(ok) consumed, state deltas applied
+2. Later, that context reverts (either itself or a parent context) — RESULT consumed, and the entry's `nextAction` is `REVERT{scope: S}` (the scope to revert)
+3. `newScope` at scope `S` catches the REVERT and calls `_getRevertContinuation(rollupId)`
+4. `_getRevertContinuation` builds REVERT_CONTINUE, looks it up in the execution table
+5. `ScopeReverted(continuation, stateRoot, rollupId)` is thrown — the EVM reverts ALL state changes within this scope, including the successful cross-chain call's effects
+6. The parent `newScope` (or `_resolveScopes`) catches it via try/catch and calls `_handleScopeRevert`
+7. `_handleScopeRevert` restores `rollups[rollupId].stateRoot = stateRoot` and returns continuation
+
+This implements scope-level atomicity: previously-committed results are rolled back, and execution continues with the REVERT_CONTINUE path.
+
+**REVERT_CONTINUE is also required for L2TX with failed inner calls.** `executeL2TX` applies state deltas when consuming entries. Even if the inner call fails, the deltas are committed within the scope. `ScopeReverted` must roll them back.
+
+**RESULT(failed) → RESULT(ok) (no REVERT_CONTINUE):** When an inner call fails inside `executeCrossChainCall` (not `executeL2TX`), no state deltas were committed — `executeCrossChainCall` reverts entirely on failure. The entry can map `RESULT(failed)` directly to `RESULT(ok)` without `ScopeReverted`.
+
+**When to use which:**
+- **Terminal RESULT(failed)**: call failed, caller should fail too
+- **RESULT(failed) → RESULT(ok)**: inner call failed in `executeCrossChainCall` — no deltas to undo
+- **REVERT/REVERT_CONTINUE**: scope has committed state deltas that must be undone (L2TX, or successful calls)
 
 ---
 

@@ -132,6 +132,11 @@ fi
 EXPECTED_L2_CALL_HASHES=$(extract "$COMPUTE_OUT" "EXPECTED_L2_CALL_HASHES")
 echo "L2 calls expected: $EXPECTED_L2_CALL_HASHES"
 
+ABSENT_L2_HASHES=$(extract "$COMPUTE_OUT" "ABSENT_L2_HASHES")
+if [[ -n "$ABSENT_L2_HASHES" && "$ABSENT_L2_HASHES" != "[]" ]]; then
+    echo "L2 absent (must NOT appear): $ABSENT_L2_HASHES"
+fi
+
 # Print summary (extract lines between === EXPECTED SUMMARY === and next blank line)
 SUMMARY=$(echo "$COMPUTE_OUT" | sed -n '/=== EXPECTED SUMMARY ===/,/^$/p' | head -20)
 if [[ -n "$SUMMARY" ]]; then
@@ -300,6 +305,7 @@ fi
 #  6. Verify L2 table (ExecutionTableLoaded event)
 #     The system must have loaded the execution table on L2.
 #     Missing EXPECTED_L2_HASHES or blocks is an error.
+#     Empty [] = no L2 activity expected (e.g. terminal revert — skip verification).
 # ══════════════════════════════════════════════
 echo ""
 echo "====== Verify L2 Table ======"
@@ -307,6 +313,30 @@ if [[ -z "${EXPECTED_L2_HASHES:-}" ]]; then
     echo "ERROR: No EXPECTED_L2_HASHES — add to ComputeExpected"
     FAILED=true
     L2_OK=false
+elif [[ "$EXPECTED_L2_HASHES" == "[]" ]]; then
+    echo "No L2 entries expected (terminal revert)"
+    # If ABSENT_L2_HASHES provided, actively verify they're NOT on L2
+    if [[ -n "${ABSENT_L2_HASHES:-}" && "$ABSENT_L2_HASHES" != "[]" ]]; then
+        if [[ "$L2_BLOCKS" == "[]" ]]; then
+            echo "PASS: no L2 blocks found (no L2 activity, as expected)"
+            L2_OK=true
+        else
+            ABSENT_VERIFY=$(forge script script/e2e/shared/Verify.s.sol:VerifyL2Absent \
+                --rpc-url "$L2_RPC" \
+                --sig "run(uint256[],address,bytes32[])" "$L2_BLOCKS" "$MANAGER_L2" "$ABSENT_L2_HASHES" 2>&1) \
+                && L2_OK=true || L2_OK=false
+            if $L2_OK; then
+                echo "$ABSENT_VERIFY" | grep "PASS"
+            else
+                FAILED=true
+                echo "L2 ABSENT VERIFICATION FAILED — entries that should NOT be on L2 were found"
+                echo "$ABSENT_VERIFY"
+            fi
+        fi
+    else
+        echo "SKIP: no absent hashes to verify"
+        L2_OK=true
+    fi
 elif [[ "$L2_BLOCKS" == "[]" ]]; then
     echo "ERROR: No L2 blocks found"
     FAILED=true
@@ -333,8 +363,8 @@ fi
 echo ""
 echo "====== Verify L2 Calls ======"
 
-if [[ -z "${EXPECTED_L2_CALL_HASHES:-}" ]]; then
-    echo "SKIP: no EXPECTED_L2_CALL_HASHES (not applicable for this scenario)"
+if [[ -z "${EXPECTED_L2_CALL_HASHES:-}" || "${EXPECTED_L2_CALL_HASHES}" == "[]" ]]; then
+    echo "SKIP: no L2 calls expected"
 elif [[ "$L2_BLOCKS" == "[]" ]]; then
     echo "ERROR: No L2 blocks found"
     FAILED=true
