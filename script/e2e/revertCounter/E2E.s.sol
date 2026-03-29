@@ -12,20 +12,19 @@ import {getOrCreateProxy} from "../shared/E2EHelpers.sol";
 // ═══════════════════════════════════════════════════════════════════════
 //  revertCounter — L1 -> L2 with terminal revert
 //
-//  The call reverts locally on L2 — no cross-chain call was made from L2,
-//  so there is nothing to propagate back. Terminal RESULT(failed) is used.
+//  Terminal revert: the call fails on L2, no state change is propagated.
+//  The system does NOT load an L2 execution table or execute anything on L2.
+//  E2E verification checks that L2 entries are ABSENT.
 //
-//  Alice calls RevertCounter's proxy on L1
+//  L1 side:
+//    Alice calls RevertCounter's proxy on L1
 //    -> executeCrossChainCall -> CALL consumed -> RESULT(failed=true)
 //    -> _resolveScopes reverts (CallExecutionFailed)
 //    -> Batcher catches the revert, postBatch still committed
 //
-//  Meanwhile on L2 (system executes):
-//    executeIncomingCrossChainCall(RevertCounter, increment, ...)
-//    -> _processCallAtScope -> RevertCounter.increment() reverts locally
-//    -> RESULT(failed=true) consumed -> RESULT(failed=true) (terminal)
-//    -> _resolveScopes: RESULT.failed -> CallExecutionFailed
-//    -> executeIncomingCrossChainCall reverts (expected)
+//  L2 side:
+//    No execution. Terminal revert means no L2 state change.
+//    The system skips loading an execution table for this batch.
 // ═══════════════════════════════════════════════════════════════════════
 
 /// @dev Centralized action & entry definitions for the revertCounter scenario.
@@ -84,8 +83,18 @@ abstract contract RevertCounterActions {
         entries[0].nextAction = result;
     }
 
-    // No _l2Entries — terminal revert means no L2 execution table.
-    // The call reverts on L1, no state change propagated to L2.
+    /// @dev Computes what L2 entries WOULD look like if the system incorrectly included them.
+    ///      Used by ComputeExpected to output ABSENT_L2_HASHES for negative verification.
+    function _l2Entries() internal pure returns (ExecutionEntry[] memory entries) {
+        Action memory result = _resultFailedAction();
+
+        entries = new ExecutionEntry[](1);
+
+        // Entry 0: RESULT(failed) -> RESULT(failed) (terminal, self-referencing)
+        entries[0].stateDeltas = new StateDelta[](0);
+        entries[0].actionHash = keccak256(abi.encode(result));
+        entries[0].nextAction = result;
+    }
 }
 
 /// @notice Batcher: postBatch + proxy call in one tx (local mode only)
@@ -213,17 +222,22 @@ contract ComputeExpected is ComputeExpectedBase, RevertCounterActions {
         // Compute hashes from entries
         bytes32 l1Hash = _entryHash(l1[0].actionHash, l1[0].nextAction);
 
+        // Compute L2 entry hashes — these should NOT appear on L2 (terminal revert = no L2 activity)
+        ExecutionEntry[] memory l2 = _l2Entries();
+        bytes32 l2eh0 = _entryHash(l2[0].actionHash, l2[0].nextAction);
+
         // Parseable lines
-        // Terminal revert: no L2 activity — the call reverts, no state change propagated to L2.
         console.log("EXPECTED_L1_HASHES=[%s]", vm.toString(l1Hash));
         console.log("EXPECTED_L2_HASHES=[]");
         console.log("EXPECTED_L2_CALL_HASHES=[]");
+        // Terminal revert: these L2 entries must NOT be present on L2
+        console.log("ABSENT_L2_HASHES=[%s]", vm.toString(l2eh0));
 
         // Summary
         console.log("");
         console.log("=== EXPECTED SUMMARY ===");
         _logEntrySummary(0, callAction, resultFailed, false);
-        console.log("  L2: (none) -- terminal revert, no L2 state change");
+        console.log("  L2: terminal revert -- verify ABSENT (no L2 state change)");
 
         // Human-readable: L1 execution table (1 entry)
         console.log("");
@@ -232,9 +246,12 @@ contract ComputeExpected is ComputeExpectedBase, RevertCounterActions {
             0, l1[0].actionHash, l1[0].stateDeltas, _fmtCall(callAction), _fmtResult(resultFailed, "(revert data)")
         );
 
-        // No L2 execution table — terminal revert
+        // L2: show what WOULD be there (but shouldn't)
         console.log("");
-        console.log("=== EXPECTED L2 EXECUTION TABLE (0 entries -- terminal revert) ===");
-        console.log("  (none)");
+        console.log("=== ABSENT L2 ENTRIES (must NOT appear on L2) ===");
+        _logL2Entry(
+            0, l2eh0, _fmtResult(resultFailed, "(revert data)"),
+            string.concat(_fmtResult(resultFailed, "(revert data)"), "  (terminal)")
+        );
     }
 }

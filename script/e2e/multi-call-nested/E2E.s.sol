@@ -253,8 +253,7 @@ abstract contract MultiCallNestedActions {
 }
 
 /// @notice Batcher: postBatch + CallTwiceNestedAndOnce.execute in one tx (local mode only)
-/// @dev The Batcher's address becomes the "source" for the outer CALLs on L1,
-///      because msg.sender inside proxy.fallback = Batcher.
+/// @dev sourceAddr = CallTwiceNestedAndOnce (app calls proxies, so msg.sender in proxy = app).
 contract Batcher {
     function execute(
         Rollups rollups,
