@@ -10,7 +10,7 @@ import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 import {getOrCreateProxy} from "../shared/E2EHelpers.sol";
 
 // ═══════════════════════════════════════════════════════════════════════
-//  nestedCallRevertContinue — L1 -> L2 -> L1 nested with inner revert
+//  nestedCallRevert — L1 -> L2 -> L1 nested with inner revert
 //
 //  D on L2 makes a cross-chain call to RC on L1. RC reverts. D catches the
 //  error (try/catch) and returns OK. Both sides succeed.
@@ -38,7 +38,7 @@ import {getOrCreateProxy} from "../shared/E2EHelpers.sol";
 // ═══════════════════════════════════════════════════════════════════════
 
 /// @dev Centralized action & entry definitions.
-abstract contract NestedCallRevertContinueActions {
+abstract contract NestedCallRevertActions {
     uint256 internal constant L2_ROLLUP_ID = 1;
     uint256 internal constant MAINNET_ROLLUP_ID = 0;
 
@@ -271,7 +271,7 @@ contract Deploy2 is Script {
 /// @dev D.incrementProxy() calls RC' → inner cross-chain call fails → D catches →
 ///      D returns OK → executeIncomingCrossChainCall SUCCEEDS.
 /// Env: MANAGER_L2, REVERT_COUNTER_L1, COUNTER_AND_PROXY_L2
-contract ExecuteL2 is Script, NestedCallRevertContinueActions {
+contract ExecuteL2 is Script, NestedCallRevertActions {
     function run() external {
         address managerL2Addr = vm.envAddress("MANAGER_L2");
         address revertCounterL1Addr = vm.envAddress("REVERT_COUNTER_L1");
@@ -310,7 +310,7 @@ contract ExecuteL2 is Script, NestedCallRevertContinueActions {
 /// @title Execute — Local mode: postBatch + Alice calls D' via Batcher on L1
 /// @dev RC's RESULT(failed) maps to RESULT(ok) → Alice's call succeeds.
 /// Env: ROLLUPS, REVERT_COUNTER_L1, COUNTER_AND_PROXY_L2, COUNTER_AND_PROXY_PROXY_L1
-contract Execute is Script, NestedCallRevertContinueActions {
+contract Execute is Script, NestedCallRevertActions {
     function run() external {
         address rollupsAddr = vm.envAddress("ROLLUPS");
         address revertCounterL1Addr = vm.envAddress("REVERT_COUNTER_L1");
@@ -352,7 +352,7 @@ contract ExecuteNetwork is Script {
 
 /// @title ComputeExpected — Compute expected hashes + print expected table
 /// @dev Env: REVERT_COUNTER_L1, COUNTER_AND_PROXY_L2, ALICE
-contract ComputeExpected is ComputeExpectedBase, NestedCallRevertContinueActions {
+contract ComputeExpected is ComputeExpectedBase, NestedCallRevertActions {
     function _name(address a) internal view override returns (string memory) {
         if (a == vm.envAddress("REVERT_COUNTER_L1")) return "RevertCounter";
         if (a == vm.envAddress("COUNTER_AND_PROXY_L2")) return "SafeCounterAndProxy";

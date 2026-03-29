@@ -31,6 +31,24 @@ contract CallTwoDifferent {
     }
 }
 
+/// @title CallTwiceNestedAndOnce
+/// @notice Calls nestedProxy.incrementProxy() twice, then simpleProxy.increment() once via low-level call.
+///         Used to test multiple cross-chain calls where two trigger nested scope navigation
+///         and one is a simple cross-chain call.
+contract CallTwiceNestedAndOnce {
+    function execute(address nestedProxy, address simpleProxy) external returns (uint256) {
+        (bool ok1,) = nestedProxy.call(abi.encodeWithSignature("incrementProxy()"));
+        require(ok1, "first nested call failed");
+
+        (bool ok2,) = nestedProxy.call(abi.encodeWithSignature("incrementProxy()"));
+        require(ok2, "second nested call failed");
+
+        (bool ok3, bytes memory ret3) = simpleProxy.call(abi.encodeWithSignature("increment()"));
+        require(ok3, "simple call failed");
+        return abi.decode(ret3, (uint256));
+    }
+}
+
 /// @title ConditionalCallTwice
 /// @notice Calls two different L2 counter proxies, then conditionally reverts
 ///         based on the second counter's return value.
