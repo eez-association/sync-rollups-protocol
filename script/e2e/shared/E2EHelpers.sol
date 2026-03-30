@@ -44,4 +44,21 @@ abstract contract L2TXActionsBase {
             scope: new uint256[](0)
         });
     }
+
+    /// @dev Spec C.6: Terminal RESULT for L2TX flows.
+    ///   rollupId = L2_ROLLUP_ID, data = "", failed = false.
+    function _terminalResultL2Tx() internal pure returns (Action memory) {
+        return Action({
+            actionType: ActionType.RESULT,
+            rollupId: L2_ROLLUP_ID,
+            destination: address(0),
+            value: 0,
+            data: "",
+            failed: false,
+            sourceAddress: address(0),
+            sourceRollup: 0,
+            scope: new uint256[](0)
+        });
+    }
+
 }

@@ -52,3 +52,34 @@ contract CounterAndProxy {
         counter++;
     }
 }
+
+/// @notice Wraps CounterAndProxy to create scope depth [0,0] in cross-chain tests.
+contract NestedCaller {
+    CounterAndProxy public target;
+    uint256 public counter;
+
+    constructor(CounterAndProxy _target) {
+        target = _target;
+    }
+
+    function callNested() external {
+        target.incrementProxy();
+        counter++;
+    }
+}
+
+/// @notice Calls increment() on two Counter proxies sequentially — produces sibling scopes [0],[1].
+contract CallTwoProxies {
+    Counter public target1;
+    Counter public target2;
+
+    constructor(Counter _target1, Counter _target2) {
+        target1 = _target1;
+        target2 = _target2;
+    }
+
+    function callBoth() external {
+        target1.increment();
+        target2.increment();
+    }
+}
