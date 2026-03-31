@@ -256,6 +256,9 @@ contract CrossChainManagerL2 is ICrossChainManager {
     /// @notice Finds a matching execution for the given action hash, marks it as consumed, and returns the next action
     function _consumeExecution(bytes32 actionHash, Action memory action) internal returns (Action memory nextAction) {
         for (uint256 i = 0; i < executions.length; i++) {
+            // TODO, multiple executions with same action hahs, were 1 reverts and the other no, in the same block is NOT supported
+            // This can happen if between 2 executions theres some update on L1 state
+            // Prob will need table to add L1 state or/and system address updating l1 state
             if (executions[i].actionHash != actionHash) continue;
 
             nextAction = executions[i].nextAction;

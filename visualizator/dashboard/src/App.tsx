@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import { COLORS } from "./theme";
 import { useStore } from "./store";
 import { useEventStream } from "./hooks/useEventStream";
@@ -10,12 +10,38 @@ import { ContractState } from "./components/ContractState";
 import { EventTimeline } from "./components/EventTimeline";
 import { EventInfoBanner } from "./components/EventInfoBanner";
 import { BundleDetail } from "./components/BundleDetail";
+import { TraceExplorer } from "./components/TraceExplorer";
 import type { TransactionBundle } from "./types/visualization";
+
+async function loadDefaults() {
+  try {
+    const res = await fetch("/config.json");
+    if (res.ok) return res.json();
+  } catch { /* ignore */ }
+  return null;
+}
 
 export const App: React.FC = () => {
   useEventStream();
   const connected = useStore((s) => s.connected);
   const changedKeys = useStore((s) => s.changedKeys);
+  const dashboardMode = useStore((s) => s.dashboardMode);
+  const setDashboardMode = useStore((s) => s.setDashboardMode);
+  const setL1RpcUrl = useStore((s) => s.setL1RpcUrl);
+  const setL2RpcUrl = useStore((s) => s.setL2RpcUrl);
+  const setL1ContractAddress = useStore((s) => s.setL1ContractAddress);
+  const setL2ContractAddress = useStore((s) => s.setL2ContractAddress);
+
+  // Load config defaults on mount (used by both live and trace modes)
+  useEffect(() => {
+    loadDefaults().then((defaults) => {
+      if (!defaults) return;
+      if (defaults.l1RpcUrl) setL1RpcUrl(defaults.l1RpcUrl);
+      if (defaults.l2RpcUrl) setL2RpcUrl(defaults.l2RpcUrl);
+      if (defaults.l1ContractAddress) setL1ContractAddress(defaults.l1ContractAddress);
+      if (defaults.l2ContractAddress) setL2ContractAddress(defaults.l2ContractAddress);
+    });
+  }, []);
   const { l1Table, l2Table, contractState, activeNodes, activeEdges } =
     useDerivedState();
   const [selectedBundle, setSelectedBundle] = useState<TransactionBundle | null>(null);
@@ -42,76 +68,118 @@ export const App: React.FC = () => {
       {/* Header */}
       <header
         style={{
-          textAlign: "center",
-          padding: "12px 16px 6px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "8px 16px",
           borderBottom: `1px solid ${COLORS.brd}`,
         }}
       >
-        <h1 style={{ fontSize: "1.2rem", fontWeight: 700 }}>
-          Cross-Chain Execution Visualizer
-        </h1>
-        <p style={{ color: COLORS.dim, fontSize: "0.65rem", marginTop: 2 }}>
-          Execution table evolution across L1 & L2 — live event stream
-        </p>
+        <div>
+          <h1 style={{ fontSize: "1.1rem", fontWeight: 700, margin: 0 }}>
+            Cross-Chain Execution Visualizer
+          </h1>
+          <p style={{ color: COLORS.dim, fontSize: "0.6rem", margin: "2px 0 0" }}>
+            {dashboardMode === "live" ? "Live event stream" : "Trace explorer"}
+          </p>
+        </div>
+        <div style={{ display: "flex", gap: 0, borderRadius: 5, overflow: "hidden", border: `1px solid ${COLORS.brd}` }}>
+          <ModeButton active={dashboardMode === "trace"} onClick={() => setDashboardMode("trace")}>
+            Block Explorer
+          </ModeButton>
+          <ModeButton active={dashboardMode === "live"} onClick={() => setDashboardMode("live")}>
+            Live Events
+          </ModeButton>
+          <ModeButton active={dashboardMode === "settings"} onClick={() => setDashboardMode("settings")}>
+            Settings
+          </ModeButton>
+        </div>
       </header>
 
-      <ConnectionBar />
-
-      <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
-        {/* Main content */}
-        <div
-          style={{
-            flex: 1,
-            overflow: "auto",
-            padding: "0 12px 24px",
-          }}
-        >
-          {!connected ? (
+      {dashboardMode === "trace" ? (
+        <TraceExplorer />
+      ) : dashboardMode === "settings" ? (
+        <ConnectionBar />
+      ) : (
+        <>
+          <ConnectionBar />
+          <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
             <div
               style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
                 flex: 1,
-                height: "100%",
-                color: COLORS.dim,
-                fontSize: "0.75rem",
+                overflow: "auto",
+                padding: "0 12px 24px",
               }}
             >
-              Enter RPC URLs and contract addresses, then click Connect
+              {!connected ? (
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flex: 1,
+                    height: "100%",
+                    color: COLORS.dim,
+                    fontSize: "0.75rem",
+                  }}
+                >
+                  Click Connect to start watching events
+                </div>
+              ) : (
+                <>
+                  <EventInfoBanner />
+                  <div style={{ marginBottom: 10 }}>
+                    <ArchitectureDiagram
+                      activeNodes={activeNodes}
+                      activeEdges={activeEdges}
+                    />
+                  </div>
+                  <div style={{ marginBottom: 10 }}>
+                    <ExecutionTables l1Entries={l1Table} l2Entries={l2Table} />
+                  </div>
+                  <ContractState
+                    contractState={contractState}
+                    changedKeys={changedKeys}
+                  />
+                </>
+              )}
             </div>
-          ) : (
-            <>
-              <EventInfoBanner />
-              <div style={{ marginBottom: 10 }}>
-                <ArchitectureDiagram
-                  activeNodes={activeNodes}
-                  activeEdges={activeEdges}
-                />
-              </div>
-              <div style={{ marginBottom: 10 }}>
-                <ExecutionTables l1Entries={l1Table} l2Entries={l2Table} />
-              </div>
-              <ContractState
-                contractState={contractState}
-                changedKeys={changedKeys}
-              />
-            </>
-          )}
-        </div>
 
-        {/* Event timeline sidebar */}
-        {connected && (
-          <div style={{ width: 360, flexShrink: 0 }}>
-            <EventTimeline onSelectBundle={handleSelectBundle} />
+            {connected && (
+              <div style={{ width: 360, flexShrink: 0 }}>
+                <EventTimeline onSelectBundle={handleSelectBundle} />
+              </div>
+            )}
           </div>
-        )}
-      </div>
 
-      {/* Bundle detail modal */}
-      {selectedBundle && (
-        <BundleDetail bundle={selectedBundle} onClose={handleCloseBundle} />
+          {selectedBundle && (
+            <BundleDetail bundle={selectedBundle} onClose={handleCloseBundle} />
+          )}
+        </>
       )}
     </div>
   );
 };
+
+const ModeButton: React.FC<{
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}> = ({ active, onClick, children }) => (
+  <button
+    onClick={onClick}
+    style={{
+      padding: "4px 14px",
+      border: "none",
+      background: active ? COLORS.acc : COLORS.s2,
+      color: active ? "#fff" : COLORS.dim,
+      fontSize: "0.6rem",
+      fontWeight: 700,
+      cursor: "pointer",
+      fontFamily: "inherit",
+      transition: "all 0.15s",
+    }}
+  >
+    {children}
+  </button>
+);
