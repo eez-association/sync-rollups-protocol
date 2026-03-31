@@ -16,10 +16,10 @@ export type ConnectionSlice = {
 };
 
 export const createConnectionSlice: StateCreator<ConnectionSlice> = (set) => ({
-  l1RpcUrl: "http://localhost:8545",
-  l2RpcUrl: "http://localhost:8546",
-  l1ContractAddress: "",
-  l2ContractAddress: "",
+  l1RpcUrl: "https://eez.dev/composer/l1",
+  l2RpcUrl: "https://eez.dev/composer/l2",
+  l1ContractAddress: "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+  l2ContractAddress: "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
   connected: false,
   l1Connected: false,
   l2Connected: false,
