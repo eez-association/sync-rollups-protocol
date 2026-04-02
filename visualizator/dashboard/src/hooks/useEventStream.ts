@@ -11,8 +11,8 @@ import { truncateHex } from "../lib/actionFormatter";
 export function useEventStream() {
   const l1RpcUrl = useStore((s) => s.l1RpcUrl);
   const l2RpcUrl = useStore((s) => s.l2RpcUrl);
-  const l1ContractAddress = useStore((s) => s.l1ContractAddress);
-  const l2ContractAddress = useStore((s) => s.l2ContractAddress);
+  const rollupsAddress = useStore((s) => s.rollupsAddress);
+  const managerL2Address = useStore((s) => s.managerL2Address);
   const connected = useStore((s) => s.connected);
 
   const addEvent = useStore((s) => s.addEvent);
@@ -46,8 +46,8 @@ export function useEventStream() {
         event,
         store.knownAddresses,
         existingNodeIds,
-        l1ContractAddress,
-        l2ContractAddress,
+        rollupsAddress,
+        managerL2Address,
       );
       if (discovery.newNodes.length > 0) addNodes(discovery.newNodes);
       if (discovery.newEdges.length > 0) addEdges(discovery.newEdges);
@@ -74,8 +74,8 @@ export function useEventStream() {
       }
       const managerAddr =
         event.chain === "l1"
-          ? l1ContractAddress.toLowerCase()
-          : l2ContractAddress.toLowerCase();
+          ? rollupsAddress.toLowerCase()
+          : managerL2Address.toLowerCase();
       if (managerAddr) activeNodes.push(managerAddr);
 
       if (activeNodes.length > 0) {
@@ -97,26 +97,26 @@ export function useEventStream() {
       addEdges,
       addKnownAddresses,
       updateContractState,
-      l1ContractAddress,
-      l2ContractAddress,
+      rollupsAddress,
+      managerL2Address,
     ],
   );
 
   useChainWatcher({
     rpcUrl: l1RpcUrl,
-    contractAddress: l1ContractAddress as `0x${string}`,
+    contractAddress: rollupsAddress as `0x${string}`,
     abi: rollupsAbi,
     chain: "l1",
     onEvent: handleEvent,
-    enabled: connected && !!l1ContractAddress,
+    enabled: connected && !!rollupsAddress,
   });
 
   useChainWatcher({
     rpcUrl: l2RpcUrl,
-    contractAddress: l2ContractAddress as `0x${string}`,
+    contractAddress: managerL2Address as `0x${string}`,
     abi: crossChainManagerL2Abi,
     chain: "l2",
     onEvent: handleEvent,
-    enabled: connected && !!l2ContractAddress,
+    enabled: connected && !!managerL2Address,
   });
 }

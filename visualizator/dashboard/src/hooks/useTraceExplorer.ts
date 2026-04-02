@@ -14,8 +14,8 @@ const ALL_ABIS = [...rollupsAbi, ...crossChainManagerL2Abi];
 export function useTraceExplorer() {
   const l1RpcUrl = useStore((s) => s.l1RpcUrl);
   const l2RpcUrl = useStore((s) => s.l2RpcUrl);
-  const l1ContractAddress = useStore((s) => s.l1ContractAddress);
-  const l2ContractAddress = useStore((s) => s.l2ContractAddress);
+  const rollupsAddress = useStore((s) => s.rollupsAddress);
+  const managerL2Address = useStore((s) => s.managerL2Address);
   const setCurrentBlock = useStore((s) => s.setCurrentBlock);
   const setBlockEvents = useStore((s) => s.setBlockEvents);
   const setBlockTraces = useStore((s) => s.setBlockTraces);
@@ -110,7 +110,7 @@ export function useTraceExplorer() {
 
       // 2. Get all L1 contract events in this block
       const l1Logs = await clients.l1.getLogs({
-        address: l1ContractAddress as Hex,
+        address: rollupsAddress as Hex,
         fromBlock: BigInt(blockNumber),
         toBlock: BigInt(blockNumber),
       });
@@ -131,7 +131,7 @@ export function useTraceExplorer() {
       const l2Events: EventRecord[] = [];
       for (const l2Block of l2Blocks) {
         const l2Logs = await clients.l2.getLogs({
-          address: l2ContractAddress as Hex,
+          address: managerL2Address as Hex,
           fromBlock: BigInt(l2Block),
           toBlock: BigInt(l2Block),
         });
@@ -182,8 +182,8 @@ export function useTraceExplorer() {
             txHash as Hex,
             clients.l1,
             clients.l2,
-            l1ContractAddress,
-            l2ContractAddress,
+            rollupsAddress,
+            managerL2Address,
           );
           traces.push(trace);
         } catch (e) {
@@ -196,7 +196,7 @@ export function useTraceExplorer() {
     } finally {
       setTraceLoading(false);
     }
-  }, [clients, l1ContractAddress, l2ContractAddress, decodeLogs, extractL2Blocks]);
+  }, [clients, rollupsAddress, managerL2Address, decodeLogs, extractL2Blocks]);
 
   const loadLatestBlock = useCallback(async () => {
     try {

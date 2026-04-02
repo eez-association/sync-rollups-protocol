@@ -12,6 +12,7 @@ export type CallNode = {
   depth: number;
   isCrossChainCall: boolean;
   proxyTargetLabel: string | null;
+  proxyTargetAddr: string | null;
   proxyRollupId: number | null;
   inlinedL2: InlinedL2Execution | null;
   logs: TraceEvent[];

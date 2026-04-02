@@ -11,6 +11,7 @@ import { EventTimeline } from "./components/EventTimeline";
 import { EventInfoBanner } from "./components/EventInfoBanner";
 import { BundleDetail } from "./components/BundleDetail";
 import { TraceExplorer } from "./components/TraceExplorer";
+import { setExplorerUrls } from "./lib/traceDecoder";
 import type { TransactionBundle } from "./types/visualization";
 
 async function loadDefaults() {
@@ -27,19 +28,19 @@ export const App: React.FC = () => {
   const changedKeys = useStore((s) => s.changedKeys);
   const dashboardMode = useStore((s) => s.dashboardMode);
   const setDashboardMode = useStore((s) => s.setDashboardMode);
-  const setL1RpcUrl = useStore((s) => s.setL1RpcUrl);
-  const setL2RpcUrl = useStore((s) => s.setL2RpcUrl);
-  const setL1ContractAddress = useStore((s) => s.setL1ContractAddress);
-  const setL2ContractAddress = useStore((s) => s.setL2ContractAddress);
 
-  // Load config defaults on mount (used by both live and trace modes)
+  // Load config defaults on mount — single source of truth for all modes
   useEffect(() => {
     loadDefaults().then((defaults) => {
       if (!defaults) return;
-      if (defaults.l1RpcUrl) setL1RpcUrl(defaults.l1RpcUrl);
-      if (defaults.l2RpcUrl) setL2RpcUrl(defaults.l2RpcUrl);
-      if (defaults.l1ContractAddress) setL1ContractAddress(defaults.l1ContractAddress);
-      if (defaults.l2ContractAddress) setL2ContractAddress(defaults.l2ContractAddress);
+      const s = useStore.getState();
+      if (defaults.l1RpcUrl) s.setL1RpcUrl(defaults.l1RpcUrl);
+      if (defaults.l2RpcUrl) s.setL2RpcUrl(defaults.l2RpcUrl);
+      if (defaults.rollupsAddress) s.setRollupsAddress(defaults.rollupsAddress);
+      if (defaults.managerL2Address) s.setManagerL2Address(defaults.managerL2Address);
+      if (defaults.l1ExplorerUrl) s.setL1ExplorerUrl(defaults.l1ExplorerUrl);
+      if (defaults.l2ExplorerUrl) s.setL2ExplorerUrl(defaults.l2ExplorerUrl);
+      setExplorerUrls(defaults.l1ExplorerUrl || "", defaults.l2ExplorerUrl || "");
     });
   }, []);
   const { l1Table, l2Table, contractState, activeNodes, activeEdges } =
@@ -80,7 +81,7 @@ export const App: React.FC = () => {
             Cross-Chain Execution Visualizer
           </h1>
           <p style={{ color: COLORS.dim, fontSize: "0.6rem", margin: "2px 0 0" }}>
-            {dashboardMode === "live" ? "Live event stream" : "Trace explorer"}
+            {dashboardMode === "live" ? "Live event stream" : dashboardMode === "trace" ? "Trace explorer" : "Settings"}
           </p>
         </div>
         <div style={{ display: "flex", gap: 0, borderRadius: 5, overflow: "hidden", border: `1px solid ${COLORS.brd}` }}>

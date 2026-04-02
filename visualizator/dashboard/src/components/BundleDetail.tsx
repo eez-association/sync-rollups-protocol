@@ -14,8 +14,8 @@ type Props = {
 export const BundleDetail: React.FC<Props> = ({ bundle, onClose }) => {
   const events = useStore((s) => s.events);
   const knownAddresses = useStore((s) => s.knownAddresses);
-  const l1Contract = useStore((s) => s.l1ContractAddress);
-  const l2Contract = useStore((s) => s.l2ContractAddress);
+  const l1Contract = useStore((s) => s.rollupsAddress);
+  const l2Contract = useStore((s) => s.managerL2Address);
   const [activeStep, setActiveStep] = useState(0);
 
   // Get events in this bundle

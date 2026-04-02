@@ -3,6 +3,7 @@ import { COLORS } from "../theme";
 import { useStore } from "../store";
 import { useTraceExplorer } from "../hooks/useTraceExplorer";
 import { TraceBlockNav } from "./TraceBlockNav";
+import { TraceDiagram } from "./TraceDiagram";
 import { ExecutionTables } from "./ExecutionTables";
 import { TraceCallTree } from "./TraceCallTree";
 import { processEventForTables } from "../lib/eventProcessor";
@@ -18,15 +19,17 @@ export const TraceExplorer: React.FC = () => {
   const expandedNodes = useStore((s) => s.expandedNodes);
   const toggleNodeExpanded = useStore((s) => s.toggleNodeExpanded);
 
+  const l1RpcUrl = useStore((s) => s.l1RpcUrl);
   const { traceByTxHash, loadBlock, loadLatestBlock } = useTraceExplorer();
 
+  // Auto-load latest block once config is ready (RPC URL != default)
   const loaded = useRef(false);
   useEffect(() => {
-    if (!loaded.current) {
+    if (!loaded.current && l1RpcUrl && !l1RpcUrl.includes("localhost")) {
       loaded.current = true;
       loadLatestBlock();
     }
-  }, [loadLatestBlock]);
+  }, [l1RpcUrl, loadLatestBlock]);
 
   // Process events into table entries
   const { l1Table, l2Table } = useMemo(() => {
@@ -104,6 +107,11 @@ export const TraceExplorer: React.FC = () => {
             {/* Block header */}
             <BlockHeader block={currentBlock} />
 
+            {/* Cross-chain flow diagram — prominent first element */}
+            {blockTraces.length > 0 && (
+              <TraceDiagram traces={blockTraces} />
+            )}
+
             {/* Execution Tables — L1 postBatch + L2 loadExecutionTable */}
             {(l1Table.length > 0 || l2Table.length > 0) && (
               <div style={{ marginBottom: 16 }}>
@@ -111,7 +119,7 @@ export const TraceExplorer: React.FC = () => {
               </div>
             )}
 
-            {/* Cross-chain call trees */}
+            {/* Cross-chain call trees (detailed) */}
             {blockTraces.length > 0 && (
               <div style={{ marginBottom: 16 }}>
                 {blockTraces.map((trace, idx) => (
@@ -132,7 +140,7 @@ export const TraceExplorer: React.FC = () => {
             )}
 
             {/* Empty block */}
-            {blockEvents.length === 0 && (
+            {blockEvents.length === 0 && blockTraces.length === 0 && (
               <div style={{ color: COLORS.dim, fontSize: "0.7rem", textAlign: "center", padding: 20 }}>
                 No contract events in this block
               </div>
