@@ -13,3 +13,4 @@ devnet
 tmp
 todoignore
 node_modules
+*.ignore
