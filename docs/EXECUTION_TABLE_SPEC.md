@@ -475,6 +475,24 @@ Used when a single `executeIncomingCrossChainCall` needs to trigger multiple seq
 
 Scope tracks nesting depth for reentrant cross-chain calls.
 
+### Scope tree visualization
+
+The scope array forms a path in a tree. Each node is one `newScope()` invocation with an isolated EVM call frame:
+
+```
+              []                ← root (_resolveScopes entry point)
+             / \
+           [0]  [1]             ← siblings: first and second child of root
+           / \
+       [0,0] [0,1]             ← children of [0], siblings of each other
+         |
+      [0,0,0]                  ← child of [0,0]
+```
+
+Each edge is a `try this.newScope(child, action)` call. The `try/catch` boundary at each level isolates reverts — a `ScopeReverted` inside `newScope([0])` is caught by `newScope([])` without affecting `newScope([1])`.
+
+Scope depth correlates with the L2 call stack depth at the point where a cross-chain call is triggered. If the L2 tx calls SCA, SCA calls SCB (both local), and SCB makes a cross-chain call to L1, that call is at scope `[0,0]` — two levels deep.
+
 ### When scope is empty (`[]`)
 
 Simple flows: L1→L2 or L2→L1 with no reentrant calls. This covers most cases.
@@ -512,6 +530,104 @@ Example: `executeL2TX` triggers two calls — first at scope `[0]`, then at scop
 **Flow**: `newScope([])` sees CALL at `[0]` is a child → recurses into `newScope([0])` → first CALL executes → RESULT → nextAction is CALL at `[1]` → `newScope([0])` sees `[1]` is a sibling (not child) → breaks, returns CALL at `[1]` → back in `newScope([])`, sees `[1]` is a child → recurses into `newScope([1])` → second CALL executes → RESULT → final.
 
 Note: both entries [1] and [2] may share the same `actionHash` (same RESULT) — they're differentiated by `currentState` in their state deltas (S1 vs S2).
+
+### Deep nesting (scope=[0,0])
+
+When a cross-chain call is triggered from within a nested L2 call stack, the scope depth reflects the nesting. If the L2 tx calls SCA, SCA calls SCB (both local L2 calls), and SCB makes a cross-chain call to Counter on L1, the scope is `[0,0]`.
+
+**L1 execution table** (postBatch):
+```
+[0] DEFERRED   trigger: L2TX(rollupId=L2, data=<rlpTx>)
+                next:    CALL(rollupId=MAINNET, dest=Counter, from=SCB, sourceRollup=L2, scope=[0,0])
+                         — state delta S0→S1
+[1] DEFERRED   trigger: RESULT(rollupId=MAINNET, data=abi.encode(1))
+                next:    RESULT(rollupId=L2, data="", terminal)
+                         — state delta S1→S2
+```
+
+**Flow**: `newScope([])` → child → `newScope([0])` → child → `newScope([0,0])` → scopesMatch → execute Counter → RESULT consumed → terminal → unwinds back through `[0]` and `[]`.
+
+The scope `[0,0]` means: first child `[0]` of root (SCA's context), first child `[0]` of that (SCB's context). If SCA had made two sequential cross-chain calls via different sub-contracts, they would be at `[0,0]` and `[0,1]`.
+
+### Combined nesting and siblings
+
+When an execution has both nested and sequential calls, the scope tree has multiple branches at different depths.
+
+```
+     []
+    / \
+  [0]  [1]
+   |
+ [0,0]
+```
+
+Scenario: A executes at scope `[0]`. A's result triggers a deeper call to B at `[0,0]`. After B, a sequential call to C at `[1]`.
+
+**L1 execution table** (postBatch):
+```
+[0] DEFERRED   trigger: L2TX(rollupId=L2, data=<rlpTx>)
+                next:    CALL(dest=A, scope=[0])
+                         — state delta S0→S1
+[1] DEFERRED   trigger: RESULT(A's return)
+                next:    CALL(dest=B, scope=[0,0])
+                         — state delta S1→S2
+[2] DEFERRED   trigger: RESULT(B's return)
+                next:    CALL(dest=C, scope=[1])
+                         — state delta S2→S3
+[3] DEFERRED   trigger: RESULT(C's return)
+                next:    RESULT(terminal)
+                         — state delta S3→S4
+```
+
+**Flow**: `newScope([])` sees CALL at `[0]` → child → `newScope([0])` → A executes → RESULT → next is CALL at `[0,0]` → child → `newScope([0,0])` → B executes → RESULT → next is CALL at `[1]` → `newScope([0,0])` sees `[1]` is neither child nor match → breaks → `newScope([0])` sees `[1]` is neither child nor match → breaks → back in `newScope([])`, sees `[1]` is a child → `newScope([1])` → C executes → terminal.
+
+The CALL{scope=[1]} bubbles up through two levels (`[0,0]` → `[0]` → `[]`) before the root routes it to `newScope([1])`.
+
+### REVERT at non-leaf scope
+
+A REVERT can target a scope higher than where it is first encountered. The REVERT bubbles upward through the tree until it reaches the matching level.
+
+**L1 execution table** (postBatch):
+```
+[0] DEFERRED   trigger: L2TX(rollupId=L2, data=<rlpTx>)
+                next:    CALL(dest=Counter, from=SCB, scope=[0,0])
+                         — state delta S0→S1
+[1] DEFERRED   trigger: RESULT(rollupId=MAINNET, data=<Counter's return>)
+                next:    REVERT(rollupId=L2, scope=[0])
+                         — state delta S1→S2
+[2] DEFERRED   trigger: REVERT_CONTINUE(rollupId=L2, failed=true)
+                next:    RESULT(rollupId=L2, data=<fallback>, terminal)
+                         — state delta S2→S3
+```
+
+Scenario: SCB makes a cross-chain call at scope `[0,0]`. Counter succeeds. But SCA (scope `[0]`) reverts — REVERT targets `[0]`, not `[0,0]`.
+
+**Flow**: Counter executes at `[0,0]` → RESULT consumed → next = REVERT{scope=[0]} → `newScope([0,0])` sees scope mismatch → breaks → `newScope([0])` sees scope match → `_getRevertContinuation` consumes entry [2] → `ScopeReverted` → EVM rolls back Counter's effects and all consumed deltas → parent catches and restores state to S2 → continues with fallback data.
+
+### Multiple REVERTs across sibling scopes
+
+Two sibling scopes can both revert within the same execution:
+
+**L1 execution table** (postBatch):
+```
+[0] DEFERRED   trigger: L2TX(...)
+                next:    CALL(dest=A, scope=[0])
+                         — delta S0→S1
+[1] DEFERRED   trigger: RESULT(A's return)
+                next:    REVERT(rollupId=L2, scope=[0])
+                         — delta S1→S2
+[2] DEFERRED   trigger: REVERT_CONTINUE(rollupId=L2)
+                next:    CALL(dest=B, scope=[1])
+                         — delta S2→S3
+[3] DEFERRED   trigger: RESULT(B's return)
+                next:    REVERT(rollupId=L2, scope=[1])
+                         — delta S3→S4
+[4] DEFERRED   trigger: REVERT_CONTINUE(rollupId=L2)
+                next:    RESULT(terminal)
+                         — delta S4→S5
+```
+
+**REVERT_CONTINUE hash collision**: entries [2] and [4] have the same `actionHash` — both are `keccak256(abi.encode(Action{REVERT_CONTINUE, rollupId=L2, ...}))`. On L1, they are differentiated by `currentState` in their state deltas (S2 vs S4). On L2, same-hash entries are consumed in insertion order.
 
 ---
 

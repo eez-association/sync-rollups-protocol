@@ -2,34 +2,18 @@ import React, { useState, useEffect } from "react";
 import { COLORS } from "../theme";
 import { useStore } from "../store";
 import { initManagerNodes, resetDiscovery } from "../lib/autoDiscovery";
-
-type Defaults = {
-  l1RpcUrl: string;
-  l2RpcUrl: string;
-  l1ContractAddress: string;
-  l2ContractAddress: string;
-};
-
-async function loadDefaults(): Promise<Defaults | null> {
-  try {
-    const res = await fetch("/config.json");
-    if (res.ok) return res.json();
-  } catch { /* ignore */ }
-  return null;
-}
+import { setExplorerUrls } from "../lib/traceDecoder";
 
 export const ConnectionBar: React.FC = () => {
   const l1RpcUrl = useStore((s) => s.l1RpcUrl);
   const l2RpcUrl = useStore((s) => s.l2RpcUrl);
-  const l1ContractAddress = useStore((s) => s.l1ContractAddress);
-  const l2ContractAddress = useStore((s) => s.l2ContractAddress);
+  const rollupsAddress = useStore((s) => s.rollupsAddress);
+  const managerL2Address = useStore((s) => s.managerL2Address);
+  const l1ExplorerUrl = useStore((s) => s.l1ExplorerUrl);
+  const l2ExplorerUrl = useStore((s) => s.l2ExplorerUrl);
   const connected = useStore((s) => s.connected);
   const l1Connected = useStore((s) => s.l1Connected);
   const l2Connected = useStore((s) => s.l2Connected);
-  const setL1RpcUrl = useStore((s) => s.setL1RpcUrl);
-  const setL2RpcUrl = useStore((s) => s.setL2RpcUrl);
-  const setL1ContractAddress = useStore((s) => s.setL1ContractAddress);
-  const setL2ContractAddress = useStore((s) => s.setL2ContractAddress);
   const setConnected = useStore((s) => s.setConnected);
   const addNodes = useStore((s) => s.addNodes);
   const addKnownAddresses = useStore((s) => s.addKnownAddresses);
@@ -37,18 +21,14 @@ export const ConnectionBar: React.FC = () => {
 
   const [localL1Rpc, setLocalL1Rpc] = useState(l1RpcUrl);
   const [localL2Rpc, setLocalL2Rpc] = useState(l2RpcUrl);
-  const [localL1Addr, setLocalL1Addr] = useState(l1ContractAddress);
-  const [localL2Addr, setLocalL2Addr] = useState(l2ContractAddress);
+  const [localL1Addr, setLocalL1Addr] = useState(rollupsAddress);
+  const [localL2Addr, setLocalL2Addr] = useState(managerL2Address);
 
-  useEffect(() => {
-    loadDefaults().then((defaults) => {
-      if (!defaults) return;
-      if (defaults.l1RpcUrl) { setLocalL1Rpc(defaults.l1RpcUrl); setL1RpcUrl(defaults.l1RpcUrl); }
-      if (defaults.l2RpcUrl) { setLocalL2Rpc(defaults.l2RpcUrl); setL2RpcUrl(defaults.l2RpcUrl); }
-      if (defaults.l1ContractAddress) { setLocalL1Addr(defaults.l1ContractAddress); setL1ContractAddress(defaults.l1ContractAddress); }
-      if (defaults.l2ContractAddress) { setLocalL2Addr(defaults.l2ContractAddress); setL2ContractAddress(defaults.l2ContractAddress); }
-    });
-  }, []);
+  // Sync local fields when store changes (e.g. after config.json loads in App)
+  useEffect(() => { setLocalL1Rpc(l1RpcUrl); }, [l1RpcUrl]);
+  useEffect(() => { setLocalL2Rpc(l2RpcUrl); }, [l2RpcUrl]);
+  useEffect(() => { setLocalL1Addr(rollupsAddress); }, [rollupsAddress]);
+  useEffect(() => { setLocalL2Addr(managerL2Address); }, [managerL2Address]);
 
   const handleConnect = () => {
     if (connected) {
@@ -57,10 +37,12 @@ export const ConnectionBar: React.FC = () => {
       setConnected(false, false);
       return;
     }
-    setL1RpcUrl(localL1Rpc);
-    setL2RpcUrl(localL2Rpc);
-    setL1ContractAddress(localL1Addr);
-    setL2ContractAddress(localL2Addr);
+    const s = useStore.getState();
+    s.setL1RpcUrl(localL1Rpc);
+    s.setL2RpcUrl(localL2Rpc);
+    s.setRollupsAddress(localL1Addr);
+    s.setManagerL2Address(localL2Addr);
+    setExplorerUrls(s.l1ExplorerUrl, s.l2ExplorerUrl);
 
     const result = initManagerNodes(localL1Addr, localL2Addr);
     if (result.newNodes.length > 0) addNodes(result.newNodes);
@@ -94,7 +76,7 @@ export const ConnectionBar: React.FC = () => {
       </div>
 
       <Input
-        label="L1 Contract"
+        label="Rollups (L1)"
         value={localL1Addr}
         onChange={setLocalL1Addr}
         disabled={connected}
@@ -114,7 +96,7 @@ export const ConnectionBar: React.FC = () => {
       </div>
 
       <Input
-        label="L2 Contract"
+        label="CrossChainManagerL2"
         value={localL2Addr}
         onChange={setLocalL2Addr}
         disabled={connected}
@@ -141,6 +123,17 @@ export const ConnectionBar: React.FC = () => {
       >
         {connected ? "Disconnect" : "Connect"}
       </button>
+
+      {connected && (l1ExplorerUrl || l2ExplorerUrl) && (
+        <div style={{ display: "flex", gap: 4 }}>
+          {l1ExplorerUrl && (
+            <ExplorerLink url={l1ExplorerUrl} label="L1 Explorer" color={COLORS.l1} />
+          )}
+          {l2ExplorerUrl && (
+            <ExplorerLink url={l2ExplorerUrl} label="L2 Explorer" color={COLORS.l2} />
+          )}
+        </div>
+      )}
     </div>
   );
 };
@@ -195,4 +188,30 @@ const Input: React.FC<{
       }}
     />
   </div>
+);
+
+const ExplorerLink: React.FC<{ url: string; label: string; color: string }> = ({
+  url,
+  label,
+  color,
+}) => (
+  <a
+    href={url}
+    target="_blank"
+    rel="noopener noreferrer"
+    style={{
+      padding: "3px 8px",
+      borderRadius: 4,
+      border: `1px solid ${color}`,
+      background: `${color}11`,
+      color,
+      fontSize: "0.55rem",
+      fontWeight: 700,
+      fontFamily: "inherit",
+      textDecoration: "none",
+      transition: "all 0.15s",
+    }}
+  >
+    {label}
+  </a>
 );

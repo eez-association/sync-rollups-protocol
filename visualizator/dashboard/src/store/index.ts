@@ -4,17 +4,20 @@ import type { EventsSlice } from "./eventsSlice";
 import type { ExecutionTableSlice } from "./executionTableSlice";
 import type { ArchitectureSlice } from "./architectureSlice";
 import type { PlaybackSlice } from "./playbackSlice";
+import type { TraceSlice } from "./traceSlice";
 import { createConnectionSlice } from "./connectionSlice";
 import { createEventsSlice } from "./eventsSlice";
 import { createExecutionTableSlice } from "./executionTableSlice";
 import { createArchitectureSlice } from "./architectureSlice";
 import { createPlaybackSlice } from "./playbackSlice";
+import { createTraceSlice } from "./traceSlice";
 
 export type StoreState = ConnectionSlice &
   EventsSlice &
   ExecutionTableSlice &
   ArchitectureSlice &
-  PlaybackSlice & {
+  PlaybackSlice &
+  TraceSlice & {
     contractState: Record<string, string>;
     changedKeys: string[];
     updateContractState: (key: string, value: string) => void;
@@ -28,6 +31,7 @@ export const useStore = create<StoreState>()((...a) => ({
   ...createExecutionTableSlice(...a),
   ...createArchitectureSlice(...a),
   ...createPlaybackSlice(...a),
+  ...createTraceSlice(...a),
   contractState: {},
   changedKeys: [],
   updateContractState: (key, value) =>

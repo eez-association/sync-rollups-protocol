@@ -33,13 +33,17 @@ export function useChainWatcher({
       transport: http(rpcUrl),
     });
 
-    // First, fetch existing logs
+    // Fetch only the latest block's events (not full history)
     client
-      .getContractEvents({
-        address: contractAddress,
-        abi: abi as any,
-        fromBlock: 0n,
-        toBlock: "latest",
+      .getBlockNumber()
+      .then((latest) => {
+        const fromBlock = latest > 0n ? latest : 0n;
+        return client.getContractEvents({
+          address: contractAddress,
+          abi: abi as any,
+          fromBlock,
+          toBlock: "latest",
+        });
       })
       .then((logs) => {
         for (const log of logs) {
