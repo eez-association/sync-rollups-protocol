@@ -167,7 +167,6 @@ abstract contract RevertContinueActions {
     // ── L1 entries: 2 entries ──
     //   Entry 0: CALL_A → RESULT_A  [s0→s1] (consumed+rolled back, then stays)
     //   Entry 1: CALL_B → RESULT_B  [s0→s2] (consumed after revert)
-
     function _l1Entries(address joinA, address joinB, address dualCaller)
         internal
         pure

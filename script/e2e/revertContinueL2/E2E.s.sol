@@ -151,7 +151,7 @@ abstract contract RevertContinueL2Actions is L2TXActionsBase {
         entries[2].actionHash = keccak256(abi.encode(_revertContinueAction()));
         entries[2].nextAction = _callToCounterL1(counterL1, scaL2, scope1);
 
-        // currentState=s3: after _handleScopeRevert restores to s3 (post REVERT_CONTINUE)
+        // currentState=s3: _handleScopeRevert restores to s3 (captured after REVERT_CONTINUE)
         entries[3].stateDeltas = _delta(s3, s4);
         entries[3].actionHash = keccak256(abi.encode(_resultFromCounterL1()));
         entries[3].nextAction = _terminalResultL2Tx();
