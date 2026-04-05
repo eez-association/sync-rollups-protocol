@@ -324,6 +324,18 @@ contract Execute is Script, RevertContinueActions {
     }
 }
 
+/// @title ExecuteNetwork — Network mode: user transaction (DualCaller.execute())
+/// @dev Env: DUAL_CALLER
+contract ExecuteNetwork is Script {
+    function run() external view {
+        address target = vm.envAddress("DUAL_CALLER");
+        bytes memory data = abi.encodeWithSelector(DualCallerWithRevert.execute.selector);
+        console.log("TARGET=%s", target);
+        console.log("VALUE=0");
+        console.log("CALLDATA=%s", vm.toString(data));
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════
 //  Verification
 // ═══════════════════════════════════════════════════════════════
