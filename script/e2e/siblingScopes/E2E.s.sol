@@ -291,7 +291,7 @@ contract ComputeExpected is ComputeExpectedBase, SiblingScopesActions {
             "EXPECTED_L1_HASHES=[%s,%s,%s]", vm.toString(l1eh0), vm.toString(l1eh1), vm.toString(l1eh2)
         );
         console.log("EXPECTED_L2_HASHES=[%s,%s]", vm.toString(l2eh0), vm.toString(l2eh1));
-        console.log("EXPECTED_L2_CALL_HASHES=[%s,%s]", vm.toString(h_callA), vm.toString(h_callB));
+        // No EXPECTED_L2_CALL_HASHES: L2→L1 direction (outgoing executeCrossChainCall, not incoming)
 
         // Actions for logging
         Action memory l2txAction = _l2txAction(rlpTx);

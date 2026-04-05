@@ -42,9 +42,9 @@ abstract contract RevertContinueActions {
     uint256 internal constant L2_ROLLUP_ID = 1;
     uint256 internal constant MAINNET_ROLLUP_ID = 0;
 
-    // ── CALL actions (built by executeCrossChainCall on L1, scopeless) ──
+    // ── CALL actions ──
 
-    function _callA(address joinA, address dualCaller) internal pure returns (Action memory) {
+    function _callA(address joinA, address dualCaller, uint256[] memory scope) internal pure returns (Action memory) {
         return Action({
             actionType: ActionType.CALL,
             rollupId: L2_ROLLUP_ID,
@@ -54,27 +54,11 @@ abstract contract RevertContinueActions {
             failed: false,
             sourceAddress: dualCaller,
             sourceRollup: MAINNET_ROLLUP_ID,
-            scope: new uint256[](0)
+            scope: scope
         });
     }
 
-    function _callB(address joinB, address dualCaller) internal pure returns (Action memory) {
-        return Action({
-            actionType: ActionType.CALL,
-            rollupId: L2_ROLLUP_ID,
-            destination: joinB,
-            value: 0,
-            data: abi.encodeWithSelector(JoinedCounter.increment.selector),
-            failed: false,
-            sourceAddress: dualCaller,
-            sourceRollup: MAINNET_ROLLUP_ID,
-            scope: new uint256[](0)
-        });
-    }
-
-    // ── Scoped CALL for L2 scope navigation entries ──
-
-    function _callBScoped(address joinB, address dualCaller, uint256[] memory scope) internal pure returns (Action memory) {
+    function _callB(address joinB, address dualCaller, uint256[] memory scope) internal pure returns (Action memory) {
         return Action({
             actionType: ActionType.CALL,
             rollupId: L2_ROLLUP_ID,
@@ -181,13 +165,13 @@ abstract contract RevertContinueActions {
         StateDelta[] memory deltasA = new StateDelta[](1);
         deltasA[0] = StateDelta({rollupId: L2_ROLLUP_ID, currentState: s0, newState: s1, etherDelta: 0});
         entries[0].stateDeltas = deltasA;
-        entries[0].actionHash = keccak256(abi.encode(_callA(joinA, dualCaller)));
+        entries[0].actionHash = keccak256(abi.encode(_callA(joinA, dualCaller, new uint256[](0))));
         entries[0].nextAction = _resultA();
 
         StateDelta[] memory deltasB = new StateDelta[](1);
         deltasB[0] = StateDelta({rollupId: L2_ROLLUP_ID, currentState: s0, newState: s2, etherDelta: 0});
         entries[1].stateDeltas = deltasB;
-        entries[1].actionHash = keccak256(abi.encode(_callB(joinB, dualCaller)));
+        entries[1].actionHash = keccak256(abi.encode(_callB(joinB, dualCaller, new uint256[](0))));
         entries[1].nextAction = _resultB();
     }
 
@@ -212,7 +196,7 @@ abstract contract RevertContinueActions {
 
         entries[1].stateDeltas = new StateDelta[](0);
         entries[1].actionHash = keccak256(abi.encode(_revertContinueAction()));
-        entries[1].nextAction = _callBScoped(joinB, dualCaller, scope1);
+        entries[1].nextAction = _callB(joinB, dualCaller, scope1);
 
         entries[2].stateDeltas = new StateDelta[](0);
         entries[2].actionHash = keccak256(abi.encode(_resultB()));
@@ -371,18 +355,26 @@ contract ComputeExpected is ComputeExpectedBase, RevertContinueActions {
 
         console.log("EXPECTED_L1_HASHES=[%s,%s]", vm.toString(l1eh0), vm.toString(l1eh1));
         console.log("EXPECTED_L2_HASHES=[%s,%s,%s]", vm.toString(l2eh0), vm.toString(l2eh1), vm.toString(l2eh2));
+        // Only 1 L2 call hash: executeIncomingCrossChainCall emits one event.
+        // CALL_B inside scope navigation does not emit a call event.
+        // Hash uses scope=[0,0] (as passed to executeIncomingCrossChainCall).
+        uint256[] memory scope00 = new uint256[](2);
+        scope00[0] = 0;
+        scope00[1] = 0;
+        bytes32 incomingCallHash = keccak256(abi.encode(_callA(joinAAddr, dualCallerAddr, scope00)));
+        console.log("EXPECTED_L2_CALL_HASHES=[%s]", vm.toString(incomingCallHash));
 
         console.log("");
         console.log("=== EXPECTED L1 EXECUTION TABLE (2 entries) ===");
-        _logEntry(0, l1[0].actionHash, l1[0].stateDeltas, _fmtCall(_callA(joinAAddr, dualCallerAddr)), _fmtResult(_resultA(), "(1,0,1)"));
-        _logEntry(1, l1[1].actionHash, l1[1].stateDeltas, _fmtCall(_callB(joinBAddr, dualCallerAddr)), _fmtResult(_resultB(), "(1,0,2)"));
+        _logEntry(0, l1[0].actionHash, l1[0].stateDeltas, _fmtCall(_callA(joinAAddr, dualCallerAddr, new uint256[](0))), _fmtResult(_resultA(), "(1,0,1)"));
+        _logEntry(1, l1[1].actionHash, l1[1].stateDeltas, _fmtCall(_callB(joinBAddr, dualCallerAddr, new uint256[](0))), _fmtResult(_resultB(), "(1,0,2)"));
 
         uint256[] memory scope1 = new uint256[](1);
         scope1[0] = 1;
         console.log("");
         console.log("=== EXPECTED L2 EXECUTION TABLE (3 entries) ===");
         _logL2Entry(0, l2eh0, _fmtResult(_resultA(), "(1,0,1)"), "REVERT rollupId=1 scope=[0]");
-        _logL2Entry(1, l2eh1, "REVERT_CONTINUE rollupId=1", _fmtCall(_callBScoped(joinBAddr, dualCallerAddr, scope1)));
+        _logL2Entry(1, l2eh1, "REVERT_CONTINUE rollupId=1", _fmtCall(_callB(joinBAddr, dualCallerAddr, scope1)));
         _logL2Entry(2, l2eh2, _fmtResult(_resultB(), "(1,0,2)"), _fmtResult(_terminalResult(), "(void)  (terminal)"));
     }
 }

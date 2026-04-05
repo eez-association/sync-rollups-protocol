@@ -351,18 +351,17 @@ contract VerifyL2Blocks is VerifyHelpers {
     }
 }
 
-/// @title VerifyL2Calls — Verify that cross-chain call events match expected actionHashes
-/// @dev Runs against L2 RPC. Checks across given blocks for matching events.
-///   Checks both IncomingCrossChainCallExecuted (L1→L2) and CrossChainCallExecuted (L2→L1).
-///   Both events have bytes32 indexed actionHash as topics[1].
+/// @title VerifyL2Calls — Verify that incoming cross-chain call events match expected actionHashes
+/// @dev Runs against L2 RPC. Checks across given blocks for IncomingCrossChainCallExecuted events.
+///   Only for L1→L2 direction (executeIncomingCrossChainCall).
+///   L2→L1 tests (outgoing executeCrossChainCall) should NOT use this verifier —
+///   they skip by not outputting EXPECTED_L2_CALL_HASHES.
 ///   forge script script/e2e/shared/Verify.s.sol:VerifyL2Calls \
 ///     --rpc-url $L2_RPC \
 ///     --sig "run(uint256[],address,bytes32[])" "[5,6]" $MANAGER_L2 "[$HASH1,$HASH2]"
 contract VerifyL2Calls is VerifyHelpers {
     bytes32 constant SIG_INCOMING_CALL =
         keccak256("IncomingCrossChainCallExecuted(bytes32,address,uint256,bytes,address,uint256,uint256[])");
-    bytes32 constant SIG_CROSS_CHAIN_CALL =
-        keccak256("CrossChainCallExecuted(bytes32,address,address,bytes,uint256)");
 
     function run(uint256[] calldata l2Blocks, address managerL2, bytes32[] calldata expectedCallHashes) external view {
         if (l2Blocks.length == 0) {
@@ -405,7 +404,7 @@ contract VerifyL2Calls is VerifyHelpers {
     }
 
     function _isCallEvent(bytes32 sig) internal pure returns (bool) {
-        return sig == SIG_INCOMING_CALL || sig == SIG_CROSS_CHAIN_CALL;
+        return sig == SIG_INCOMING_CALL;
     }
 
     function _collectActionHashes(uint256[] calldata blocks, address managerL2)

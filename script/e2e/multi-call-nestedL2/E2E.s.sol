@@ -552,7 +552,7 @@ contract ComputeExpected is ComputeExpectedBase, MultiCallNestedL2Actions {
                 "]"
             )
         );
-        console.log("EXPECTED_L2_CALL_HASHES=[%s,%s]", vm.toString(h_callToCAP1), vm.toString(h_callToC1));
+        // No EXPECTED_L2_CALL_HASHES: L2→L1 direction (outgoing executeCrossChainCall, not incoming)
 
         // Summary
         console.log("");

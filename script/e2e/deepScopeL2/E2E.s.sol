@@ -269,7 +269,6 @@ contract ComputeExpected is ComputeExpectedBase, DeepScopeActions {
         // Parseable output
         console.log("EXPECTED_L1_HASHES=[%s,%s]", vm.toString(l1eh0), vm.toString(l1eh1));
         console.log("EXPECTED_L2_HASHES=[%s]", vm.toString(l2eh0));
-        console.log("EXPECTED_L2_CALL_HASHES=[%s]", vm.toString(h_callToCounterL1));
 
         // Actions for logging
         Action memory l2txAction = _l2txAction(rlpTx);
