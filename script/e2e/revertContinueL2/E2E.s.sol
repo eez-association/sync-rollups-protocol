@@ -41,6 +41,15 @@ import {L2TXBatcher, L2TXActionsBase, getOrCreateProxy} from "../shared/E2EHelpe
 //  │      [1]: Counter.increment() → 1                                │
 //  │      → terminal RESULT                                           │
 //  │    Counter = 1 (first increment rolled back, second kept)        │
+//  │                                                                  │
+//  │    State after scope revert:                                     │
+//  │      REVERT saves the rollup state at the moment it fires (s2).  │
+//  │      REVERT_CONTINUE advances it further (s2→s3).                │
+//  │      _handleScopeRevert restores to s3 — the state AFTER the     │
+//  │      REVERT_CONTINUE delta, not before it. So the net effect is: │
+//  │      the reverted scope's own deltas (s1→s2) are rolled back by  │
+//  │      the EVM, but REVERT + REVERT_CONTINUE together leave the    │
+//  │      rollup at s3 (ready for the next action).                   │
 //  └──────────────────────────────────────────────────────────────────┘
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -118,8 +127,8 @@ abstract contract RevertContinueL2Actions is L2TXActionsBase {
     ///   Entry 0: L2TX → CALL(CounterL1, scope=[0,0])          [s0→s1]
     ///   Entry 1: RESULT(1) → REVERT(scope=[0])                [s1→s2]
     ///   Entry 2: REVERT_CONTINUE → CALL(CounterL1, scope=[1]) [s2→s3]
-    ///   Entry 3: RESULT(1) → terminal RESULT                  [s2→s4]
-    ///   Note: entry 3 starts at s2 because _handleScopeRevert restores to s2.
+    ///   Entry 3: RESULT(1) → terminal RESULT                  [s3→s4]
+    ///   Note: entry 3 starts at s3 because _handleScopeRevert restores to s3 (post REVERT_CONTINUE).
     function _l1Entries(address counterL1, address scaL2, bytes memory rlpTx)
         internal
         pure

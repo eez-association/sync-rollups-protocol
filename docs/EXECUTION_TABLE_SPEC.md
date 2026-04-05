@@ -92,6 +92,17 @@ A REVERT action only fires `ScopeReverted` when `scope` matches the current scop
 
 REVERT_CONTINUE is looked up by `_getRevertContinuation()` inside the reverting scope, just before `ScopeReverted` is thrown. The action is deterministically constructed from `rollupId`, and its hash (`keccak256(abi.encode(action))`) is used to find the matching entry. On L1, the entry's `stateDeltas.currentState` must also match the rollup state at that moment (after any prior deltas in the reverted scope have been applied). On L2, only the action hash matters (no state deltas).
 
+### Rollup state after REVERT + REVERT_CONTINUE (L1)
+
+REVERT restores the rollup to the state it was at when the revert happened — the point in the transaction where the scope reverted. REVERT_CONTINUE then puts the rollup in the next state before the next action (CALL or RESULT). Together they ensure the rollup is ready for whatever comes after the reverted scope.
+
+Example with state chain `s0 → s1 → s2 → s3`:
+- Entry consumed before scope: `s0 → s1`
+- Entry consumed inside scope (reverted call): `s1 → s2` ← REVERT restores here
+- REVERT_CONTINUE entry: `s2 → s3` ← advances to next state
+- `_handleScopeRevert` restores to **s3**
+- Next entry after the scope revert: `currentState = s3`
+
 ---
 
 ## Entry Structure
