@@ -68,6 +68,71 @@ contract NestedCaller {
     }
 }
 
+/// @notice Calls target via self-call that reverts, then calls target directly.
+/// Used to test that cross-chain entry consumption is rolled back by the self-call revert.
+contract SelfCallerWithRevert {
+    Counter public target;
+    uint256 public lastResult;
+
+    constructor(Counter _target) {
+        target = _target;
+    }
+
+    function execute() external {
+        try this.innerCall() {} catch {}
+        lastResult = target.increment();
+    }
+
+    function innerCall() external {
+        target.increment();
+        revert("inner scope revert");
+    }
+}
+
+/// @notice Paired counter — returns (ownCounter, otherCounter, id).
+/// Deploy two with different IDs and link via setOther() to get distinct return data.
+/// Used to work around the L2 duplicate-actionHash limitation (see CAVEATS.md).
+contract JoinedCounter {
+    JoinedCounter public other;
+    uint256 public counter;
+    uint256 public immutable ID;
+
+    constructor(uint256 id) {
+        ID = id;
+    }
+
+    function setOther(JoinedCounter _other) external {
+        other = _other;
+    }
+
+    function increment() external returns (uint256 own, uint256 otherVal, uint256 id) {
+        counter++;
+        return (counter, other.counter(), ID);
+    }
+}
+
+/// @notice Calls targetA in a reverting self-call, then calls targetB.
+/// Used with JoinedCounter pairs so the two cross-chain calls produce different RESULT hashes.
+contract DualCallerWithRevert {
+    JoinedCounter public targetA;
+    JoinedCounter public targetB;
+
+    constructor(JoinedCounter _a, JoinedCounter _b) {
+        targetA = _a;
+        targetB = _b;
+    }
+
+    function execute() external {
+        try this.innerCall() {} catch {}
+        targetB.increment();
+    }
+
+    function innerCall() external {
+        targetA.increment();
+        revert("inner scope revert");
+    }
+}
+
 /// @notice Calls increment() on two Counter proxies sequentially — produces sibling scopes [0],[1].
 contract CallTwoProxies {
     Counter public target1;

@@ -1,29 +1,21 @@
 # TODO
 
-## In Progress
-- [ ] Update CrossChainManagerL2 — port actionHash array changes from Rollups.sol
-- [ ] Review visualizer — state deltas may be incorrect (check integration tests too)
-
 ## Next Up
-- [ ] Test with reverts and check scopes
 - [ ] End and static call modes
-- [ ] Check how revert can be deleted — try flatten approach
-- [ ] CrossChain address — deterministic deployments?
 
 ## Integration Tests
-- [ ] Bridge integration test
-- [ ] Flashloan integration test
 - [ ] Static call integration test
 
 ## Research / Open Questions
 - [ ] State deltas on cross-chain — other ways? Other structs?
 - [ ] L2 ScopeReverted doesn't rollback state changes (no rollup state management on L2)
+- [ ] L2 `_consumeExecution` duplicate actionHash after scope revert — entries restored by EVM undo are indistinguishable from new entries with the same hash. Consider adding state-delta-like checks or sequence counters to `CrossChainManagerL2` so REVERT_CONTINUE → CALL works for identical-result cross-chain calls (see CAVEATS.md)
 
 ## Done / Old Notes
-- [x] Keep a list of actions, if all consumed, optionally pay something to an address
-- [x] rollupID uint64
+- Keep a list of actions, if all consumed, optionally pay something to an address
+- rollupID uint64
 - Custom tx — all original contracts and chains we interact with
-- Universal address
+- Universal address, access list transaction!
 
 
 

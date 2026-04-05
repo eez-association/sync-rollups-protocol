@@ -370,7 +370,7 @@ contract Rollups is ICrossChainManager {
                 }
             } else if (nextAction.actionType == ActionType.REVERT) {
                 if (_scopesMatch(scope, nextAction.scope)) {
-                    // This is the target revert scope - capture state and revert
+                    // This is the target revert scope - consume continuation, capture state, and revert
                     uint256 rollupId = nextAction.rollupId;
                     bytes32 stateRoot = rollups[rollupId].stateRoot;
                     Action memory continuation = _getRevertContinuation(rollupId);
