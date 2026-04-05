@@ -304,10 +304,13 @@ contract ComputeExpected is ComputeExpectedBase, RevertContinueL2Actions {
         bytes32 l2eh0 = _entryHash(l2[0].actionHash, l2[0].nextAction);
 
         console.log(
-            "EXPECTED_L1_HASHES=[%s,%s,%s,%s]",
-            vm.toString(l1eh0),
-            vm.toString(l1eh1),
-            string.concat(vm.toString(l1eh2), ",", vm.toString(l1eh3))
+            string.concat(
+                "EXPECTED_L1_HASHES=[",
+                vm.toString(l1eh0), ",",
+                vm.toString(l1eh1), ",",
+                vm.toString(l1eh2), ",",
+                vm.toString(l1eh3), "]"
+            )
         );
         console.log("EXPECTED_L2_HASHES=[%s]", vm.toString(l2eh0));
 
