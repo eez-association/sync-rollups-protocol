@@ -147,6 +147,41 @@
 // ═══ Entry definitions (all 14 entries with full details) ════════
 
 const E = {
+  // ── Scenario 0 (simplest) ──
+  s0e1: {
+    id:'s0e1', hash:'CALL{L2, A, inc(), src=Alice}', next:'RESULT{L2, data=1}', delta:'L2: S0 → S1',
+    action: {
+      actionType:'CALL', rollupId:'L2_ROLLUP_ID (1)',
+      destination:'counterL2 — A (Counter on L2)', value:'0',
+      data:'Counter.increment.selector', failed:'false',
+      sourceAddress:'alice',
+      sourceRollup:'MAINNET_ROLLUP_ID (0)', scope:'[]'
+    },
+    nextAct: {
+      actionType:'RESULT', rollupId:'L2_ROLLUP_ID (1)',
+      destination:'address(0)', value:'0',
+      data:'abi.encode(uint256(1))', failed:'false',
+      sourceAddress:'address(0)', sourceRollup:'0', scope:'[]'
+    },
+    sd: { rollupId:'L2_ROLLUP_ID (1)', currentState:'keccak256("l2-initial-state")', newState:'keccak256("l2-state-after-increment")', etherDelta:'0' }
+  },
+  s0e2: {
+    id:'s0e2', hash:'RESULT{L2, data=1}', next:'RESULT{L2, data=1}', delta:null,
+    action: {
+      actionType:'RESULT', rollupId:'L2_ROLLUP_ID (1)',
+      destination:'address(0)', value:'0',
+      data:'abi.encode(uint256(1))', failed:'false',
+      sourceAddress:'address(0)', sourceRollup:'0', scope:'[]'
+    },
+    nextAct: {
+      actionType:'RESULT', rollupId:'L2_ROLLUP_ID (1)',
+      destination:'address(0)', value:'0',
+      data:'abi.encode(uint256(1))', failed:'false',
+      sourceAddress:'address(0)', sourceRollup:'0', scope:'[]'
+    },
+    sd: null
+  },
+
   // ── Scenario 1 ──
   s1e1: {
     id:'s1e1', hash:'CALL{L2, B, inc(), src=A}', next:'RESULT{L2, data=1}', delta:'L2: S0 → S1',
@@ -495,6 +530,34 @@ const E = {
 // crossEdges connect proxy↔original across L1/L2 boundary.
 
 const ARCH = {
+s0: {
+  // col: 0=Alice/Alice', 1=A'/A, 2=Rollups/Mgr, 3=external
+  l1: [
+    { id:'Alice',   label:'Alice',   sub:'EOA',             type:'user',     col:0 },
+    { id:'Aprime',  label:"A'",      sub:'Proxy for A',     type:'proxy',    col:1 },
+    { id:'Rollups', label:'Rollups', sub:'Manager',         type:'system',   col:2 },
+    { id:'Prover',  label:'Prover',  sub:'ZK Proof',        type:'ghost',    col:3 },
+  ],
+  l2: [
+    { id:'AliceProxy', label:"Alice'", sub:'Proxy for Alice', type:'proxy',  col:0 },
+    { id:'A',       label:'A',       sub:'Counter',         type:'contract', col:1 },
+    { id:'ManagerL2',label:'ManagerL2',sub:'Manager',       type:'system',   col:2 },
+    { id:'System',  label:'SYSTEM',  sub:'sysAddr',         type:'ghost',    col:3 },
+  ],
+  cols: 4,
+  edges: [
+    { from:'Alice',to:'Aprime',         label:'increment()' },
+    { from:'Aprime',to:'Rollups',       label:'execCC' },
+    { from:'ManagerL2',to:'AliceProxy', label:'execOnBehalf' },
+    { from:'AliceProxy',to:'A',         label:'inc()' },
+    { from:'A',to:'AliceProxy',         label:'return(1)', back:true },
+    { from:'AliceProxy',to:'ManagerL2', label:'RESULT{1}', back:true },
+    { from:'Rollups',to:'Aprime',       label:'return(1)', back:true },
+    { from:'Aprime',to:'Alice',         label:'return(1)', back:true },
+    { from:'Prover',to:'Rollups',       label:'postBatch' },
+    { from:'System',to:'ManagerL2',     label:'loadExecTable' },
+  ],
+},
 s1: {
   // col: 0=Alice, 1=A/A', 2=B'/B, 3=Rollups/Mgr, 4=external
   l1: [
@@ -681,6 +744,44 @@ s5: {
 // calls — switching chains whenever a call crosses to the other chain.
 
 const S = {
+s0: {
+  title:'Scenario 0: L1 → L2 (Simple)', flow:"Alice → A' → A",
+  dir:'L1 calls L2 directly via proxy — simplest cross-chain call',
+  contracts:{ l1:[], l2:['A.counter'], extra:['L2 State'] },
+  steps:[
+    { chain:'l1', title:'Setup L1: rollups.postBatch(1 entry)',
+      detail:'Stores deferred entry: hash(CALL{A}) → RESULT{1}, with L2 state delta S0→S1.',
+      l1Add:['s0e1'], l1Rm:[], l2Add:[], l2Rm:[], state:{},
+      activeNodes:['Rollups','Prover'], activeEdges:['Prover→Rollups'],
+      diagram:[ ['Batch+Proof','','user',''], 'postBatch()', ['Rollups','','system','l1'], 'stores', ['L1 Table','','system','l1'] ]
+    },
+    { chain:'l2', title:'Setup L2: loadExecutionTable(1 entry)',
+      detail:'Stores entry: hash(RESULT{1}) → RESULT{1} (terminal self-ref).',
+      l1Add:[], l1Rm:[], l2Add:['s0e2'], l2Rm:[], state:{},
+      activeNodes:['ManagerL2','System'], activeEdges:['System→ManagerL2'],
+      diagram:[ ['SYSTEM','','user',''], 'loadExecTable()', ['ManagerL2','','system','l2'], 'stores', ['L2 Table','','system','l2'] ]
+    },
+    { chain:'l1', title:"L1: Alice calls A' (proxy for A on L2)",
+      detail:"Alice calls A'(proxy for Counter A on L2). A'.fallback() → Rollups.executeCrossChainCall. Builds CALL{L2,A,inc(),src=Alice} → matches L1 entry → consumed. L2 state S0→S1 applied.",
+      l1Add:[], l1Rm:['s0e1'], l2Add:[], l2Rm:[], state:{'L2 State':'S1'},
+      activeNodes:['Alice','Aprime','Rollups'], activeEdges:['Alice→Aprime','Aprime→Rollups'],
+      diagram:[ ['Alice','','user',''], 'increment()', ["A'",'Proxy for A','proxy','l1'], 'execCC', ['Rollups','','system','l1'] ]
+    },
+    { chain:'l2', title:'↗ Cross to L2: A.increment() executes',
+      detail:"executeIncomingCrossChainCall(dest=A, src=Alice) → newScope → Alice'.executeOnBehalf(A, inc) → A.counter 0→1, returns 1 → RESULT{1} consumed from L2 table.",
+      l1Add:[], l1Rm:[], l2Add:[], l2Rm:['s0e2'], state:{'A.counter':1},
+      activeNodes:['ManagerL2','AliceProxy','A'], activeEdges:['ManagerL2→AliceProxy','AliceProxy→A','A→AliceProxy','AliceProxy→ManagerL2'],
+      diagram:[ ['SYSTEM','','user',''], 'execIncoming', ['ManagerL2','','system','l2'], 'execOnBehalf', ["Alice'",'Proxy for Alice','proxy','l2'], 'inc()', ['A','counter: 0→1','contract','l2'] ]
+    },
+    { chain:'l1', title:"↙ Back to L1: RESULT{1} returned to Alice",
+      detail:"executeCrossChainCall returned RESULT{1} to A'.fallback → returned to Alice.",
+      l1Add:[], l1Rm:[], l2Add:[], l2Rm:[], state:{},
+      activeNodes:['Rollups','Aprime','Alice'], activeEdges:['Rollups→Aprime','Aprime→Alice'],
+      diagram:[ ['Rollups','RESULT{1}','system','l1'], 'returns to', ["A'",'','proxy','l1'], 'returns to', ['Alice','done','user',''] ]
+    }
+  ]
+},
+
 s1: {
   title:'Scenario 1: L1 → L2', flow:'Alice → A (→ B\') → B',
   dir:'L1 calls L2 — crosses to L2 for B, returns to L1 with result',
@@ -934,7 +1035,7 @@ s5: {
 
 // ═══ State ═══════════════════════════════════════════════════════
 
-let ak = 's1', cs = -1, pt = null;
+let ak = 's0', cs = -1, pt = null;
 const collapsed = new Set();
 
 function compute(scenario, upto) {
