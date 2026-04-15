@@ -71,6 +71,19 @@ The `_etherDelta` transient storage is reset by each `_applyStateDeltas` call, s
 
 The RESULT's `rollupId` comes from the CALL action's `rollupId` (the chain where the target lives), NOT from the chain where execution physically happens.
 
+### Reverts must come from Solidity code
+
+E2E tests must not use "random" REVERT/REVERT_CONTINUE entries that don't correspond to actual Solidity revert behavior. The revert modeled in execution table entries should represent a real `revert` that happens in contract code:
+
+- **Correct:** A contract calls itself via `this.innerCall()`, the inner call makes a cross-chain call and then reverts. The REVERT/REVERT_CONTINUE entries model this real behavior.
+- **Incorrect:** Execution table entries contain REVERT actions but no contract in the test actually reverts — the revert exists only in the entries.
+
+On L1, the real Solidity revert rolls back entry consumption via EVM mechanics. On L2, the same revert is modeled via scope navigation with REVERT/REVERT_CONTINUE entries.
+
+### Single L2 entry when same-state calls produce identical results
+
+When a cross-chain call is made twice to the same contract with the same starting state (e.g., counter=0 both times because the first call was reverted), both calls produce identical CALL and RESULT actions — same `actionHash`, same `nextAction`. Only **one** L2 execution table entry is needed: the first consumption is rolled back by the EVM revert, and the same entry is reused for the second call. This applies to `executeCrossChainCall` on L2 where entries are matched by `actionHash` only (no state delta check).
+
 ### Proxy reentrancy is safe
 
 In Scenarios 3 and 4, the proxy (A' or D') is entered twice in the same transaction:

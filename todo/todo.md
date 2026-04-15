@@ -1,30 +1,16 @@
 # TODO
 
-## In Progress
-- [ ] Update CrossChainManagerL2 — port actionHash array changes from Rollups.sol
-- [ ] Review visualizer — state deltas may be incorrect (check integration tests too)
-
 ## Next Up
-- [ ] Test with reverts and check scopes
-- [ ] End and static call modes
-- [ ] Check how revert can be deleted — try flatten approach
-- [ ] CrossChain address — deterministic deployments?
-
-## Integration Tests
-- [ ] Bridge integration test
-- [ ] Flashloan integration test
-- [ ] Static call integration test
-
-## Research / Open Questions
-- [ ] State deltas on cross-chain — other ways? Other structs?
-- [ ] L2 ScopeReverted doesn't rollback state changes (no rollup state management on L2)
+- [ ] static call table,  also reverts?¿
+- [ ] State deltas on L2?¿
+- [ ] L2 `_consumeExecution` duplicate actionHash after scope revert — entries restored by EVM undo are indistinguishable from new entries with the same hash. Consider adding state-delta-like checks or sequence counters to `CrossChainManagerL2` so REVERT_CONTINUE → CALL works for identical-result cross-chain calls (see CAVEATS.md)
+- Add gas into actions
+- add transient storage to ahve account abstraction ( much chepaer) and normal approach
 
 ## Done / Old Notes
-- [x] Keep a list of actions, if all consumed, optionally pay something to an address
-- [x] rollupID uint64
+- Keep a list of actions, if all consumed, optionally pay something to an address
+- rollupID uint64
 - Custom tx — all original contracts and chains we interact with
-- Universal address
-
-
+- Universal address, access list transaction!
 
 `Rollups.sol` `ScopeReverted` error includes `(bytes nextAction, bytes32 stateRoot, uint256 rollupId)` and `_handleScopeRevert` restores the rollup's state root after catching the revert. `CrossChainManagerL2.sol` `ScopeReverted` only carries `(bytes nextAction)` — no state restoration. This is consistent since L2 has no rollup state management, but it means L2 scope reverts don't rollback any state changes made during the reverted scope.

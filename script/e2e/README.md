@@ -312,7 +312,7 @@ L2 table (2 entries, chained in a single executeIncomingCrossChainCall tx):
   [1] hash(RESULT_1) → RESULT(1)         ← result of B is terminal
 ```
 
-The L2 table entry trigger is always a **RESULT** hash (what the previous call produced), not a CALL hash. The `nextAction` is either a CALL (chaining) or a RESULT (terminal). `EXPECTED_L2_CALL_HASHES` always has exactly **1 entry** — the initial `executeIncomingCrossChainCall` / `executeCrossChainCall`.
+The L2 table entry trigger is always a **RESULT** hash (what the previous call produced), not a CALL hash. The `nextAction` is either a CALL (chaining) or a RESULT (terminal). `EXPECTED_L2_CALL_HASHES` is **only for `IncomingCrossChainCallExecuted` events** — tests where L2 receives incoming calls via `executeIncomingCrossChainCall` (L1→L2 direction). Tests where L2 initiates outgoing calls via `executeCrossChainCall` (L2→L1 direction) must **not** output `EXPECTED_L2_CALL_HASHES`.
 
 ## Pitfall: Terminal RESULT in Nested Calls
 
@@ -337,5 +337,4 @@ If you reuse the inner RESULT as the terminal, `_resolveScopes` will return the 
 - **Entry hash matching**: Verification compares `keccak256(abi.encode(actionHash, keccak256(abi.encode(nextAction))))` — both the trigger and the response must match.
 - **State delta chaining**: `newState` of entry N must equal `currentState` of entry N+1 when both touch the same rollup.
 - **L2 entries have no state deltas**: On L2, `stateDeltas` is always empty. Only L1 tracks state roots.
-- **Three verification hash sets**: Every test must output `EXPECTED_L1_HASHES` (L1 batch), `EXPECTED_L2_HASHES` (L2 table), and `EXPECTED_L2_CALL_HASHES` (L2 calls) in `ComputeExpected`.
-- **L2 call hashes are always 1**: `EXPECTED_L2_CALL_HASHES` always has exactly 1 entry (the initial cross-chain call). All subsequent calls are chained internally.
+- **Verification hash sets**: Every test must output `EXPECTED_L1_HASHES` (L1 batch) and `EXPECTED_L2_HASHES` (L2 table) in `ComputeExpected`. Tests with L1→L2 incoming calls must also output `EXPECTED_L2_CALL_HASHES` (the `IncomingCrossChainCallExecuted` action hash). L2→L1 tests (outgoing `executeCrossChainCall`) must **not** include `EXPECTED_L2_CALL_HASHES`.
