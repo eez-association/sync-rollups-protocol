@@ -5,7 +5,7 @@ import {Script, console} from "forge-std/Script.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 import {Rollups} from "../../../src/Rollups.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta, ICrossChainManager} from "../../../src/ICrossChainManager.sol";
+import {Action, ActionType, ExecutionEntry, StateDelta, StaticCall, ICrossChainManager} from "../../../src/ICrossChainManager.sol";
 import {ReentrantCounter} from "../../../test/mocks/ReentrantCounter.sol";
 import {getOrCreateProxy} from "../shared/E2EHelpers.sol";
 
@@ -58,6 +58,7 @@ abstract contract ReentrantCrossChainActions {
             value: 0,
             data: abi.encodeWithSelector(ReentrantCounter.deepCall.selector, remainingCalls),
             failed: false,
+            isStatic: false,
             sourceAddress: dcL1,
             sourceRollup: MAINNET_ROLLUP_ID,
             scope: new uint256[](0)
@@ -77,6 +78,7 @@ abstract contract ReentrantCrossChainActions {
             value: 0,
             data: abi.encodeWithSelector(ReentrantCounter.deepCall.selector, remainingCalls),
             failed: false,
+            isStatic: false,
             sourceAddress: dcL2,
             sourceRollup: L2_ROLLUP_ID,
             scope: scope
@@ -96,6 +98,7 @@ abstract contract ReentrantCrossChainActions {
             value: 0,
             data: abi.encodeWithSelector(ReentrantCounter.deepCall.selector, remainingCalls),
             failed: false,
+            isStatic: false,
             sourceAddress: dcL1,
             sourceRollup: MAINNET_ROLLUP_ID,
             scope: scope
@@ -110,6 +113,7 @@ abstract contract ReentrantCrossChainActions {
             value: 0,
             data: abi.encode(val),
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -124,6 +128,7 @@ abstract contract ReentrantCrossChainActions {
             value: 0,
             data: abi.encode(val),
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -222,7 +227,7 @@ contract Batcher {
     function execute(Rollups rollups, ExecutionEntry[] calldata entries, address target, bytes calldata data)
         external
     {
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
         (bool success, bytes memory ret) = target.call(data);
         if (!success) {
             assembly {
@@ -311,7 +316,7 @@ contract ExecuteL2 is Script, ReentrantCrossChainActions {
 
         vm.startBroadcast();
 
-        manager.loadExecutionTable(_l2Entries(dcL1Addr, dcL2Addr));
+        manager.loadExecutionTable(_l2Entries(dcL1Addr, dcL2Addr), new StaticCall[](0));
 
         manager.executeIncomingCrossChainCall(
             dcL2Addr, // destination

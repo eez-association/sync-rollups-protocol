@@ -5,7 +5,7 @@ import {Script, console} from "forge-std/Script.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 import {Rollups} from "../../../src/Rollups.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
+import {Action, ActionType, ExecutionEntry, StateDelta, StaticCall} from "../../../src/ICrossChainManager.sol";
 import {Counter, SelfCallerWithRevert} from "../../../test/mocks/CounterContracts.sol";
 import {L2TXBatcher, L2TXActionsBase, getOrCreateProxy} from "../shared/E2EHelpers.sol";
 
@@ -68,6 +68,7 @@ abstract contract RevertContinueL2Actions is L2TXActionsBase {
             value: 0,
             data: abi.encodeWithSelector(Counter.increment.selector),
             failed: false,
+            isStatic: false,
             sourceAddress: scaL2,
             sourceRollup: L2_ROLLUP_ID,
             scope: scope
@@ -82,6 +83,7 @@ abstract contract RevertContinueL2Actions is L2TXActionsBase {
             value: 0,
             data: abi.encode(uint256(1)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -98,6 +100,7 @@ abstract contract RevertContinueL2Actions is L2TXActionsBase {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: scope0
@@ -112,6 +115,7 @@ abstract contract RevertContinueL2Actions is L2TXActionsBase {
             value: 0,
             data: "",
             failed: true,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -230,7 +234,7 @@ contract ExecuteL2 is Script, RevertContinueL2Actions {
         CrossChainManagerL2 manager = CrossChainManagerL2(managerL2Addr);
 
         vm.startBroadcast();
-        manager.loadExecutionTable(_l2Entries(counterL1Addr, scaAddr));
+        manager.loadExecutionTable(_l2Entries(counterL1Addr, scaAddr), new StaticCall[](0));
         SelfCallerWithRevert(scaAddr).execute();
 
         console.log("done");

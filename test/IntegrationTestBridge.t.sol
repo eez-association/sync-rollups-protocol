@@ -5,7 +5,7 @@ import {console} from "forge-std/Test.sol";
 import {Rollups, RollupConfig} from "../src/Rollups.sol";
 import {CrossChainManagerL2} from "../src/CrossChainManagerL2.sol";
 import {CrossChainProxy} from "../src/CrossChainProxy.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta, ProxyInfo} from "../src/ICrossChainManager.sol";
+import {Action, ActionType, ExecutionEntry, StateDelta, StaticCall, ProxyInfo} from "../src/ICrossChainManager.sol";
 import {Bridge} from "../src/periphery/Bridge.sol";
 import {WrappedToken} from "../src/periphery/WrappedToken.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
@@ -97,6 +97,7 @@ contract IntegrationTestBridge is IntegrationTestBase {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -122,6 +123,7 @@ contract IntegrationTestBridge is IntegrationTestBase {
             value: 1 ether,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(bridgeL1),
             sourceRollup: MAINNET_ROLLUP_ID,
             scope: new uint256[](0)
@@ -145,7 +147,7 @@ contract IntegrationTestBridge is IntegrationTestBase {
             entries[0].actionHash = keccak256(abi.encode(callAction));
             entries[0].nextAction = resultAction;
 
-            rollups.postBatch(entries, 0, "", "proof");
+            rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
         }
 
         // Alice triggers the bridge
@@ -175,7 +177,7 @@ contract IntegrationTestBridge is IntegrationTestBase {
             entries[0].nextAction = resultAction;
 
             vm.prank(SYSTEM_ADDRESS);
-            managerL2.loadExecutionTable(entries);
+            managerL2.loadExecutionTable(entries, new StaticCall[](0));
         }
 
         // Fund SYSTEM with 1 ether for the delivery
@@ -230,6 +232,7 @@ contract IntegrationTestBridge is IntegrationTestBase {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -256,6 +259,7 @@ contract IntegrationTestBridge is IntegrationTestBase {
             value: 0,
             data: receiveTokensCalldata,
             failed: false,
+            isStatic: false,
             sourceAddress: address(bridgeL1),
             sourceRollup: MAINNET_ROLLUP_ID,
             scope: new uint256[](0)
@@ -279,7 +283,7 @@ contract IntegrationTestBridge is IntegrationTestBase {
             entries[0].actionHash = keccak256(abi.encode(callAction));
             entries[0].nextAction = resultAction;
 
-            rollups.postBatch(entries, 0, "", "proof");
+            rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
         }
 
         // Alice approves and bridges tokens
@@ -315,7 +319,7 @@ contract IntegrationTestBridge is IntegrationTestBase {
             entries[0].nextAction = resultAction;
 
             vm.prank(SYSTEM_ADDRESS);
-            managerL2.loadExecutionTable(entries);
+            managerL2.loadExecutionTable(entries, new StaticCall[](0));
         }
 
         // SYSTEM delivers receiveTokens to bridgeL2
@@ -379,6 +383,7 @@ contract IntegrationTestBridge is IntegrationTestBase {
             value: 0,
             data: fwdCalldata,
             failed: false,
+            isStatic: false,
             sourceAddress: address(bridgeL1),
             sourceRollup: MAINNET_ROLLUP_ID,
             scope: new uint256[](0)
@@ -391,6 +396,7 @@ contract IntegrationTestBridge is IntegrationTestBase {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -408,7 +414,7 @@ contract IntegrationTestBridge is IntegrationTestBase {
             entries[0].actionHash = keccak256(abi.encode(fwdCall));
             entries[0].nextAction = fwdResult;
 
-            rollups.postBatch(entries, 0, "", "proof");
+            rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
         }
 
         vm.prank(alice);
@@ -445,6 +451,7 @@ contract IntegrationTestBridge is IntegrationTestBase {
             value: 0,
             data: retCalldata,
             failed: false,
+            isStatic: false,
             sourceAddress: address(bridgeL2),
             sourceRollup: L2_ROLLUP_ID,
             scope: new uint256[](0)
@@ -457,6 +464,7 @@ contract IntegrationTestBridge is IntegrationTestBase {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -474,7 +482,7 @@ contract IntegrationTestBridge is IntegrationTestBase {
             entries[1].nextAction = retResult;
 
             vm.prank(SYSTEM_ADDRESS);
-            managerL2.loadExecutionTable(entries);
+            managerL2.loadExecutionTable(entries, new StaticCall[](0));
         }
 
         // ════════════════════════════════════════════
@@ -538,6 +546,7 @@ contract IntegrationTestBridge is IntegrationTestBase {
             value: 0,
             data: rlpData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: MAINNET_ROLLUP_ID,
             scope: new uint256[](0)
@@ -565,7 +574,7 @@ contract IntegrationTestBridge is IntegrationTestBase {
             entries[1].actionHash = keccak256(abi.encode(retResult));
             entries[1].nextAction = retResult;
 
-            rollups.postBatch(entries, 0, "", "proof");
+            rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
         }
 
         rollups.executeL2TX(L2_ROLLUP_ID, rlpData);

@@ -5,7 +5,7 @@ import {Script, console} from "forge-std/Script.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 import {Rollups} from "../../../src/Rollups.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
+import {Action, ActionType, ExecutionEntry, StateDelta, StaticCall} from "../../../src/ICrossChainManager.sol";
 import {Counter, CounterAndProxy} from "../../../test/mocks/CounterContracts.sol";
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -40,6 +40,7 @@ abstract contract NestedCounterActions {
             value: 0,
             data: abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),
             failed: false,
+            isStatic: false,
             sourceAddress: sourceAddr,
             sourceRollup: 0, // MAINNET
             scope: new uint256[](0)
@@ -58,6 +59,7 @@ abstract contract NestedCounterActions {
             value: 0,
             data: abi.encodeWithSelector(Counter.increment.selector),
             failed: false,
+            isStatic: false,
             sourceAddress: cap2Addr,
             sourceRollup: L2_ROLLUP_ID,
             scope: scope
@@ -72,6 +74,7 @@ abstract contract NestedCounterActions {
             value: 0,
             data: abi.encode(uint256(1)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -86,6 +89,7 @@ abstract contract NestedCounterActions {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -153,7 +157,7 @@ abstract contract NestedCounterActions {
 ///      because msg.sender inside D'.fallback = Batcher.
 contract Batcher {
     function execute(Rollups rollups, ExecutionEntry[] calldata entries, address target, bytes calldata data) external {
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
         (bool success, bytes memory ret) = target.call(data);
         if (!success) {
             assembly {
@@ -250,7 +254,7 @@ contract ExecuteL2 is Script, NestedCounterActions {
 
         address alice = msg.sender; // broadcaster = system = alice in local mode
 
-        manager.loadExecutionTable(_l2Entries(counterL1Addr, counterAndProxyL2Addr));
+        manager.loadExecutionTable(_l2Entries(counterL1Addr, counterAndProxyL2Addr), new StaticCall[](0));
 
         // SYSTEM triggers CounterAndProxyL2.incrementProxy() via executeIncomingCrossChainCall
         manager.executeIncomingCrossChainCall(

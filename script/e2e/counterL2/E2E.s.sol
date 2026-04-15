@@ -5,7 +5,7 @@ import {Script, console} from "forge-std/Script.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 import {Rollups} from "../../../src/Rollups.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
+import {Action, ActionType, ExecutionEntry, StateDelta, StaticCall} from "../../../src/ICrossChainManager.sol";
 import {Counter, CounterAndProxy} from "../../../test/mocks/CounterContracts.sol";
 import {L2TXBatcher, L2TXActionsBase, getOrCreateProxy} from "../shared/E2EHelpers.sol";
 // ═══════════════════════════════════════════════════════════════════════
@@ -35,6 +35,7 @@ abstract contract CounterL2Actions is L2TXActionsBase {
             value: 0,
             data: abi.encodeWithSelector(Counter.increment.selector),
             failed: false,
+            isStatic: false,
             sourceAddress: counterAndProxyL2,
             sourceRollup: L2_ROLLUP_ID,
             scope: new uint256[](0)
@@ -49,6 +50,7 @@ abstract contract CounterL2Actions is L2TXActionsBase {
             value: 0,
             data: abi.encode(uint256(1)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -63,6 +65,7 @@ abstract contract CounterL2Actions is L2TXActionsBase {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -186,7 +189,7 @@ contract ExecuteL2 is Script, CounterL2Actions {
 
         vm.startBroadcast();
 
-        manager.loadExecutionTable(_l2Entries(counterL1Addr, counterAndProxyL2Addr));
+        manager.loadExecutionTable(_l2Entries(counterL1Addr, counterAndProxyL2Addr), new StaticCall[](0));
 
         // Alice calls D.incrementProxy() on L2
         CounterAndProxy(counterAndProxyL2Addr).incrementProxy();

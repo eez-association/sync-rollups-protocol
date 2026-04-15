@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import {Script, console} from "forge-std/Script.sol";
 import {Rollups} from "../../../src/Rollups.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
+import {Action, ActionType, ExecutionEntry, StateDelta, StaticCall} from "../../../src/ICrossChainManager.sol";
 import {RevertCounter} from "../../../test/mocks/CounterContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 import {getOrCreateProxy} from "../shared/E2EHelpers.sol";
@@ -41,6 +41,7 @@ abstract contract RevertCounterActions {
             value: 0,
             data: abi.encodeWithSelector(RevertCounter.increment.selector),
             failed: false,
+            isStatic: false,
             sourceAddress: sourceAddr,
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -55,6 +56,7 @@ abstract contract RevertCounterActions {
             value: 0,
             data: _revertData(),
             failed: true,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -102,7 +104,7 @@ abstract contract RevertCounterActions {
 ///      We use a low-level call so postBatch effects are preserved.
 contract Batcher {
     function execute(Rollups rollups, ExecutionEntry[] calldata entries, address proxy, bytes calldata data) external {
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
         (bool success,) = proxy.call(data);
         success; // Expected to revert — suppress unused warning
     }

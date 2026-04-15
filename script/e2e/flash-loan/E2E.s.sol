@@ -9,7 +9,7 @@ import {WrappedToken} from "../../../src/periphery/WrappedToken.sol";
 import {FlashLoan} from "../../../src/periphery/defiMock/FlashLoan.sol";
 import {FlashLoanBridgeExecutor} from "../../../src/periphery/defiMock/FlashLoanBridgeExecutor.sol";
 import {FlashLoanersNFT} from "../../../src/periphery/defiMock/FlashLoanersNFT.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
+import {Action, ActionType, ExecutionEntry, StateDelta, StaticCall} from "../../../src/ICrossChainManager.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {_deployBridge, _computeBridgeAddress} from "../../DeployBridge.s.sol";
@@ -33,6 +33,7 @@ abstract contract FlashLoanActions {
             value: 0,
             data: fwdCalldata,
             failed: false,
+            isStatic: false,
             sourceAddress: bridgeL1,
             sourceRollup: MAINNET_ROLLUP_ID,
             scope: new uint256[](0)
@@ -51,6 +52,7 @@ abstract contract FlashLoanActions {
             value: 0,
             data: claimCalldata,
             failed: false,
+            isStatic: false,
             sourceAddress: executorL1,
             sourceRollup: MAINNET_ROLLUP_ID,
             scope: new uint256[](0)
@@ -69,6 +71,7 @@ abstract contract FlashLoanActions {
             value: 0,
             data: retCalldata,
             failed: false,
+            isStatic: false,
             sourceAddress: bridgeL2,
             sourceRollup: L2_ROLLUP_ID,
             scope: scope
@@ -83,6 +86,7 @@ abstract contract FlashLoanActions {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -97,6 +101,7 @@ abstract contract FlashLoanActions {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -392,7 +397,8 @@ contract ExecuteL2 is Script, FlashLoanActions {
         vm.startBroadcast();
 
         manager.loadExecutionTable(
-            _l2Entries(bridgeL1, bridgeL2, retReceiveTokensCalldata, executorL2, executorL1, claimAndBridgeBackCalldata)
+            _l2Entries(bridgeL1, bridgeL2, retReceiveTokensCalldata, executorL2, executorL1, claimAndBridgeBackCalldata),
+            new StaticCall[](0)
         );
         console.log("L2 execution table loaded (3 entries)");
 
@@ -408,7 +414,7 @@ contract ExecuteL2 is Script, FlashLoanActions {
 /// @title Batcher — postBatch + executor.execute() in single tx
 contract Batcher {
     function execute(Rollups rollups, ExecutionEntry[] calldata entries, FlashLoanBridgeExecutor executor) external {
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
         executor.execute(msg.sender);
     }
 }

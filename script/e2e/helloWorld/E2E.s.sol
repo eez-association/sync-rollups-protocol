@@ -15,7 +15,7 @@ pragma solidity ^0.8.24;
 import {Script, console} from "forge-std/Script.sol";
 import {Rollups} from "../../../src/Rollups.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
+import {Action, ActionType, ExecutionEntry, StateDelta, StaticCall} from "../../../src/ICrossChainManager.sol";
 import {HelloWorldL1, HelloWorldL2, IHelloWorldL2} from "../../../test/mocks/helloword.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 import {getOrCreateProxy} from "../shared/E2EHelpers.sol";
@@ -36,6 +36,7 @@ abstract contract HelloWorldActions {
             value: 0,
             data: abi.encodeWithSelector(HelloWorldL2.getWord.selector),
             failed: false,
+            isStatic: false,
             sourceAddress: helloWorldL1,
             sourceRollup: MAINNET_ROLLUP_ID,
             scope: new uint256[](0)
@@ -50,6 +51,7 @@ abstract contract HelloWorldActions {
             value: 0,
             data: abi.encode("World"),
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -97,7 +99,7 @@ contract Batcher {
         external
         returns (string memory)
     {
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
         return helloWorld.helloL2World();
     }
 }
@@ -156,7 +158,7 @@ contract ExecuteL2 is Script, HelloWorldActions {
 
         vm.startBroadcast();
 
-        manager.loadExecutionTable(_l2Entries());
+        manager.loadExecutionTable(_l2Entries(), new StaticCall[](0));
 
         manager.executeIncomingCrossChainCall(
             helloWorldL2Addr,

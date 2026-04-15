@@ -3,7 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Test, Vm} from "forge-std/Test.sol";
 import {Rollups, RollupConfig} from "../src/Rollups.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta, ProxyInfo} from "../src/ICrossChainManager.sol";
+import {Action, ActionType, ExecutionEntry, StateDelta, StaticCall, ProxyInfo} from "../src/ICrossChainManager.sol";
 import {CrossChainProxy} from "../src/CrossChainProxy.sol";
 import {MockZKVerifier} from "./helpers/TestBase.sol";
 
@@ -84,6 +84,7 @@ contract RollupsTest is Test {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -107,6 +108,7 @@ contract RollupsTest is Test {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -123,6 +125,7 @@ contract RollupsTest is Test {
             value: 0,
             data: "", // raw return from executeOnBehalf (void = empty)
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -138,6 +141,7 @@ contract RollupsTest is Test {
             value: 0,
             data: "",
             failed: true,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -198,7 +202,7 @@ contract RollupsTest is Test {
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         entries[0] = _immediateEntry(rollupId, bytes32(0), newState);
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         assertEq(_getRollupState(rollupId), newState);
     }
@@ -213,7 +217,7 @@ contract RollupsTest is Test {
         entries[0] = _immediateEntry(rollupId1, bytes32(0), newState1);
         entries[1] = _immediateEntry(rollupId2, bytes32(0), newState2);
 
-        rollups.postBatch(entries, 0, "shared data", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "shared data", "proof");
 
         assertEq(_getRollupState(rollupId1), newState1);
         assertEq(_getRollupState(rollupId2), newState2);
@@ -229,7 +233,7 @@ contract RollupsTest is Test {
         verifier.setVerifyResult(false);
 
         vm.expectRevert(Rollups.InvalidProof.selector);
-        rollups.postBatch(entries, 0, "", "bad proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "bad proof");
     }
 
     function test_PostBatch_AfterL2ExecutionSameBlockReverts() public {
@@ -250,6 +254,7 @@ contract RollupsTest is Test {
             value: 0,
             data: callData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -265,7 +270,7 @@ contract RollupsTest is Test {
         entries[0].stateDeltas = stateDeltas;
         entries[0].actionHash = keccak256(abi.encode(action));
         entries[0].nextAction = resultAction;
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         // Execute L2 via proxy fallback
         (bool success,) = proxyAddr.call(callData);
@@ -277,7 +282,7 @@ contract RollupsTest is Test {
         entries2[0] = _immediateEntry(rollupId, newState, keccak256("another state"));
 
         vm.expectRevert(Rollups.StateAlreadyUpdatedThisBlock.selector);
-        rollups.postBatch(entries2, 0, "", "proof");
+        rollups.postBatch(entries2, new StaticCall[](0), 0, "", "proof");
 
         assertEq(_getRollupState(rollupId), newState);
     }
@@ -354,6 +359,7 @@ contract RollupsTest is Test {
             value: 0,
             data: callData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -369,7 +375,7 @@ contract RollupsTest is Test {
         entries[0].stateDeltas = stateDeltas;
         entries[0].actionHash = keccak256(abi.encode(action));
         entries[0].nextAction = resultAction;
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         // Execute via proxy fallback
         (bool success,) = proxyAddr.call(callData);
@@ -413,6 +419,7 @@ contract RollupsTest is Test {
             value: 0,
             data: rlpTx,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -427,7 +434,7 @@ contract RollupsTest is Test {
         entries[0].stateDeltas = stateDeltas;
         entries[0].actionHash = keccak256(abi.encode(action));
         entries[0].nextAction = resultAction;
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         rollups.executeL2TX(rollupId, rlpTx);
 
@@ -496,7 +503,7 @@ contract RollupsTest is Test {
         entries[0].actionHash = bytes32(0);
         entries[0].nextAction = _emptyAction();
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         assertEq(_getRollupEtherBalance(rollupId1), 3 ether);
         assertEq(_getRollupEtherBalance(rollupId2), 2 ether);
@@ -516,7 +523,7 @@ contract RollupsTest is Test {
         entries[0].nextAction = _emptyAction();
 
         vm.expectRevert(Rollups.EtherDeltaMismatch.selector);
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
     }
 
     function test_PostBatch_InsufficientRollupBalanceReverts() public {
@@ -533,7 +540,7 @@ contract RollupsTest is Test {
         entries[0].nextAction = _emptyAction();
 
         vm.expectRevert(Rollups.InsufficientRollupBalance.selector);
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
     }
 
     function test_PostBatch_MixedImmediateAndDeferred() public {
@@ -552,6 +559,7 @@ contract RollupsTest is Test {
             value: 0,
             data: callData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -570,7 +578,7 @@ contract RollupsTest is Test {
         entries[1].actionHash = keccak256(abi.encode(callAction));
         entries[1].nextAction = _emptyAction();
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         // Immediate was applied
         assertEq(_getRollupState(rollupId), state1);
@@ -587,7 +595,7 @@ contract RollupsTest is Test {
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         entries[0] = _immediateEntry(rollupId, bytes32(0), keccak256("s"));
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         assertEq(rollups.lastStateUpdateBlock(), block.number);
     }
@@ -639,6 +647,7 @@ contract RollupsTest is Test {
             value: 0,
             data: abi.encodeCall(TestTarget.setValue, (42)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: 0,
             scope: callScope
@@ -661,6 +670,7 @@ contract RollupsTest is Test {
             value: 0,
             data: rlpTx,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -683,7 +693,7 @@ contract RollupsTest is Test {
         entries[1].actionHash = resultHash;
         entries[1].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         rollups.executeL2TX(rollupId, rlpTx);
         assertEq(_getRollupState(rollupId), state2);
@@ -715,6 +725,7 @@ contract RollupsTest is Test {
             value: 0,
             data: abi.encodeCall(TestTarget.setValue, (99)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: 0,
             scope: deepScope
@@ -732,6 +743,7 @@ contract RollupsTest is Test {
             value: 0,
             data: rlpTx,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -752,7 +764,7 @@ contract RollupsTest is Test {
         entries[1].actionHash = resultHash;
         entries[1].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         rollups.executeL2TX(rollupId, rlpTx);
         assertEq(_getRollupState(rollupId), state2);
@@ -782,6 +794,7 @@ contract RollupsTest is Test {
             value: 0,
             data: abi.encodeCall(TestTarget.setValue, (77)),
             failed: false,
+            isStatic: false,
             sourceAddress: alice,
             sourceRollup: 0,
             scope: callScope
@@ -799,6 +812,7 @@ contract RollupsTest is Test {
             value: 0,
             data: rlpTx,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -819,7 +833,7 @@ contract RollupsTest is Test {
         entries[1].actionHash = resultHash;
         entries[1].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         rollups.executeL2TX(rollupId, rlpTx);
 
@@ -855,6 +869,7 @@ contract RollupsTest is Test {
             value: 1 ether,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: 0,
             scope: callScope
@@ -872,6 +887,7 @@ contract RollupsTest is Test {
             value: 0,
             data: rlpTx,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -895,7 +911,7 @@ contract RollupsTest is Test {
         entries[1].actionHash = resultHash;
         entries[1].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         rollups.executeL2TX(rollupId, rlpTx);
         assertEq(_getRollupState(rollupId), state2);
@@ -921,7 +937,7 @@ contract RollupsTest is Test {
         entries[0].nextAction = _emptyAction();
 
         vm.expectRevert(Rollups.InsufficientRollupBalance.selector);
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
     }
 
     // ──────────────────────────────────────────────
@@ -940,6 +956,7 @@ contract RollupsTest is Test {
             value: 0,
             data: "",
             failed: true,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -953,6 +970,7 @@ contract RollupsTest is Test {
             value: 0,
             data: rlpTx,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -966,9 +984,10 @@ contract RollupsTest is Test {
         entries[0].actionHash = l2txHash;
         entries[0].nextAction = failedResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
-        vm.expectRevert(Rollups.CallExecutionFailed.selector);
+        // _resolveScopes now replays failed RESULT's `data` as raw revert bytes (empty here).
+        vm.expectRevert(bytes(""));
         rollups.executeL2TX(rollupId, rlpTx);
     }
 
@@ -989,6 +1008,7 @@ contract RollupsTest is Test {
             value: 0,
             data: "",
             failed: true,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -1002,6 +1022,7 @@ contract RollupsTest is Test {
             value: 0,
             data: rlpTx,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -1015,7 +1036,7 @@ contract RollupsTest is Test {
         entries[0].actionHash = l2txHash;
         entries[0].nextAction = nonResultAction;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         vm.expectRevert(Rollups.CallExecutionFailed.selector);
         rollups.executeL2TX(rollupId, rlpTx);
@@ -1041,6 +1062,7 @@ contract RollupsTest is Test {
             value: 0,
             data: callData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -1067,7 +1089,7 @@ contract RollupsTest is Test {
         entries[1].actionHash = actionHash;
         entries[1].nextAction = _emptyAction();
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         (bool success,) = proxyAddr.call(callData);
         assertTrue(success);
@@ -1091,6 +1113,7 @@ contract RollupsTest is Test {
             value: 0,
             data: callData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -1106,7 +1129,7 @@ contract RollupsTest is Test {
         entries[0].actionHash = actionHash;
         entries[0].nextAction = _emptyAction();
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         vm.expectRevert(Rollups.ExecutionNotFound.selector);
         (bool success,) = proxyAddr.call(callData);
@@ -1142,6 +1165,7 @@ contract RollupsTest is Test {
             value: 0,
             data: abi.encodeCall(TestTarget.setValue, (11)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: 0,
             scope: scope0
@@ -1159,6 +1183,7 @@ contract RollupsTest is Test {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: scope0
@@ -1178,6 +1203,7 @@ contract RollupsTest is Test {
             value: 0,
             data: rlpTx,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -1213,12 +1239,13 @@ contract RollupsTest is Test {
         entries[2].actionHash = revertContHash;
         entries[2].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         rollups.executeL2TX(rollupId, rlpTx);
-        // State is state2 because state changes from the reverted newScope call are rolled back
-        // and _handleScopeRevert restores to the captured state (state2)
-        assertEq(_getRollupState(rollupId), state2);
+        // REVERT_CONTINUE is consumed BEFORE the ScopeReverted revert captures state,
+        // so the captured stateRoot is state3 (after REVERT_CONTINUE deltas applied).
+        // _handleScopeRevert then restores stateRoot to that captured value (state3).
+        assertEq(_getRollupState(rollupId), state3);
     }
 
     // ──────────────────────────────────────────────
@@ -1248,6 +1275,7 @@ contract RollupsTest is Test {
             value: 0,
             data: abi.encodeCall(TestTarget.setValue, (100)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: 0,
             scope: scope0
@@ -1261,6 +1289,7 @@ contract RollupsTest is Test {
             value: 0,
             data: abi.encodeCall(TestTarget.setValue, (200)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: 0,
             scope: scope1
@@ -1279,6 +1308,7 @@ contract RollupsTest is Test {
             value: 0,
             data: rlpTx,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -1308,7 +1338,7 @@ contract RollupsTest is Test {
         entries[2].actionHash = resultHash;
         entries[2].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         rollups.executeL2TX(rollupId, rlpTx);
         assertEq(_getRollupState(rollupId), state3);
@@ -1343,6 +1373,7 @@ contract RollupsTest is Test {
             value: 0,
             data: abi.encodeCall(TestTarget.setValue, (33)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: 0,
             scope: scope0
@@ -1359,6 +1390,7 @@ contract RollupsTest is Test {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: emptyScope
@@ -1376,6 +1408,7 @@ contract RollupsTest is Test {
             value: 0,
             data: rlpTx,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -1406,12 +1439,12 @@ contract RollupsTest is Test {
         entries[2].actionHash = revertContHash;
         entries[2].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         rollups.executeL2TX(rollupId, rlpTx);
-        // State changes inside reverted newScope call are rolled back.
-        // _handleScopeRevert restores state to state2 (captured at revert time).
-        assertEq(_getRollupState(rollupId), state2);
+        // REVERT_CONTINUE is consumed BEFORE the ScopeReverted revert captures state,
+        // so the captured stateRoot is state3 and _handleScopeRevert restores to state3.
+        assertEq(_getRollupState(rollupId), state3);
     }
 
     // ──────────────────────────────────────────────
@@ -1439,6 +1472,7 @@ contract RollupsTest is Test {
             value: 0,
             data: abi.encodeCall(TestTarget.setValue, (300)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: 0,
             scope: emptyScope
@@ -1455,6 +1489,7 @@ contract RollupsTest is Test {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: emptyScope
@@ -1472,6 +1507,7 @@ contract RollupsTest is Test {
             value: 0,
             data: rlpTx,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -1502,12 +1538,12 @@ contract RollupsTest is Test {
         entries[2].actionHash = revertContHash;
         entries[2].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         rollups.executeL2TX(rollupId, rlpTx);
-        // State changes inside reverted newScope call are rolled back.
-        // _handleScopeRevert restores state to state2 (captured at revert time).
-        assertEq(_getRollupState(rollupId), state2);
+        // REVERT_CONTINUE is consumed BEFORE the ScopeReverted revert captures state,
+        // so the captured stateRoot is stateAfterRevert and _handleScopeRevert restores to it.
+        assertEq(_getRollupState(rollupId), stateAfterRevert);
     }
 
     // ──────────────────────────────────────────────
@@ -1516,7 +1552,7 @@ contract RollupsTest is Test {
 
     function test_PostBatch_EmptyEntries() public {
         ExecutionEntry[] memory entries = new ExecutionEntry[](0);
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
     }
 
     // ──────────────────────────────────────────────
@@ -1530,13 +1566,13 @@ contract RollupsTest is Test {
 
         ExecutionEntry[] memory entries1 = new ExecutionEntry[](1);
         entries1[0] = _immediateEntry(rollupId, bytes32(0), state1);
-        rollups.postBatch(entries1, 0, "", "proof");
+        rollups.postBatch(entries1, new StaticCall[](0), 0, "", "proof");
 
         vm.roll(block.number + 1);
 
         ExecutionEntry[] memory entries2 = new ExecutionEntry[](1);
         entries2[0] = _immediateEntry(rollupId, state1, state2);
-        rollups.postBatch(entries2, 0, "", "proof");
+        rollups.postBatch(entries2, new StaticCall[](0), 0, "", "proof");
 
         assertEq(_getRollupState(rollupId), state2);
     }
@@ -1570,6 +1606,7 @@ contract RollupsTest is Test {
             value: 0,
             data: abi.encodeCall(TestTarget.setValue, (42)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: 0,
             scope: scope0
@@ -1583,6 +1620,7 @@ contract RollupsTest is Test {
             value: 0,
             data: callData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -1607,7 +1645,7 @@ contract RollupsTest is Test {
         entries[1].actionHash = resultHash;
         entries[1].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         (bool success,) = proxyAddr.call(callData);
         assertTrue(success);
@@ -1639,6 +1677,7 @@ contract RollupsTest is Test {
             value: 0,
             data: abi.encodeCall(TestTarget.setValue, (1)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: 0,
             scope: callScope
@@ -1658,6 +1697,7 @@ contract RollupsTest is Test {
             value: 0,
             data: revertData,
             failed: true,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -1675,6 +1715,7 @@ contract RollupsTest is Test {
             value: 0,
             data: rlpTx,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -1695,7 +1736,7 @@ contract RollupsTest is Test {
         entries[1].actionHash = failedResultHash;
         entries[1].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         rollups.executeL2TX(rollupId, rlpTx);
         assertEq(_getRollupState(rollupId), state2);
@@ -1723,7 +1764,7 @@ contract RollupsTest is Test {
         entries[0].actionHash = bytes32(0);
         entries[0].nextAction = _emptyAction();
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         assertEq(_getRollupEtherBalance(rollupId1), 7 ether);
         assertEq(_getRollupEtherBalance(rollupId2), 3 ether);
@@ -1758,6 +1799,7 @@ contract RollupsTest is Test {
             value: 0,
             data: abi.encodeCall(TestTarget.setValue, (10)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: 0,
             scope: scope01
@@ -1777,6 +1819,7 @@ contract RollupsTest is Test {
             value: 0,
             data: abi.encodeCall(TestTarget.setValue, (20)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: 0,
             scope: scope10
@@ -1795,6 +1838,7 @@ contract RollupsTest is Test {
             value: 0,
             data: rlpTx,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -1824,7 +1868,7 @@ contract RollupsTest is Test {
         entries[2].actionHash = resultHash;
         entries[2].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         rollups.executeL2TX(rollupId, rlpTx);
         assertEq(_getRollupState(rollupId), state3);
@@ -1847,7 +1891,7 @@ contract RollupsTest is Test {
         entries[0].actionHash = bytes32(0);
         entries[0].nextAction = _emptyAction();
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         assertEq(_getRollupState(r1), keccak256("a2"));
         assertEq(_getRollupState(r2), keccak256("b2"));
@@ -1873,6 +1917,7 @@ contract RollupsTest is Test {
             value: 1 ether,
             data: callData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -1889,7 +1934,7 @@ contract RollupsTest is Test {
         entries[0].actionHash = keccak256(abi.encode(callAction));
         entries[0].nextAction = resultAction;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         // Call the proxy with 1 ether value
         (bool success,) = proxyAddr.call{value: 1 ether}(callData);
@@ -1915,6 +1960,7 @@ contract RollupsTest is Test {
             value: 0,
             data: callData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -1929,7 +1975,7 @@ contract RollupsTest is Test {
         entries[0].actionHash = keccak256(abi.encode(callAction));
         entries[0].nextAction = _emptyAction();
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         vm.expectRevert(Rollups.EtherDeltaMismatch.selector);
         (bool success,) = proxyAddr.call(callData);
@@ -1962,6 +2008,7 @@ contract RollupsTest is Test {
             value: 0,
             data: abi.encodeCall(TestTarget.setValue, (88)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: 0,
             scope: callScope
@@ -1975,6 +2022,7 @@ contract RollupsTest is Test {
             value: 0,
             data: rlpTx,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -1990,7 +2038,7 @@ contract RollupsTest is Test {
         entries[0].actionHash = l2txHash;
         entries[0].nextAction = scopedCall;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         vm.expectRevert(Rollups.InvalidRevertData.selector);
         rollups.executeL2TX(rollupId, rlpTx);
@@ -2020,6 +2068,7 @@ contract RollupsTest is Test {
             value: 0,
             data: callData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -2036,6 +2085,7 @@ contract RollupsTest is Test {
             value: 0,
             data: abi.encodeCall(TestTarget.setValue, (99)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: 0,
             scope: scope0
@@ -2053,6 +2103,7 @@ contract RollupsTest is Test {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: emptyScope
@@ -2085,12 +2136,13 @@ contract RollupsTest is Test {
         entries[2].actionHash = revertContHash;
         entries[2].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         (bool success,) = proxyAddr.call(callData);
         assertTrue(success);
-        // State restored to state2 by _handleScopeRevert
-        assertEq(_getRollupState(rollupId), state2);
+        // REVERT_CONTINUE is consumed BEFORE the ScopeReverted revert captures state,
+        // so the captured stateRoot is state3 and _handleScopeRevert restores to state3.
+        assertEq(_getRollupState(rollupId), state3);
     }
 
     // ──────────────────────────────────────────────
@@ -2158,6 +2210,7 @@ contract RollupsTest is Test {
             value: 0,
             data: abi.encodeCall(TestTarget.setValue, (10)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: 0,
             scope: scope00
@@ -2174,6 +2227,7 @@ contract RollupsTest is Test {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: scope00
@@ -2191,6 +2245,7 @@ contract RollupsTest is Test {
             value: 0,
             data: rlpTx,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -2220,12 +2275,14 @@ contract RollupsTest is Test {
         entries[2].actionHash = revertContHash;
         entries[2].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         rollups.executeL2TX(rollupId, rlpTx);
         // ScopeReverted at [0,0] is caught by newScope([0]) (child scope catch path)
-        // Then caught by newScope([]) which calls _handleScopeRevert
-        assertEq(_getRollupState(rollupId), state2);
+        // Then caught by newScope([]) which calls _handleScopeRevert.
+        // REVERT_CONTINUE is consumed BEFORE the ScopeReverted captures state, so
+        // the captured/restored stateRoot is state3.
+        assertEq(_getRollupState(rollupId), state3);
     }
 
     // ──────────────────────────────────────────────
@@ -2245,6 +2302,7 @@ contract RollupsTest is Test {
             value: 0,
             data: callData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -2261,7 +2319,7 @@ contract RollupsTest is Test {
         entries[0].actionHash = actionHash;
         entries[0].nextAction = _emptyAction();
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         (bool success,) = proxyAddr.call(callData);
         assertTrue(success);
@@ -2286,6 +2344,7 @@ contract RollupsTest is Test {
             value: 0,
             data: callData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -2303,7 +2362,7 @@ contract RollupsTest is Test {
         entries[0].actionHash = actionHash;
         entries[0].nextAction = _emptyAction();
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         vm.expectRevert(Rollups.ExecutionNotFound.selector);
         (bool success,) = proxyAddr.call(callData);
@@ -2324,6 +2383,7 @@ contract RollupsTest is Test {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -2340,7 +2400,7 @@ contract RollupsTest is Test {
 
         // Deferred entries do NOT have their ether deltas summed
         // (only immediate entries do), so this should pass
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         // State should NOT have changed (deferred entry)
         assertEq(_getRollupState(rollupId), bytes32(0));
@@ -2374,7 +2434,7 @@ contract RollupsTest is Test {
         entries[0].actionHash = bytes32(0);
         entries[0].nextAction = _emptyAction();
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         assertEq(_getRollupEtherBalance(rollupId), 5 ether);
         assertEq(_getRollupState(rollupId), keccak256("zd"));
@@ -2401,7 +2461,7 @@ contract RollupsTest is Test {
         entries[0] = _immediateEntry(rollupId, bytes32(0), keccak256("blobState"));
 
         // blobCount=2 makes the contract read blobhash(0) and blobhash(1)
-        rollups.postBatch(entries, 2, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 2, "", "proof");
 
         assertEq(_getRollupState(rollupId), keccak256("blobState"));
     }
@@ -2477,6 +2537,7 @@ contract RollupsTest is Test {
             value: 0,
             data: abi.encodeCall(TestTarget.getValue, ()),
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: 0,
             scope: callScope
@@ -2490,6 +2551,7 @@ contract RollupsTest is Test {
             value: 0,
             data: abi.encode(uint256(0)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -2504,6 +2566,7 @@ contract RollupsTest is Test {
             value: 0,
             data: abi.encode(uint256(0)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -2517,6 +2580,7 @@ contract RollupsTest is Test {
             value: 0,
             data: rlpTx,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -2537,7 +2601,7 @@ contract RollupsTest is Test {
         entries[1].actionHash = resultHash;
         entries[1].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         bytes memory result = rollups.executeL2TX(rollupId, rlpTx);
         uint256 decoded = abi.decode(result, (uint256));
@@ -2571,7 +2635,7 @@ contract RollupsTest is Test {
         entries[0] = _immediateEntry(rollupId, bytes32(0), newState);
 
         vm.recordLogs();
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         Vm.Log[] memory logs = vm.getRecordedLogs();
         (bool found, uint256 idx) = _findBatchPostedLog(logs);
@@ -2597,6 +2661,7 @@ contract RollupsTest is Test {
             value: 0,
             data: callData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -2612,7 +2677,7 @@ contract RollupsTest is Test {
         entries[0].nextAction = _emptyAction();
 
         vm.recordLogs();
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         Vm.Log[] memory logs = vm.getRecordedLogs();
         (bool found, uint256 idx) = _findBatchPostedLog(logs);
@@ -2637,6 +2702,7 @@ contract RollupsTest is Test {
             value: 0,
             data: callData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -2652,7 +2718,7 @@ contract RollupsTest is Test {
         entries[1].nextAction = _emptyAction();
 
         vm.recordLogs();
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         Vm.Log[] memory logs = vm.getRecordedLogs();
         (bool found, uint256 idx) = _findBatchPostedLog(logs);
@@ -2686,6 +2752,7 @@ contract RollupsTest is Test {
             value: 0,
             data: callData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -2699,7 +2766,7 @@ contract RollupsTest is Test {
         entries[0].stateDeltas = stateDeltas;
         entries[0].actionHash = actionHash;
         entries[0].nextAction = _emptyAction();
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         vm.recordLogs();
         (bool success,) = proxyAddr.call(callData);
@@ -2741,6 +2808,7 @@ contract RollupsTest is Test {
             value: 0,
             data: rlpTx,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -2754,7 +2822,7 @@ contract RollupsTest is Test {
         entries[0].stateDeltas = stateDeltas;
         entries[0].actionHash = actionHash;
         entries[0].nextAction = _emptyAction();
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
 
         vm.recordLogs();
         rollups.executeL2TX(rollupId, rlpTx);

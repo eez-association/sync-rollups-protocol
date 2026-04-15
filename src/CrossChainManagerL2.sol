@@ -2,7 +2,15 @@
 pragma solidity ^0.8.24;
 
 import {CrossChainProxy} from "./CrossChainProxy.sol";
-import {ICrossChainManager, ActionType, Action, ExecutionEntry, ProxyInfo} from "./ICrossChainManager.sol";
+import {
+    ICrossChainManager,
+    ActionType,
+    Action,
+    ExecutionEntry,
+    StaticCall,
+    StaticSubCall,
+    ProxyInfo
+} from "./ICrossChainManager.sol";
 
 /// @title CrossChainManagerL2
 /// @notice L2-side contract for cross-chain execution via pre-computed execution tables
@@ -17,6 +25,10 @@ contract CrossChainManagerL2 is ICrossChainManager {
 
     /// @notice Array of pre-computed executions
     ExecutionEntry[] public executions;
+
+    /// @notice Array of pre-computed static call results
+    /// @dev Populated by loadExecutionTable alongside executions; staticCallLookup reverts StaticCallNotFound if not present
+    StaticCall[] public staticCalls;
 
     /// @notice Mapping of authorized CrossChainProxy contracts to their identity
     mapping(address proxy => ProxyInfo info) public authorizedProxies;
@@ -83,12 +95,28 @@ contract CrossChainManagerL2 is ICrossChainManager {
     /// @notice Loads execution entries into the execution table (system only)
     /// @dev Deletes the previous execution table before loading new entries
     /// @param entries The execution entries to load
-    function loadExecutionTable(ExecutionEntry[] calldata entries) external onlySystemAddress {
+    /// @param _staticCalls The static call table to load
+    function loadExecutionTable(ExecutionEntry[] calldata entries, StaticCall[] calldata _staticCalls) external onlySystemAddress {
+        // Uniqueness pre-check: on L2 there is no stateRoots disambiguator, so two entries sharing an
+        // actionHash would collide at lookup time (first-match-wins). Reject the whole batch instead.
+        for (uint256 i = 0; i < _staticCalls.length; i++) {
+            for (uint256 j = i + 1; j < _staticCalls.length; j++) {
+                if (_staticCalls[i].actionHash == _staticCalls[j].actionHash) {
+                    revert DuplicateStaticCallActionHash();
+                }
+            }
+        }
+
         // Delete previous execution table
         delete executions;
+        delete staticCalls;
 
         for (uint256 i = 0; i < entries.length; i++) {
             executions.push(entries[i]);
+        }
+
+        for (uint256 i = 0; i < _staticCalls.length; i++) {
+            staticCalls.push(_staticCalls[i]);
         }
 
         lastStateUpdateBlock = block.number;
@@ -105,8 +133,11 @@ contract CrossChainManagerL2 is ICrossChainManager {
     /// @return result The return data from the execution
     function executeCrossChainCall(address sourceAddress, bytes calldata callData) external payable returns (bytes memory result) {
         ProxyInfo storage proxyInfo = authorizedProxies[msg.sender];
-        if (proxyInfo.originalAddress == address(0)) revert UnauthorizedProxy();
+        if (proxyInfo.originalAddress == address(0)) {
+            revert UnauthorizedProxy();
+        }
 
+        // Executions can only be consumed in the same block they were posted
         if (lastStateUpdateBlock != block.number) {
             revert ExecutionNotInCurrentBlock();
         }
@@ -118,6 +149,7 @@ contract CrossChainManagerL2 is ICrossChainManager {
             value: msg.value,
             data: callData,
             failed: false,
+            isStatic: false,
             sourceAddress: sourceAddress,
             sourceRollup: ROLLUP_ID,
             scope: new uint256[](0)
@@ -133,6 +165,95 @@ contract CrossChainManagerL2 is ICrossChainManager {
         emit CrossChainCallExecuted(actionHash, msg.sender, sourceAddress, callData, msg.value);
         Action memory nextAction = _consumeExecution(actionHash, action);
         return _resolveScopes(nextAction);
+    }
+
+    // ──────────────────────────────────────────────
+    //  Static call lookup
+    // ──────────────────────────────────────────────
+
+    /// @notice Looks up a pre-computed result for a static (read-only) cross-chain call
+    /// @dev Called by CrossChainProxy when it detects a STATICCALL context.
+    ///      msg.sender must be an authorized proxy. Matches by actionHash.
+    ///      If the entry is marked as failed, reverts with the pre-computed returnData.
+    /// @param sourceAddress The original caller address (msg.sender as seen by the proxy)
+    /// @param callData The original calldata sent to the proxy
+    /// @return result The pre-computed return data
+    function staticCallLookup(
+        address sourceAddress,
+        bytes calldata callData
+    ) external view returns (bytes memory result) {
+        ProxyInfo storage proxyInfo = authorizedProxies[msg.sender];
+        if (proxyInfo.originalAddress == address(0)) {
+            revert UnauthorizedProxy();
+        }
+
+        // Executions can only be consumed in the same block they were posted
+        if (lastStateUpdateBlock != block.number) {
+            revert ExecutionNotInCurrentBlock();
+        }
+
+        Action memory action = Action({
+            actionType: ActionType.CALL,
+            rollupId: proxyInfo.originalRollupId,
+            destination: proxyInfo.originalAddress,
+            value: 0,
+            data: callData,
+            failed: false,
+            isStatic: true,
+            sourceAddress: sourceAddress,
+            sourceRollup: ROLLUP_ID,
+            scope: new uint256[](0)
+        });
+
+        bytes32 actionHash = keccak256(abi.encode(action));
+
+        for (uint256 i = 0; i < staticCalls.length; i++) {
+            StaticCall storage sc = staticCalls[i];
+            if (sc.actionHash == actionHash) {
+                // L2 has no rollup stateRoot mapping; entries must not pin any.
+                if (sc.stateRoots.length != 0) revert StaticCallStateRootsNotSupported();
+                // Replay flat sub-call dependencies and verify their rolling hash
+                if (sc.calls.length > 0) {
+                    if (_processNStaticCalls(sc.calls) != sc.rollingHash) revert RollingHashMismatch();
+                }
+                if (sc.failed) {
+                    bytes memory returnData = sc.returnData;
+                    assembly {
+                        revert(add(returnData, 0x20), mload(returnData))
+                    }
+                }
+                return sc.returnData;
+            }
+        }
+
+        revert StaticCallNotFound();
+    }
+
+    /// @notice Re-executes the flat list of sub-call dependencies via their source proxies and folds
+    ///         `(success, subCallReturnData)` into a rolling keccak chain used to verify `StaticCall.rollingHash`.
+    /// @dev Static calls cannot mutate state, so this helper can replay every sub-call in a flat loop
+    ///      without any of the bookkeeping the normal execution path needs: no scope tree, no
+    ///      try/catch for `ScopeReverted`, no `REVERT_CONTINUE` lookup, no partial-revert rollback,
+    ///      no state-delta application. Individual sub-calls may legitimately revert — we still fold
+    ///      `(success=false, returnData)` into the rolling hash and keep going. The only invariant the
+    ///      caller needs is that the final `rollingHash` matches the prover-committed value.
+    ///      Must run in a `view` context — STATICCALL forbids SSTORE/TSTORE, and `staticCallLookup`
+    ///      is itself reached via STATICCALL from the proxy, so this helper is read-only too.
+    ///      Each sub-call's source proxy must already be deployed; otherwise reverts `ProxyNotDeployed`.
+    /// @param subCalls The flat sub-call dependency list (storage ref)
+    /// @return rollingHash The rolling keccak256 digest chained over each sub-call's (success, returnData)
+    function _processNStaticCalls(
+        StaticSubCall[] storage subCalls
+    ) internal view returns (bytes32 rollingHash) {
+        for (uint256 i = 0; i < subCalls.length; i++) {
+            StaticSubCall storage subCall = subCalls[i];
+            address sourceProxy = computeCrossChainProxyAddress(subCall.sourceAddress, subCall.sourceRollup);
+            if (sourceProxy.code.length == 0) revert ProxyNotDeployed();
+            (bool success, bytes memory subCallReturnData) = sourceProxy.staticcall(
+                abi.encodeCall(CrossChainProxy.executeOnBehalf, (subCall.destination, subCall.data))
+            );
+            rollingHash = keccak256(abi.encodePacked(rollingHash, success, subCallReturnData));
+        }
     }
 
     /// @notice Executes a remote cross-chain call (system only)
@@ -163,6 +284,7 @@ contract CrossChainManagerL2 is ICrossChainManager {
             value: value,
             data: data,
             failed: false,
+            isStatic: false,
             sourceAddress: sourceAddress,
             sourceRollup: sourceRollup,
             scope: scope
@@ -245,6 +367,7 @@ contract CrossChainManagerL2 is ICrossChainManager {
     //  Internal helpers
     // ──────────────────────────────────────────────
 
+
     /// @notice Deploys a CrossChainProxy via CREATE2 and registers it as authorized
     function _createProxyInternal(address originalAddress, uint256 originalRollupId) internal returns (address proxy) {
         bytes32 salt = keccak256(abi.encodePacked(originalRollupId, originalAddress));
@@ -286,8 +409,15 @@ contract CrossChainManagerL2 is ICrossChainManager {
             }
         }
 
-        if (nextAction.actionType != ActionType.RESULT || nextAction.failed) {
+        if (nextAction.actionType != ActionType.RESULT) {
             revert CallExecutionFailed();
+        }
+        if (nextAction.failed) {
+            // Replay the raw revert data from the failed execution entry
+            bytes memory returnData = nextAction.data;
+            assembly {
+                revert(add(returnData, 0x20), mload(returnData))
+            }
         }
         return nextAction.data;
     }
@@ -312,9 +442,18 @@ contract CrossChainManagerL2 is ICrossChainManager {
             _createProxyInternal(action.sourceAddress, action.sourceRollup);
         }
 
-        (bool success, bytes memory returnData) = address(sourceProxy).call{value: action.value}(
-            abi.encodeCall(CrossChainProxy.executeOnBehalf, (action.destination, action.data))
-        );
+        bool success;
+        bytes memory returnData;
+        if (action.isStatic) {
+            // Static CALL — invoke the source proxy via STATICCALL. No value transfer.
+            (success, returnData) = address(sourceProxy).staticcall(
+                abi.encodeCall(CrossChainProxy.executeOnBehalf, (action.destination, action.data))
+            );
+        } else {
+            (success, returnData) = address(sourceProxy).call{value: action.value}(
+                abi.encodeCall(CrossChainProxy.executeOnBehalf, (action.destination, action.data))
+            );
+        }
 
         Action memory resultAction = Action({
             actionType: ActionType.RESULT,
@@ -323,6 +462,7 @@ contract CrossChainManagerL2 is ICrossChainManager {
             value: 0,
             data: returnData,
             failed: !success,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -362,6 +502,7 @@ contract CrossChainManagerL2 is ICrossChainManager {
             value: 0,
             data: "",
             failed: true,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)

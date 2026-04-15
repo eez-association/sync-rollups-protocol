@@ -7,7 +7,7 @@ import {getOrCreateProxy} from "../shared/E2EHelpers.sol";
 import {Rollups} from "../../../src/Rollups.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
 import {ICrossChainManager} from "../../../src/ICrossChainManager.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
+import {Action, ActionType, ExecutionEntry, StateDelta, StaticCall} from "../../../src/ICrossChainManager.sol";
 import {Counter, CounterAndProxy} from "../../../test/mocks/CounterContracts.sol";
 import {CallTwiceNestedAndOnce} from "../../../test/mocks/MultiCallContracts.sol";
 
@@ -50,6 +50,7 @@ abstract contract MultiCallNestedActions {
             value: 0,
             data: abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),
             failed: false,
+            isStatic: false,
             sourceAddress: sourceAddr,
             sourceRollup: MAINNET_ROLLUP_ID,
             scope: new uint256[](0)
@@ -68,6 +69,7 @@ abstract contract MultiCallNestedActions {
             value: 0,
             data: abi.encodeWithSelector(Counter.increment.selector),
             failed: false,
+            isStatic: false,
             sourceAddress: cap2Addr,
             sourceRollup: L2_ROLLUP_ID,
             scope: scope
@@ -82,6 +84,7 @@ abstract contract MultiCallNestedActions {
             value: 0,
             data: abi.encode(uint256(1)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -96,6 +99,7 @@ abstract contract MultiCallNestedActions {
             value: 0,
             data: abi.encode(uint256(2)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -110,6 +114,7 @@ abstract contract MultiCallNestedActions {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -124,6 +129,7 @@ abstract contract MultiCallNestedActions {
             value: 0,
             data: abi.encodeWithSelector(Counter.increment.selector),
             failed: false,
+            isStatic: false,
             sourceAddress: sourceAddr,
             sourceRollup: MAINNET_ROLLUP_ID,
             scope: new uint256[](0)
@@ -138,6 +144,7 @@ abstract contract MultiCallNestedActions {
             value: 0,
             data: abi.encode(uint256(1)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -262,7 +269,7 @@ contract Batcher {
         address nestedProxy,
         address simpleProxy
     ) external returns (uint256) {
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
         return app.execute(nestedProxy, simpleProxy);
     }
 }
@@ -364,7 +371,8 @@ contract ExecuteL2 is Script, MultiCallNestedActions {
         vm.startBroadcast();
 
         manager.loadExecutionTable(
-            _l2Entries(counterL1Addr, counterAndProxyL2Addr, counterL2Addr, callTwiceNestedAddr)
+            _l2Entries(counterL1Addr, counterAndProxyL2Addr, counterL2Addr, callTwiceNestedAddr),
+            new StaticCall[](0)
         );
 
         // SYSTEM triggers CounterAndProxyL2.incrementProxy() via executeIncomingCrossChainCall

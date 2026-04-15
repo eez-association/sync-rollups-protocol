@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import {Script, console} from "forge-std/Script.sol";
 import {Rollups} from "../../../src/Rollups.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
+import {Action, ActionType, ExecutionEntry, StateDelta, StaticCall} from "../../../src/ICrossChainManager.sol";
 import {Counter, CounterAndProxy} from "../../../test/mocks/CounterContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 
@@ -19,6 +19,7 @@ abstract contract CounterActions {
             value: 0,
             data: abi.encodeWithSelector(Counter.increment.selector),
             failed: false,
+            isStatic: false,
             sourceAddress: counterAndProxy,
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -33,6 +34,7 @@ abstract contract CounterActions {
             value: 0,
             data: abi.encode(uint256(1)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -74,7 +76,7 @@ abstract contract CounterActions {
 /// @notice Batcher: postBatch + incrementProxy in one tx (local mode only)
 contract Batcher {
     function execute(Rollups rollups, ExecutionEntry[] calldata entries, CounterAndProxy cap) external {
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
         cap.incrementProxy();
     }
 }
@@ -136,7 +138,7 @@ contract ExecuteL2 is Script, CounterActions {
 
         vm.startBroadcast();
 
-        manager.loadExecutionTable(_l2Entries());
+        manager.loadExecutionTable(_l2Entries(), new StaticCall[](0));
 
         // Execute the actual counter increment on L2
         manager.executeIncomingCrossChainCall(

@@ -5,7 +5,7 @@ import {Script, console} from "forge-std/Script.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 import {Rollups} from "../../../src/Rollups.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
+import {Action, ActionType, ExecutionEntry, StateDelta, StaticCall} from "../../../src/ICrossChainManager.sol";
 import {Counter, CounterAndProxy} from "../../../test/mocks/CounterContracts.sol";
 import {L2TXBatcher, L2TXActionsBase, getOrCreateProxy} from "../shared/E2EHelpers.sol";
 
@@ -44,6 +44,7 @@ abstract contract NestedCounterL2Actions is L2TXActionsBase {
             value: 0,
             data: abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),
             failed: false,
+            isStatic: false,
             sourceAddress: alice,
             sourceRollup: L2_ROLLUP_ID,
             scope: new uint256[](0)
@@ -62,6 +63,7 @@ abstract contract NestedCounterL2Actions is L2TXActionsBase {
             value: 0,
             data: abi.encodeWithSelector(Counter.increment.selector),
             failed: false,
+            isStatic: false,
             sourceAddress: cap1Addr, // CounterAndProxyL1
             sourceRollup: MAINNET_ROLLUP_ID,
             scope: scope
@@ -76,6 +78,7 @@ abstract contract NestedCounterL2Actions is L2TXActionsBase {
             value: 0,
             data: abi.encode(uint256(1)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -90,6 +93,7 @@ abstract contract NestedCounterL2Actions is L2TXActionsBase {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -107,6 +111,7 @@ abstract contract NestedCounterL2Actions is L2TXActionsBase {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -257,7 +262,7 @@ contract ExecuteL2 is Script, NestedCounterL2Actions {
 
         address alice = msg.sender;
 
-        manager.loadExecutionTable(_l2Entries(counterL2Addr, counterAndProxyAddr, alice));
+        manager.loadExecutionTable(_l2Entries(counterL2Addr, counterAndProxyAddr, alice), new StaticCall[](0));
 
         // Alice calls A' on L2 (low-level call — A' is a proxy)
         bytes memory incrementProxyCallData = abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector);

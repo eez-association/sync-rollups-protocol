@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import {Script, console} from "forge-std/Script.sol";
 import {Rollups} from "../../../src/Rollups.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
+import {Action, ActionType, ExecutionEntry, StateDelta, StaticCall} from "../../../src/ICrossChainManager.sol";
 import {Counter} from "../../../test/mocks/CounterContracts.sol";
 import {CallTwice} from "../../../test/mocks/MultiCallContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
@@ -20,6 +20,7 @@ abstract contract MultiCallTwiceActions {
             value: 0,
             data: abi.encodeWithSelector(Counter.increment.selector),
             failed: false,
+            isStatic: false,
             sourceAddress: callTwice,
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -34,6 +35,7 @@ abstract contract MultiCallTwiceActions {
             value: 0,
             data: abi.encode(uint256(1)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -48,6 +50,7 @@ abstract contract MultiCallTwiceActions {
             value: 0,
             data: abi.encode(uint256(2)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -113,7 +116,7 @@ contract Batcher {
         CallTwice app,
         address counterProxy
     ) external returns (uint256 first, uint256 second) {
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
         (first, second) = app.callCounterTwice(counterProxy);
     }
 }
@@ -174,7 +177,7 @@ contract ExecuteL2 is Script, MultiCallTwiceActions {
 
         vm.startBroadcast();
 
-        manager.loadExecutionTable(_l2Entries(counterAAddr, callTwiceAddr));
+        manager.loadExecutionTable(_l2Entries(counterAAddr, callTwiceAddr), new StaticCall[](0));
 
         // Single call: chaining handles the second invocation
         manager.executeIncomingCrossChainCall(

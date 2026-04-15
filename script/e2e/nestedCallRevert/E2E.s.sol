@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import {Script, console} from "forge-std/Script.sol";
 import {Rollups} from "../../../src/Rollups.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
+import {Action, ActionType, ExecutionEntry, StateDelta, StaticCall} from "../../../src/ICrossChainManager.sol";
 import {Counter, RevertCounter, SafeCounterAndProxy} from "../../../test/mocks/CounterContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 import {getOrCreateProxy} from "../shared/E2EHelpers.sol";
@@ -57,6 +57,7 @@ abstract contract NestedCallRevertActions {
             value: 0,
             data: abi.encodeWithSelector(SafeCounterAndProxy.incrementProxy.selector),
             failed: false,
+            isStatic: false,
             sourceAddress: sourceAddr,
             sourceRollup: MAINNET_ROLLUP_ID,
             scope: new uint256[](0)
@@ -78,6 +79,7 @@ abstract contract NestedCallRevertActions {
             value: 0,
             data: abi.encodeWithSelector(RevertCounter.increment.selector),
             failed: false,
+            isStatic: false,
             sourceAddress: counterAndProxyL2,
             sourceRollup: L2_ROLLUP_ID,
             scope: scope0
@@ -93,6 +95,7 @@ abstract contract NestedCallRevertActions {
             value: 0,
             data: _revertData(),
             failed: true,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -108,6 +111,7 @@ abstract contract NestedCallRevertActions {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -129,6 +133,7 @@ abstract contract NestedCallRevertActions {
             value: 0,
             data: abi.encodeWithSelector(RevertCounter.increment.selector),
             failed: false,
+            isStatic: false,
             sourceAddress: counterAndProxyL2,
             sourceRollup: L2_ROLLUP_ID,
             scope: new uint256[](0)
@@ -202,7 +207,7 @@ abstract contract NestedCallRevertActions {
 /// @dev Alice's proxy call succeeds — RESULT(failed) maps to RESULT(ok) on L1.
 contract Batcher {
     function execute(Rollups rollups, ExecutionEntry[] calldata entries, address proxy, bytes calldata data) external {
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
         (bool success, bytes memory ret) = proxy.call(data);
         if (!success) {
             assembly {
@@ -283,7 +288,7 @@ contract ExecuteL2 is Script, NestedCallRevertActions {
 
         address alice = msg.sender; // broadcaster = system = alice in local mode
 
-        manager.loadExecutionTable(_l2Entries(revertCounterL1Addr, counterAndProxyL2Addr));
+        manager.loadExecutionTable(_l2Entries(revertCounterL1Addr, counterAndProxyL2Addr), new StaticCall[](0));
 
         // System executes the incoming cross-chain call.
         // D.incrementProxy() calls RC' → inner call fails → D catches via try/catch →

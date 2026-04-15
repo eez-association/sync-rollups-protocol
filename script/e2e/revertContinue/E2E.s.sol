@@ -5,7 +5,7 @@ import {Script, console} from "forge-std/Script.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 import {Rollups} from "../../../src/Rollups.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
+import {Action, ActionType, ExecutionEntry, StateDelta, StaticCall} from "../../../src/ICrossChainManager.sol";
 import {JoinedCounter, DualCallerWithRevert} from "../../../test/mocks/CounterContracts.sol";
 import {getOrCreateProxy} from "../shared/E2EHelpers.sol";
 
@@ -52,6 +52,7 @@ abstract contract RevertContinueActions {
             value: 0,
             data: abi.encodeWithSelector(JoinedCounter.increment.selector),
             failed: false,
+            isStatic: false,
             sourceAddress: dualCaller,
             sourceRollup: MAINNET_ROLLUP_ID,
             scope: scope
@@ -66,6 +67,7 @@ abstract contract RevertContinueActions {
             value: 0,
             data: abi.encodeWithSelector(JoinedCounter.increment.selector),
             failed: false,
+            isStatic: false,
             sourceAddress: dualCaller,
             sourceRollup: MAINNET_ROLLUP_ID,
             scope: scope
@@ -82,6 +84,7 @@ abstract contract RevertContinueActions {
             value: 0,
             data: abi.encode(uint256(1), uint256(0), uint256(1)), // (own=1, other=0, id=1)
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -96,6 +99,7 @@ abstract contract RevertContinueActions {
             value: 0,
             data: abi.encode(uint256(1), uint256(0), uint256(2)), // (own=1, other=0, id=2)
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -110,6 +114,7 @@ abstract contract RevertContinueActions {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -128,6 +133,7 @@ abstract contract RevertContinueActions {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: scope0
@@ -142,6 +148,7 @@ abstract contract RevertContinueActions {
             value: 0,
             data: "",
             failed: true,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -258,7 +265,7 @@ contract ExecuteL2 is Script, RevertContinueActions {
         CrossChainManagerL2 manager = CrossChainManagerL2(managerL2Addr);
 
         vm.startBroadcast();
-        manager.loadExecutionTable(_l2Entries(joinBAddr, dualCallerAddr));
+        manager.loadExecutionTable(_l2Entries(joinBAddr, dualCallerAddr), new StaticCall[](0));
 
         uint256[] memory scope00 = new uint256[](2);
         scope00[0] = 0;
@@ -282,7 +289,7 @@ contract Batcher {
         ExecutionEntry[] calldata entries,
         DualCallerWithRevert dualCaller
     ) external {
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
         dualCaller.execute();
     }
 }

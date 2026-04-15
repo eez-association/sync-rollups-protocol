@@ -3,7 +3,17 @@ pragma solidity ^0.8.24;
 
 import {IZKVerifier} from "./IZKVerifier.sol";
 import {CrossChainProxy} from "./CrossChainProxy.sol";
-import {ICrossChainManager, ActionType, Action, StateDelta, ExecutionEntry, ProxyInfo} from "./ICrossChainManager.sol";
+import {
+    ICrossChainManager,
+    ActionType,
+    Action,
+    StateDelta,
+    ExecutionEntry,
+    StaticCall,
+    StaticSubCall,
+    RollupStateRoot,
+    ProxyInfo
+} from "./ICrossChainManager.sol";
 
 /// @notice Rollup configuration
 struct RollupConfig {
@@ -36,6 +46,10 @@ contract Rollups is ICrossChainManager {
 
     /// @notice Array of pre-computed executions
     ExecutionEntry[] public executions;
+
+    /// @notice Array of pre-computed static call results
+    /// @dev Populated by postBatch alongside executions; consumed by staticCallLookup via actionHash match
+    StaticCall[] public staticCalls;
 
     /// @notice Mapping of authorized CrossChainProxy contracts to their identity
     mapping(address proxy => ProxyInfo info) public authorizedProxies;
@@ -168,11 +182,13 @@ contract Rollups is ICrossChainManager {
     /// @dev Entries with actionHash == bytes32(0) are applied immediately (state commitments)
     /// @dev Entries with actionHash != bytes32(0) are stored in the execution table for later consumption
     /// @param entries The execution entries to process
+    /// @param _staticCalls Pre-computed static call results for read-only cross-chain calls
     /// @param blobCount Number of blobs containing shared data
     /// @param callData Shared data passed via calldata
     /// @param proof The ZK proof covering all entries
     function postBatch(
         ExecutionEntry[] calldata entries,
+        StaticCall[] calldata _staticCalls,
         uint256 blobCount,
         bytes calldata callData,
         bytes calldata proof
@@ -182,23 +198,7 @@ contract Rollups is ICrossChainManager {
         }
 
         // --- Build public inputs ---
-        bytes32[] memory entryHashes = new bytes32[](entries.length);
-        for (uint256 i = 0; i < entries.length; i++) {
-            // Gather verification keys for each delta's rollup
-            bytes32[] memory vks = new bytes32[](entries[i].stateDeltas.length);
-            for (uint256 j = 0; j < entries[i].stateDeltas.length; j++) {
-                vks[j] = rollups[entries[i].stateDeltas[j].rollupId].verificationKey;
-            }
-
-            entryHashes[i] = keccak256(
-                abi.encodePacked(
-                    abi.encode(entries[i].stateDeltas),
-                    abi.encode(vks),
-                    entries[i].actionHash,
-                    abi.encode(entries[i].nextAction) // update to flatten actions TODO
-                )
-            );
-        }
+        bytes32[] memory entryHashes = _computeEntryHashes(entries);
 
         bytes32[] memory blobHashes = new bytes32[](blobCount);
         for (uint256 i = 0; i < blobCount; i++) {
@@ -211,14 +211,16 @@ contract Rollups is ICrossChainManager {
                 block.timestamp,
                 abi.encode(entryHashes),
                 abi.encode(blobHashes),
-                keccak256(callData)
+                keccak256(callData),
+                keccak256(abi.encode(_staticCalls))
             )
         );
 
         _verifyProof(proof, publicInputsHash);
 
-        // Delete previous execution table
+        // Delete previous tables
         delete executions;
+        delete staticCalls;
 
         // --- Process entries ---
         for (uint256 i = 0; i < entries.length; i++) {
@@ -237,8 +239,34 @@ contract Rollups is ICrossChainManager {
             }
         }
 
+        // --- Store static calls ---
+        for (uint256 i = 0; i < _staticCalls.length; i++) {
+            staticCalls.push(_staticCalls[i]);
+        }
+
         emit BatchPosted(entries, publicInputsHash);
         lastStateUpdateBlock = block.number;
+    }
+
+    /// @notice Computes per-entry public-input hashes, pulling each delta's verification key from storage
+    /// @dev Extracted from postBatch to relieve stack pressure
+    function _computeEntryHashes(ExecutionEntry[] calldata entries) internal view returns (bytes32[] memory entryHashes) {
+        entryHashes = new bytes32[](entries.length);
+        for (uint256 i = 0; i < entries.length; i++) {
+            bytes32[] memory vks = new bytes32[](entries[i].stateDeltas.length);
+            for (uint256 j = 0; j < entries[i].stateDeltas.length; j++) {
+                vks[j] = rollups[entries[i].stateDeltas[j].rollupId].verificationKey;
+            }
+
+            entryHashes[i] = keccak256(
+                abi.encodePacked(
+                    abi.encode(entries[i].stateDeltas),
+                    abi.encode(vks),
+                    entries[i].actionHash,
+                    abi.encode(entries[i].nextAction) // update to flatten actions TODO
+                )
+            );
+        }
     }
 
     /// @notice Verifies a ZK proof against the computed public inputs hash
@@ -284,6 +312,7 @@ contract Rollups is ICrossChainManager {
             value: msg.value,
             data: callData,
             failed: false,
+            isStatic: false,
             sourceAddress: sourceAddress,
             sourceRollup: MAINNET_ROLLUP_ID,
             scope: new uint256[](0)
@@ -294,6 +323,100 @@ contract Rollups is ICrossChainManager {
         Action memory nextAction = _findAndApplyExecution(actionHash, action);
 
        return _resolveScopes(nextAction);
+    }
+
+    // ──────────────────────────────────────────────
+    //  Static call lookup
+    // ──────────────────────────────────────────────
+
+    /// @notice Looks up a pre-computed result for a static (read-only) cross-chain call
+    /// @dev Called by CrossChainProxy when it detects a STATICCALL context.
+    ///      msg.sender must be an authorized proxy. Matches by actionHash.
+    ///      If the entry is marked as failed, reverts with the pre-computed returnData.
+    /// @param sourceAddress The original caller address (msg.sender as seen by the proxy)
+    /// @param callData The original calldata sent to the proxy
+    /// @return result The pre-computed return data
+    function staticCallLookup(
+        address sourceAddress,
+        bytes calldata callData
+    ) external view returns (bytes memory result) {
+        ProxyInfo storage proxyInfo = authorizedProxies[msg.sender];
+        if (proxyInfo.originalAddress == address(0)) {
+            revert UnauthorizedProxy();
+        }
+
+        // Executions can only be consumed in the same block they were posted
+        if (lastStateUpdateBlock != block.number) {
+            revert ExecutionNotInCurrentBlock();
+        }
+
+        Action memory action = Action({
+            actionType: ActionType.CALL,
+            rollupId: proxyInfo.originalRollupId,
+            destination: proxyInfo.originalAddress,
+            value: 0,
+            data: callData,
+            failed: false,
+            isStatic: true,
+            sourceAddress: sourceAddress,
+            sourceRollup: MAINNET_ROLLUP_ID,
+            scope: new uint256[](0)
+        });
+
+        bytes32 actionHash = keccak256(abi.encode(action));
+
+        for (uint256 i = 0; i < staticCalls.length; i++) {
+            StaticCall storage sc = staticCalls[i];
+            if (sc.actionHash == actionHash) {
+                // Verify every pinned (rollupId, stateRoot) matches current on-chain state
+                for (uint256 j = 0; j < sc.stateRoots.length; j++) {
+                    RollupStateRoot storage sr = sc.stateRoots[j];
+                    if (rollups[sr.rollupId].stateRoot != sr.stateRoot) {
+                        revert StaticCallStateRootMismatch();
+                    }
+                }
+                // Replay flat sub-call dependencies and verify their rolling hash
+                if (sc.calls.length > 0) {
+                    if (_processNStaticCalls(sc.calls) != sc.rollingHash) revert RollingHashMismatch();
+                }
+                if (sc.failed) {
+                    bytes memory returnData = sc.returnData;
+                    assembly {
+                        revert(add(returnData, 0x20), mload(returnData))
+                    }
+                }
+                return sc.returnData;
+            }
+        }
+
+        revert StaticCallNotFound();
+    }
+
+    /// @notice Re-executes the flat list of sub-call dependencies via their source proxies and folds
+    ///         `(success, subCallReturnData)` into a rolling keccak chain used to verify `StaticCall.rollingHash`.
+    /// @dev Static calls cannot mutate state, so this helper can replay every sub-call in a flat loop
+    ///      without any of the bookkeeping the normal execution path needs: no scope tree, no
+    ///      try/catch for `ScopeReverted`, no `REVERT_CONTINUE` lookup, no partial-revert rollback,
+    ///      no state-delta application. Individual sub-calls may legitimately revert — we still fold
+    ///      `(success=false, returnData)` into the rolling hash and keep going. The only invariant the
+    ///      caller needs is that the final `rollingHash` matches the prover-committed value.
+    ///      Must run in a `view` context — STATICCALL forbids SSTORE/TSTORE, and `staticCallLookup`
+    ///      is itself reached via STATICCALL from the proxy, so this helper is read-only too.
+    ///      Each sub-call's source proxy must already be deployed; otherwise reverts `ProxyNotDeployed`.
+    /// @param subCalls The flat sub-call dependency list (storage ref)
+    /// @return rollingHash The rolling keccak256 digest chained over each sub-call's (success, returnData)
+    function _processNStaticCalls(
+        StaticSubCall[] storage subCalls
+    ) internal view returns (bytes32 rollingHash) {
+        for (uint256 i = 0; i < subCalls.length; i++) {
+            StaticSubCall storage subCall = subCalls[i];
+            address sourceProxy = computeCrossChainProxyAddress(subCall.sourceAddress, subCall.sourceRollup);
+            if (sourceProxy.code.length == 0) revert ProxyNotDeployed();
+            (bool success, bytes memory subCallReturnData) = sourceProxy.staticcall(
+                abi.encodeCall(CrossChainProxy.executeOnBehalf, (subCall.destination, subCall.data))
+            );
+            rollingHash = keccak256(abi.encodePacked(rollingHash, success, subCallReturnData));
+        }
     }
 
     // ──────────────────────────────────────────────
@@ -318,6 +441,7 @@ contract Rollups is ICrossChainManager {
             value: 0,
             data: rlpEncodedTx,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: MAINNET_ROLLUP_ID,
             scope: new uint256[](0)
@@ -413,14 +537,22 @@ contract Rollups is ICrossChainManager {
             _createCrossChainProxyInternal(action.sourceAddress, action.sourceRollup);
         }
 
+        bool success;
+        bytes memory returnData;
+        if (action.isStatic) {
+            // Static CALL — invoke the source proxy via STATICCALL. No value transfer allowed.
+            (success, returnData) = address(sourceProxy).staticcall(
+                abi.encodeCall(CrossChainProxy.executeOnBehalf, (action.destination, action.data))
+            );
+        } else {
+            (success, returnData) = address(sourceProxy).call{value: action.value}(
+                abi.encodeCall(CrossChainProxy.executeOnBehalf, (action.destination, action.data))
+            );
 
-        (bool success, bytes memory returnData) = address(sourceProxy).call{value: action.value}(
-            abi.encodeCall(CrossChainProxy.executeOnBehalf, (action.destination, action.data))
-        );
-
-        // Track ETH sent out from this contract (state deltas handle rollup balance changes)
-        if (action.value > 0 && success) {
-            _etherDelta -= int256(action.value);
+            // Track ETH sent out from this contract (state deltas handle rollup balance changes)
+            if (action.value > 0 && success) {
+                _etherDelta -= int256(action.value);
+            }
         }
 
         // Build RESULT action
@@ -431,6 +563,7 @@ contract Rollups is ICrossChainManager {
             value: 0,
             data: returnData,
             failed: !success,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -534,8 +667,15 @@ contract Rollups is ICrossChainManager {
         }
 
         // At this point nextAction should be a successful RESULT
-        if (nextAction.actionType != ActionType.RESULT || nextAction.failed) {
+        if (nextAction.actionType != ActionType.RESULT) {
             revert CallExecutionFailed();
+        }
+        if (nextAction.failed) {
+            // Replay the raw revert data from the failed execution entry
+            bytes memory returnData = nextAction.data;
+            assembly {
+                revert(add(returnData, 0x20), mload(returnData))
+            }
         }
         return nextAction.data;
     }
@@ -570,6 +710,7 @@ contract Rollups is ICrossChainManager {
             value: 0,
             data: "",
             failed: true,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
