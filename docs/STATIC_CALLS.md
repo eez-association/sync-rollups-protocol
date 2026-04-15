@@ -31,7 +31,28 @@ Integrity rests on three checks performed at lookup time:
 - Every pinned state root on that entry must equal the rollup's current on-chain `stateRoot` (L1 only; L2 has no stateRoot mapping — see §F).
 - If the entry lists sub-call dependencies, each one is re-executed via its source proxy under STATICCALL, and the chained `keccak256` of their `(success, returnData)` tuples must match the committed `rollingHash`.
 
-The prover is trusted to construct the right set of pins and to enumerate every STATICCALL the target view function makes. The contract guarantees that (a) a result cannot be served if any pin diverges, and (b) if any sub-call result has changed since commit time (reorder, new intermediate state, fabricated intermediate value), the rolling-hash check rejects the entry. Under-pinning of *primary* rollups is still not detected on-chain — if a prover omits a rollup whose state influences the top-level view but whose storage is not touched by any listed sub-call, the result may be stale but the lookup will still succeed. The ZK proof over the canonical per-entry digest is what binds the prover to an honest pin set and an honest sub-call list — see §G.
+The prover is trusted to construct the right set of pins and to enumerate every STATICCALL the target view function makes. The contract guarantees that (a) a result cannot be served if any pin diverges, and (b) if any sub-call result has changed since commit time (reorder, new intermediate state, fabricated intermediate value), the rolling-hash check rejects the entry. Under-pinning of *primary* rollups is still not detected on-chain — if a prover omits a rollup whose state influences the top-level view but whose storage is not touched by any listed sub-call, the result may be stale but the lookup will still succeed. The ZK proof over `keccak256(abi.encode(_staticCalls))` is what binds the prover to an honest pin set and an honest sub-call list — see §G.
+
+---
+
+## A.1 Why the sub-call list is flat (and why this is safe only for static calls)
+
+The execution table and the static-call table serve superficially similar jobs — match an action hash, replay the outcome — but they have different shapes. The execution table is a scope tree consumed with `newScope` + try/catch for `ScopeReverted`, `REVERT_CONTINUE` lookup, per-step state-delta application, and `_etherDelta` reconciliation. The static-call table's dependency list (`StaticSubCall[] calls`) is flat and is replayed by a plain loop in `_processNStaticCalls`.
+
+The reason for the asymmetry is the absence of state mutation on the static side:
+
+- Regular CALLs mutate state. A child revert has to roll back a precise subset of state changes, and nested scopes need a hierarchy to navigate which deltas survive and which do not. That is what the scope tree + `REVERT_CONTINUE` + `stateDeltas` machinery exists for.
+- Static calls mutate nothing. There is no state to roll back, no child scope to revert, no partial-revert bookkeeping. Individual sub-calls can legitimately revert inside the loop — the replay just folds `(false, revertBytes)` into the rolling hash and keeps going.
+
+That is why the static table uses the flat `StaticSubCall[] calls` + `rollingHash` shape rather than a scope tree. Flattening would be unsafe for regular calls (it would discard the scope isolation that lets reverts roll back the right deltas); it is the natural shape for reads.
+
+Practical consequences the implementation relies on:
+
+- `staticCallLookup` and `_processNStaticCalls` are both `view`. Every sub-call is dispatched via STATICCALL, and EIP-1153 forbids `SSTORE` / `TSTORE` inside that frame — so the lookup cannot persist a disambiguation cursor or a counter.
+- The prover-committed `rollingHash` is the full integrity check over the dependency chain. It subsumes what the scope tree does on the execution side, without any of its overhead.
+- Because replays are side-effect-free, the same static entry can be read an unbounded number of times in the same block — there is no consumption, no swap-and-pop, no ordering dependency between readers.
+
+Everything below describes the commitments, detections, and lookup semantics that ride on top of this choice.
 
 ---
 
@@ -106,7 +127,7 @@ struct StaticCall {
 }
 ```
 
-The field order matches the on-chain struct and is what the canonical digest in §G hashes. `calls` and `rollingHash` together form the **cross-dependency integrity** check: the prover commits the exact STATICCALL chain the target view function will make, and the lookup re-runs that chain on-chain to ensure the intermediate values have not shifted since commit time. Empty `calls` (length 0) degenerates to the earlier shape — `rollingHash` is not consulted and no replay is performed.
+The field order matches the on-chain struct and is what `abi.encode(_staticCalls)` in the public-inputs preimage commits to (see §G). `calls` and `rollingHash` together form the **cross-dependency integrity** check: the prover commits the exact STATICCALL chain the target view function will make, and the lookup re-runs that chain on-chain to ensure the intermediate values have not shifted since commit time. Empty `calls` (length 0) skips the replay — `rollingHash` is not consulted.
 
 Contrast with `ExecutionEntry`:
 
@@ -165,7 +186,7 @@ On detection:
 
 Return data decoding is unchanged: on success, the manager's `bytes memory` return value is double-ABI-encoded, so the proxy decodes one layer before returning. On revert, the raw revert bytes are forwarded directly.
 
-Gas footprint: one self-call + one TSTORE (~100 gas plus call overhead) per fallback entry. See §H for a gas-starvation edge case this introduces.
+Gas footprint: one self-call + one TSTORE (~100 gas plus call overhead) per fallback entry. An OOG'd probe cannot silently mis-route — the subsequent `MANAGER.staticcall` / `.call` in the same frame also OOGs. See §H.
 
 ---
 
@@ -191,7 +212,7 @@ The entry is **not removed** on use. Multiple calls in the same block that hash 
 
 | | L1 (`Rollups.sol`) | L2 (`CrossChainManagerL2.sol`) |
 |---|---|---|
-| Binding to batch | ZK proof over the per-entry canonical digest chain (see §G) | System-address `loadExecutionTable` only, no proof |
+| Binding to batch | ZK proof over `keccak256(abi.encode(_staticCalls))` folded into public inputs (see §G) | System-address `loadExecutionTable` only, no proof |
 | `sourceRollup` on rebuilt Action | `MAINNET_ROLLUP_ID` (0) | this chain's `ROLLUP_ID` |
 | Pin check | For each `sc.stateRoots[j]`, require `rollups[sr.rollupId].stateRoot == sr.stateRoot`, else revert `StaticCallStateRootMismatch` | **`sc.stateRoots.length != 0` reverts `StaticCallStateRootsNotSupported`.** L2 has no rollup state-root mapping; pins cannot be verified there, so they are disallowed |
 | Empty `stateRoots` | Valid — the entry is served unconditionally apart from the sub-call replay (prover takes responsibility; see §G) | **Required** |
@@ -244,40 +265,22 @@ function postBatch(
 ) external;
 ```
 
-The public-inputs hash commits the static-call table via a canonical per-entry digest chain. Rather than `keccak256(abi.encode(_staticCalls))` — which depends on Solidity's ABI layout for nested dynamic types — each entry is hashed with a fixed field order, and the chain of per-entry digests is folded with `keccak256(abi.encodePacked(prev, digest_i))`:
+The public-inputs hash folds the static-call table through `abi.encode` directly — the same shape used for execution entries:
 
 ```solidity
-// Per-entry canonical digest
-_hashStaticCall(sc) = keccak256(abi.encodePacked(
-    sc.actionHash,
-    keccak256(sc.returnData),
-    sc.failed,
-    _hashSubCalls(sc.calls),
-    sc.rollingHash,
-    _hashStateRoots(sc.stateRoots)
-))
-
-// Rolling fold over all entries (identity: bytes32(0) for an empty table)
-staticDigest = bytes32(0)
-for i in 0..N:
-    staticDigest = keccak256(abi.encodePacked(staticDigest, _hashStaticCall(_staticCalls[i])))
-
-// Final public inputs
 publicInputsHash = keccak256(abi.encodePacked(
     blockhash(block.number - 1),
     block.timestamp,
     abi.encode(entryHashes),
     abi.encode(blobHashes),
     keccak256(callData),
-    staticDigest                                 // ← replaces keccak256(abi.encode(_staticCalls))
+    keccak256(abi.encode(_staticCalls))
 ));
 ```
 
-Where `_hashSubCalls` chains `keccak256(prev, destination, keccak256(data), sourceAddress, sourceRollup)` per sub-call, and `_hashStateRoots` chains `keccak256(prev, rollupId, stateRoot)` per pin.
+Any change to the static-call set — including the ordering or contents of `calls`, the pin arrays, or the committed `rollingHash` — changes `keccak256(abi.encode(_staticCalls))` and therefore the proof. Off-chain provers MUST match Solidity's `abi.encode` of `StaticCall[]` byte-for-byte.
 
-**Empty-table identity**: with `_staticCalls.length == 0`, the fold yields `bytes32(0)` — this is the canonical "no static calls" value for the public-inputs term.
-
-Any change to the static call set — including the ordering or contents of `calls`, the pin arrays, or the committed `rollingHash` — changes `staticDigest` and therefore the proof. Off-chain provers MUST replicate the exact byte layout of `_hashStaticCall` / `_hashSubCalls` / `_hashStateRoots`, since `abi.encode` is no longer in the preimage — the helpers intentionally avoid it to remove ambiguity around nested dynamic types.
+**Empty-table term**: with `_staticCalls.length == 0`, `keccak256(abi.encode(_staticCalls))` is the hash of the ABI encoding of an empty dynamic array, not `bytes32(0)`. Provers should not special-case empty tables.
 
 ### Table lifecycle (L1)
 
@@ -317,7 +320,7 @@ No proof; trust comes from the system-address gate. Same delete-then-push patter
 - **Top-level L1→L2 static leaves no destination-side on-chain footprint.** Block explorers and trace-based tooling must read the origin-side `staticCalls[]` storage array and STATICCALL calldata; there is no L2 log to correlate against.
 - **Nested static sub-calls inside `executeL2TX` go through the scope machinery, not `staticCallLookup`.** Their RESULT lookups hit the execution table (see §F).
 - **Non-overlapping index spaces.** Because `isStatic` is part of `actionHash`, an entry placed in the wrong table is unreachable — a useful invariant when debugging "which table should this go in?"
-- **TSTORE-probe OOG edge case (known limitation).** A caller can starve the proxy of gas such that the `staticCheck()` self-call OOGs, returning `success == false`, which the proxy interprets as "static context" and routes to `staticCallLookup`. If no matching entry exists, the caller sees a clean `StaticCallNotFound` revert instead of the intended `executeCrossChainCall` path. This means a gas-griefing caller can force a non-static call to be mis-routed. A robust mitigation would require a minimum-gas guard around the self-call (e.g. `gasleft() > MIN_GAS` precondition); **this guard is not shipped.** Callers that cannot afford the mis-route should ensure sufficient gas is forwarded to the proxy.
+- **TSTORE-probe OOG behaviour is safe by construction.** If the `staticCheck()` self-call OOGs, `success == false` and the proxy routes to `MANAGER.staticcall(staticCallLookup(...))`. The self-call receives 63/64 of the remaining gas under EIP-150, so if a TSTORE (~100 gas) could not complete, the subsequent `MANAGER.staticcall` / `MANAGER.call` in the same frame cannot complete either — a mis-routed path fails loudly with an OOG rather than silently executing under the wrong entry point. No `gasleft()` guard is needed.
 - **Sub-call ordering is strict.** `calls[]` MUST list the STATICCALL dependencies in the exact order the target view function invokes them. Any reorder — even swapping two independent reads — produces a different `keccak256` chain and the lookup reverts `RollingHashMismatch`. Provers MUST trace the target's execution (not derive the set from ABI/source inspection alone) to get the order right.
 - **Sub-call proxies must be pre-deployed.** `_processNStaticCalls` derives each source proxy via `computeCrossChainProxyAddress(sourceAddress, sourceRollup)` and reverts `ProxyNotDeployed` if `sourceProxy.code.length == 0`. There is no auto-create path inside the static-call replay (the lookup is `view`, so it cannot `CREATE2`). Provers building entries that reference new `(address, rollupId)` pairs MUST either (a) emit a prior `createCrossChainProxy` call in the same block or (b) avoid listing sub-calls through not-yet-deployed identities.
 - **L2 duplicate-actionHash rejection at load time.** `loadExecutionTable` on L2 runs an O(n²) scan over `_staticCalls[*].actionHash` and reverts `DuplicateStaticCallActionHash` on any pair collision. This replaces the silent first-match-wins behaviour the naive lookup would otherwise exhibit on L2 (which has no `stateRoots` to disambiguate). On L1, duplicates with matching `stateRoots` MUST by construction carry identical `returnData`, so no analogous load-time check is needed there.

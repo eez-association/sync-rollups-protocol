@@ -269,22 +269,6 @@ For each entry i:
 
 blobHashes[i] = blobhash(i)  for i in 0..blobCount
 
-// Static-call canonical per-entry digest chain (identity = bytes32(0))
-staticDigest = bytes32(0)
-for i in 0..len(_staticCalls):
-  staticDigest = keccak256(abi.encodePacked(staticDigest, _hashStaticCall(_staticCalls[i])))
-
-// where _hashStaticCall(sc) = keccak256(abi.encodePacked(
-//   sc.actionHash,
-//   keccak256(sc.returnData),
-//   sc.failed,
-//   _hashSubCalls(sc.calls),
-//   sc.rollingHash,
-//   _hashStateRoots(sc.stateRoots)
-// ))
-// _hashSubCalls chains keccak256(prev, destination, keccak256(data), sourceAddress, sourceRollup) per sub-call
-// _hashStateRoots chains keccak256(prev, rollupId, stateRoot) per pin
-
 publicInputsHash = keccak256(
   abi.encodePacked(
     blockhash(block.number - 1),
@@ -292,12 +276,12 @@ publicInputsHash = keccak256(
     abi.encode(entryHashes),
     abi.encode(blobHashes),
     keccak256(callData),
-    staticDigest
+    keccak256(abi.encode(_staticCalls))
   )
 )
 ```
 
-The verifier receives `(proof, publicInputsHash)` and must return `true`. The public inputs hash commits to both the execution entries and the static-call table, so the prover attests to both (see §H). The per-entry canonical digest replaces `keccak256(abi.encode(_staticCalls))`; off-chain provers MUST replicate the exact `_hashStaticCall` / `_hashSubCalls` / `_hashStateRoots` byte layout, since `abi.encode` is intentionally removed from the static-call preimage to eliminate ambiguity around nested dynamic types.
+The verifier receives `(proof, publicInputsHash)` and must return `true`. The public inputs hash commits to both the execution entries and the static-call table, so the prover attests to both (see §H). The static-call term is `keccak256(abi.encode(_staticCalls))` — plain ABI encoding of the `StaticCall[]` parameter, same shape as the execution-entry term. Off-chain provers MUST reproduce Solidity's `abi.encode` of `StaticCall[]` byte-for-byte.
 
 **State transitions** (in order):
 
@@ -1790,29 +1774,11 @@ Every `CrossChainProxy` probes whether it is being invoked in a STATICCALL conte
 
 ### H.3 Table commitment
 
-`postBatch` on L1 accepts a `StaticCall[]` parameter in addition to `ExecutionEntry[]`. The public inputs hash commits to both tables, using a canonical per-entry digest chain for the static-call term (see §B.1 for the full formula):
+`postBatch` on L1 accepts a `StaticCall[]` parameter in addition to `ExecutionEntry[]`. The public inputs hash folds the static-call table into its last term as `keccak256(abi.encode(_staticCalls))` — see §B.1 for the full formula.
 
-```
-_hashStaticCall(sc) = keccak256(abi.encodePacked(
-  sc.actionHash,
-  keccak256(sc.returnData),
-  sc.failed,
-  _hashSubCalls(sc.calls),
-  sc.rollingHash,
-  _hashStateRoots(sc.stateRoots)
-))
+Off-chain provers MUST reproduce Solidity's `abi.encode` of `StaticCall[]` byte-for-byte (nested dynamic-type encoding included). An earlier draft of this spec used a hand-rolled per-entry digest helper (`_hashStaticCall` / `_hashSubCalls` / `_hashStateRoots`); that helper was dropped as over-engineering — the ZK prover is expected to model `abi.encode` anyway, so the extra indirection bought nothing. `loadExecutionTable` on L2 mirrors the struct layout but substitutes system-address authority for the proof; it additionally pre-rejects batches containing any duplicate `StaticCall.actionHash` with `DuplicateStaticCallActionHash`, since L2 has no `stateRoots` to disambiguate at lookup time.
 
-staticDigest = fold_i keccak256(abi.encodePacked(prev, _hashStaticCall(_staticCalls[i])))
-               (identity: bytes32(0) when _staticCalls is empty)
-
-publicInputsHash = keccak256(abi.encodePacked(
-  ...,
-  keccak256(callData),
-  staticDigest
-))
-```
-
-Off-chain provers MUST replicate this encoding byte-for-byte; `abi.encode` is intentionally avoided to remove ambiguity around nested dynamic types. `loadExecutionTable` on L2 mirrors the struct layout but substitutes system-address authority for the proof; it additionally pre-rejects batches containing any duplicate `StaticCall.actionHash` with `DuplicateStaticCallActionHash`, since L2 has no `stateRoots` to disambiguate at lookup time.
+**Why the sub-call list is flat.** `StaticCall.calls` is a flat `StaticSubCall[]` rather than a scope tree. The execution-table path has to carry a scope tree because regular CALLs mutate state — nested scopes exist so `newScope` + `ScopeReverted` + `REVERT_CONTINUE` can roll back the right subset of deltas on partial failure. Static calls mutate nothing, so none of that bookkeeping is needed: `_processNStaticCalls` replays every sub-call in a plain loop, folds `(success, returnData)` into a rolling keccak, and treats individual sub-call reverts as legitimate (just hash `(false, revertBytes)` and keep going). Flattening would be unsafe for regular calls; it is the natural shape for reads, and the prover-committed `rollingHash` is the full integrity check over the dependency chain without any scope-tree overhead. See `STATIC_CALLS.md §A.1` for the extended argument.
 
 ### H.4 Lookup semantics
 

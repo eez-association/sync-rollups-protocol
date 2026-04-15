@@ -17,3 +17,7 @@
   **Not affected**: L1 (`Rollups.sol`) uses `_findAndApplyExecution` which checks state deltas against on-chain rollup state, so entries with the same `actionHash` but different `currentState` are correctly distinguished.
 
 
+## Static calls
+
+All static-call edge cases are covered in `STATIC_CALLS.md` §H (Invariants & edge cases). See that document for the authoritative list.
+

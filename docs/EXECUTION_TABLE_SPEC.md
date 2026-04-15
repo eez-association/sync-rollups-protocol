@@ -308,7 +308,7 @@ In practice, static calls are resolved end-to-end through the static call table 
 - Every `(sourceAddress, sourceRollup)` referenced in `calls` MUST have its `CrossChainProxy` deployed at lookup time — either pre-existing or created earlier in the same block. The static-call replay is `view` and cannot auto-create proxies; missing proxies revert `ProxyNotDeployed`.
 - On L2, two `StaticCall` entries with the same `actionHash` are rejected at `loadExecutionTable` with `DuplicateStaticCallActionHash`. If the same view needs to be serviced twice in a block on L2, re-use the single entry (it is not consumed).
 - Failed static entries (`failed = true`) store the **raw** revert payload (e.g., `abi.encodeWithSelector(MyError.selector, args)` or `abi.encodeWithSignature("Error(string)", "...")`), not an ABI-wrapped `bytes`. The lookup replays it verbatim.
-- The `postBatch` public-inputs hash uses a canonical per-entry digest (`_hashStaticCall`) rather than `abi.encode(_staticCalls)`. Off-chain provers MUST byte-match the helper's encoding.
+- The `postBatch` public-inputs hash folds the static-call table as `keccak256(abi.encode(_staticCalls))` (same shape as the execution-entry term). Off-chain provers must reproduce Solidity's `abi.encode` of `StaticCall[]` byte-for-byte.
 
 ---
 
@@ -333,7 +333,7 @@ function postBatch(
 ) external;
 ```
 
-The ZK proof's public inputs hash folds the static call table via a canonical per-entry digest chain rather than `abi.encode`. Each entry's digest is `_hashStaticCall(sc) = keccak256(abi.encodePacked(sc.actionHash, keccak256(sc.returnData), sc.failed, _hashSubCalls(sc.calls), sc.rollingHash, _hashStateRoots(sc.stateRoots)))`, and the digests are folded with `staticDigest_{i+1} = keccak256(abi.encodePacked(staticDigest_i, _hashStaticCall(_staticCalls[i])))` starting from `bytes32(0)`:
+The ZK proof's public inputs hash folds the static call table via `keccak256(abi.encode(_staticCalls))`, the same shape as the execution-entry term:
 
 ```
 publicInputsHash = keccak256(
@@ -342,11 +342,11 @@ publicInputsHash = keccak256(
     || abi.encode(entryHashes)
     || abi.encode(blobHashes)
     || keccak256(callData)
-    || staticDigest                         // fold_i keccak256(abi.encodePacked(prev, _hashStaticCall(e[i])))
+    || keccak256(abi.encode(_staticCalls))
 )
 ```
 
-An empty static-call table yields `staticDigest == bytes32(0)`. Off-chain provers MUST replicate the exact `_hashStaticCall` / `_hashSubCalls` / `_hashStateRoots` byte layout — `abi.encode` is intentionally avoided to remove ambiguity around nested dynamic types.
+Off-chain provers must match Solidity's `abi.encode` of `StaticCall[]` byte-for-byte. For the full static-call reference (scenario matrix, lookup semantics, sub-call replay, rolling-hash preimage) see `STATIC_CALLS.md`.
 
 Before re-loading, `postBatch` runs `delete executions; delete staticCalls;` so both tables are replaced wholesale each batch.
 
