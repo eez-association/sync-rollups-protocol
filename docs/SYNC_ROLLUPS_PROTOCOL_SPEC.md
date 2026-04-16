@@ -15,6 +15,7 @@
 - [E. Execution Entry Lifecycle](#e-execution-entry-lifecycle)
 - [F. Invariants](#f-invariants)
 - [G. Security Considerations](#g-security-considerations)
+- [H. Static-Call Subsystem](#h-static-call-subsystem)
 
 ---
 
@@ -46,6 +47,7 @@ struct Action {
     uint256    value;        // ETH to send with CALL; 0 otherwise
     bytes      data;         // calldata (CALL), return data (RESULT), RLP tx (L2TX), or "" (REVERT*)
     bool       failed;       // false for CALL/L2TX/REVERT; success flag for RESULT; true for REVERT_CONTINUE
+    bool       isStatic;     // true if this CALL must be executed via STATICCALL (read-only); see §H
     address    sourceAddress;// immediate caller identity (CALL only); address(0) otherwise
     uint256    sourceRollup; // caller's rollup ID (CALL only); 0 otherwise
     uint256[]  scope;        // hierarchical nesting path (see §D); empty for root-level actions
@@ -61,9 +63,12 @@ Field semantics by ActionType:
 | value | ETH sent | 0 | 0 | 0 | 0 |
 | data | calldata | return bytes | RLP-encoded tx | "" | "" |
 | failed | false | !success | false | false | true |
+| isStatic | true iff STATICCALL; value MUST be 0 | false | false | false | false |
 | sourceAddress | caller address | address(0) | address(0) | address(0) | address(0) |
 | sourceRollup | caller's rollupId | 0 | MAINNET_ROLLUP_ID | 0 | 0 |
 | scope | target scope path | [] | [] | target scope | [] |
+
+`isStatic` is only meaningful on a CALL action. For every non-CALL action (RESULT, L2TX, REVERT, REVERT_CONTINUE), `isStatic` MUST be `false`. Because `isStatic` is part of the struct and every action hash is `keccak256(abi.encode(action))`, a static CALL and an otherwise-identical non-static CALL produce distinct hashes and are indexed into different tables (static → `staticCalls`, non-static → `executions`).
 
 #### StateDelta
 
@@ -115,6 +120,45 @@ struct RollupConfig {
 }
 ```
 
+#### RollupStateRoot
+
+A `(rollupId, stateRoot)` pair used to pin the rollup state under which a static call result is valid.
+
+```solidity
+struct RollupStateRoot {
+    uint256 rollupId;  // which rollup's state is being pinned
+    bytes32 stateRoot; // expected state root for that rollup
+}
+```
+
+#### StaticSubCall
+
+A single STATICCALL dependency within a `StaticCall` entry. The entry's target view function invokes a flat, ordered list of these through other `CrossChainProxy` identities; the list is re-executed on-chain at lookup time to verify the committed `rollingHash`.
+
+```solidity
+struct StaticSubCall {
+    address destination;   // callee address on the sub-call's rollup
+    bytes   data;          // calldata forwarded to destination
+    address sourceAddress; // proxy identity initiating the STATICCALL (derives sourceProxy)
+    uint256 sourceRollup;  // rollup whose CrossChainProxy we STATICCALL through
+}
+```
+
+#### StaticCall
+
+A pre-computed result for a read-only (STATICCALL-context) cross-chain call. Static calls are posted alongside execution entries but live in a separate table; they never advance state and are never consumed. See §H for full semantics.
+
+```solidity
+struct StaticCall {
+    bytes32             actionHash;   // keccak256(abi.encode(CALL action)) with isStatic = true
+    bytes               returnData;   // pre-computed return bytes (or revert payload if failed)
+    bool                failed;       // if true, staticCallLookup reverts with returnData as the revert payload
+    StaticSubCall[]     calls;        // flat STATICCALL dependency list, in execution order
+    bytes32             rollingHash;  // keccak-chain folded over (success, inner returndata) of `calls` replay
+    RollupStateRoot[]   stateRoots;   // state roots this result is valid against (L1 only; see §H)
+}
+```
+
 ### A.3 Storage Layout
 
 #### Rollups.sol (L1)
@@ -124,8 +168,9 @@ struct RollupConfig {
 | 0 | rollupCounter | uint256 | Next rollup ID to assign; constructor sets startingRollupId |
 | 1 | rollups | mapping(uint256 => RollupConfig) | Keyed by rollupId |
 | 2 | executions | ExecutionEntry[] | Dynamic array; cleared on each postBatch |
-| 3 | authorizedProxies | mapping(address => ProxyInfo) | Keyed by proxy address |
-| 4 | lastStateUpdateBlock | uint256 | Block number of last postBatch |
+| 3 | staticCalls | StaticCall[] | Dynamic array of pre-computed static-call results; cleared on each postBatch |
+| 4 | authorizedProxies | mapping(address => ProxyInfo) | Keyed by proxy address |
+| 5 | lastStateUpdateBlock | uint256 | Block number of last postBatch |
 | transient | _etherDelta | int256 | EIP-1153 transient (auto-zeroed each tx); tracks net ETH flow (+=msg.value in, -=action.value out); checked against totalEtherDelta and reset to 0 after each `_applyStateDeltas` call |
 
 `MAINNET_ROLLUP_ID = 0` is a constant, not storage.
@@ -137,8 +182,9 @@ struct RollupConfig {
 | Slot | Variable | Type | Notes |
 |------|----------|------|-------|
 | 0 | executions | ExecutionEntry[] | Dynamic array; cleared on each loadExecutionTable |
-| 1 | authorizedProxies | mapping(address => ProxyInfo) | Keyed by proxy address |
-| 2 | lastStateUpdateBlock | uint256 | Block number of last loadExecutionTable |
+| 1 | staticCalls | StaticCall[] | Dynamic array of pre-computed static-call results; cleared on each loadExecutionTable |
+| 2 | authorizedProxies | mapping(address => ProxyInfo) | Keyed by proxy address |
+| 3 | lastStateUpdateBlock | uint256 | Block number of last loadExecutionTable |
 
 `ROLLUP_ID` and `SYSTEM_ADDRESS` are immutables (no storage slots).
 
@@ -185,6 +231,7 @@ function createRollup(
 ```solidity
 function postBatch(
     ExecutionEntry[] calldata entries,
+    StaticCall[] calldata _staticCalls,
     uint256 blobCount,
     bytes calldata callData,
     bytes calldata proof
@@ -197,6 +244,13 @@ function postBatch(
 - `lastStateUpdateBlock != block.number` (one batch per block)
 - All immediate entries (actionHash == 0) must have all state deltas matching current on-chain state roots
 - Proof must verify (see public inputs construction below)
+
+**Parameters**:
+- `entries`: execution entries for the batch (immediate + deferred)
+- `_staticCalls`: pre-computed static-call results committed for this block (see §H)
+- `blobCount`: number of blob hashes to include in public inputs
+- `callData`: arbitrary auxiliary data committed to the proof via its hash
+- `proof`: ZK proof over the public inputs hash
 
 **Public inputs construction** (exact encoding):
 
@@ -221,25 +275,28 @@ publicInputsHash = keccak256(
     block.timestamp,
     abi.encode(entryHashes),
     abi.encode(blobHashes),
-    keccak256(callData)
+    keccak256(callData),
+    keccak256(abi.encode(_staticCalls))
   )
 )
 ```
 
-The verifier receives `(proof, publicInputsHash)` and must return `true`.
+The verifier receives `(proof, publicInputsHash)` and must return `true`. The public inputs hash commits to both the execution entries and the static-call table, so the prover attests to both (see §H). The static-call term is `keccak256(abi.encode(_staticCalls))` — plain ABI encoding of the `StaticCall[]` parameter, same shape as the execution-entry term. Off-chain provers MUST reproduce Solidity's `abi.encode` of `StaticCall[]` byte-for-byte.
 
 **State transitions** (in order):
 
-1. Delete the existing execution table: `delete executions`
+1. Delete the existing execution table: `delete executions` (also clears `staticCalls` below before repopulating)
 2. For each entry `e` in `entries`:
    - If `e.actionHash == bytes32(0)` (immediate entry):
      - Verify `rollups[delta.rollupId].stateRoot == delta.currentState` for all deltas. Revert with `StateRootMismatch` if any mismatch.
      - Call `_applyStateDeltas(e.stateDeltas)` — updates state roots, ether balances, verifies ether accounting.
    - Else (deferred entry): `executions.push(e)`
-3. `lastStateUpdateBlock = block.number`
+3. `delete staticCalls`; then for each entry `s` in `_staticCalls`: `staticCalls.push(s)`. Static calls are never applied, consumed, or validated at posting time — they are only read by `staticCallLookup` (see §H).
+4. `lastStateUpdateBlock = block.number`
 
 **Postconditions**:
 - `executions` contains exactly the deferred entries from this batch
+- `staticCalls` contains exactly the static-call entries from this batch
 - All immediate entries' state deltas have been applied to `rollups`
 - `lastStateUpdateBlock == block.number`
 
@@ -312,6 +369,51 @@ function executeCrossChainCall(
 - `CallExecutionFailed` — scope resolution returned a failed RESULT
 - `EtherDeltaMismatch` — ether accounting mismatch
 - `InsufficientRollupBalance` — rollup's ETH balance would go negative
+
+---
+
+#### `staticCallLookup`
+
+```solidity
+function staticCallLookup(
+    address sourceAddress,
+    bytes calldata callData
+) external view returns (bytes memory result)
+```
+
+**Access control**: only authorized proxies (`authorizedProxies[msg.sender].originalAddress != address(0)`).
+
+**Preconditions**:
+- Caller is a registered proxy
+- `lastStateUpdateBlock == block.number`
+
+**Parameters**: same shape as `executeCrossChainCall` — `sourceAddress` is the `msg.sender` seen by the proxy, `callData` is the original calldata forwarded by the proxy.
+
+**Algorithm**:
+
+1. Construct the same CALL action the proxy would have built for `executeCrossChainCall`, but with `value = 0` and `isStatic = true`. `scope` is always `[]` (see §H.5 — static-call hashes are computed at root scope regardless of nesting).
+2. `actionHash = keccak256(abi.encode(action))`
+3. Iterate `staticCalls`. For each entry whose `actionHash` matches:
+   - Verify every pinned `(rollupId, stateRoot)` in `stateRoots` equals `rollups[rollupId].stateRoot`. Revert `StaticCallStateRootMismatch` on any mismatch.
+   - If `calls.length > 0`: replay the sub-call list via `_processNStaticCalls(sc.calls)` — for each `StaticSubCall`, compute `sourceProxy = computeCrossChainProxyAddress(cc.sourceAddress, cc.sourceRollup)`, revert `ProxyNotDeployed` if its code length is zero, invoke `sourceProxy.staticcall(abi.encodeCall(CrossChainProxy.executeOnBehalf, (cc.destination, cc.data)))`, and fold `h = keccak256(abi.encodePacked(h, success, ret))` starting from `bytes32(0)`. If the final `h` differs from `sc.rollingHash`, revert `RollingHashMismatch`.
+   - If `failed`: revert, forwarding `returnData` as the raw revert payload (via inline assembly — no ABI wrapping).
+   - Otherwise: return `returnData`.
+4. If no entry matches: revert `StaticCallNotFound`.
+
+**State transitions**: none. This function is `view`. Consequently there is no on-chain disambiguation cursor — EIP-1153 forbids `TSTORE`/`SSTORE` inside STATICCALL, so overlapping entries are resolved by `(actionHash, stateRoots)` matching and/or by the rolling-hash replay, never by a persisted counter.
+
+**Postconditions**: no state change; no entry is consumed; `staticCalls` is not modified. A single entry may be read arbitrarily many times within the same block.
+
+**Revert conditions**:
+- `ExecutionNotInCurrentBlock`
+- `UnauthorizedProxy`
+- `StaticCallStateRootMismatch`
+- `RollingHashMismatch`
+- `ProxyNotDeployed`
+- `StaticCallNotFound`
+- Forwarded `returnData` when the matched entry has `failed = true`
+
+**Invoked by**: `CrossChainProxy._fallback()` when it detects a STATICCALL context (see §B.3).
 
 ---
 
@@ -643,21 +745,33 @@ The `SYSTEM_ADDRESS` is rollup protocol-dependent (set at construction, immutabl
 #### `loadExecutionTable`
 
 ```solidity
-function loadExecutionTable(ExecutionEntry[] calldata entries) external onlySystemAddress
+function loadExecutionTable(
+    ExecutionEntry[] calldata entries,
+    StaticCall[] calldata _staticCalls
+) external onlySystemAddress
 ```
 
 **Access control**: `SYSTEM_ADDRESS` only (set at construction, immutable).
 
-**State transitions**:
-1. `delete executions`
-2. For each entry: `executions.push(entry)`
-3. `lastStateUpdateBlock = block.number`
+**Preconditions**: no pair `i != j` in `_staticCalls` may share `actionHash`. This is checked by an O(n²) pre-scan; any collision reverts `DuplicateStaticCallActionHash`. L2 has no `stateRoots` disambiguator, so duplicate-hash entries would otherwise resolve first-match-wins at lookup; rejecting at load time surfaces the error immediately.
 
-**Postconditions**: `executions` contains exactly the provided entries.
+**State transitions**:
+1. Uniqueness pre-check: for all `i < j`, require `_staticCalls[i].actionHash != _staticCalls[j].actionHash`, else revert `DuplicateStaticCallActionHash`.
+2. `delete executions`
+3. `delete staticCalls`
+4. For each entry in `entries`: `executions.push(entry)`
+5. For each entry in `_staticCalls`: `staticCalls.push(entry)`
+6. `lastStateUpdateBlock = block.number`
+
+**Postconditions**: `executions` contains exactly the provided entries; `staticCalls` contains exactly the provided static-call entries, with unique `actionHash` values.
 
 **Events**: `ExecutionTableLoaded(entries)`
 
-**Revert conditions**: `Unauthorized` if caller is not `SYSTEM_ADDRESS`.
+**Revert conditions**:
+- `Unauthorized` if caller is not `SYSTEM_ADDRESS`
+- `DuplicateStaticCallActionHash` if any two `_staticCalls` entries share `actionHash`.
+
+**L2 vs L1 commitment**: on L1, the static-call table is bound to the proof's public inputs (see §B.1); on L2 the system address's authority substitutes for proof verification, mirroring the L1/L2 asymmetry for `executions`.
 
 ---
 
@@ -702,6 +816,44 @@ function executeCrossChainCall(
 **Ether handling on L2**: ETH sent to the proxy is immediately forwarded to `SYSTEM_ADDRESS`.
 
 **Events**: `CrossChainCallExecuted(actionHash, msg.sender, sourceAddress, callData, msg.value)`
+
+---
+
+#### `staticCallLookup` (L2 variant)
+
+```solidity
+function staticCallLookup(
+    address sourceAddress,
+    bytes calldata callData
+) external view returns (bytes memory result)
+```
+
+**Access control**: only authorized proxies (`authorizedProxies[msg.sender].originalAddress != address(0)`).
+
+**Preconditions**:
+- Caller is a registered proxy
+- `lastStateUpdateBlock == block.number`
+
+**Algorithm**: identical in shape to the L1 variant — build the CALL action with `value = 0`, `isStatic = true`, `scope = []`, hash it, and scan `staticCalls` for a matching `actionHash`. On match, first reject non-empty `stateRoots` with `StaticCallStateRootsNotSupported`, then replay sub-call dependencies:
+
+- If `sc.calls.length > 0`: run `_processNStaticCalls(sc.calls)` — for each sub-call, derive the source proxy via `computeCrossChainProxyAddress(cc.sourceAddress, cc.sourceRollup)`, require it is deployed (else revert `ProxyNotDeployed`), invoke `sourceProxy.staticcall(abi.encodeCall(executeOnBehalf, (cc.destination, cc.data)))`, and fold `h = keccak256(abi.encodePacked(h, success, ret))` from `bytes32(0)`. Revert `RollingHashMismatch` if the final `h` does not equal `sc.rollingHash`.
+
+**Key distinction from L1**: L2 has no rollup-stateRoot mapping and therefore cannot verify `StaticCall.stateRoots`. The protocol requires that every L2 `StaticCall` entry have `stateRoots.length == 0`. If a matched entry has a non-empty `stateRoots` array, `staticCallLookup` reverts `StaticCallStateRootsNotSupported`. This mirrors the L1/L2 asymmetry seen in `_findAndApplyExecution` vs `_consumeExecution`. The sub-call replay step is identical on both managers.
+
+Result semantics are otherwise identical: on `failed == true` the call reverts forwarding `returnData` raw; on no match it reverts `StaticCallNotFound`; entries are never consumed. Because L2 cannot disambiguate by `stateRoots`, duplicate `actionHash`es are rejected upstream at `loadExecutionTable` time (see above) rather than at lookup time.
+
+**State transitions**: none. This function is `view`.
+
+**Revert conditions**:
+- `ExecutionNotInCurrentBlock`
+- `UnauthorizedProxy`
+- `StaticCallStateRootsNotSupported` — L2 matched entry carries non-empty `stateRoots`
+- `RollingHashMismatch`
+- `ProxyNotDeployed`
+- `StaticCallNotFound`
+- Forwarded `returnData` when the matched entry has `failed = true`
+
+**Invoked by**: `CrossChainProxy._fallback()` when it detects a STATICCALL context (see §B.3).
 
 ---
 
@@ -804,18 +956,46 @@ Delegates to `_fallback()`.
 - If `msg.sender == MANAGER`: directly calls `destination.call{value: msg.value}(data)`. Uses assembly to return/revert the raw bytes (no ABI wrapping).
 - Otherwise: calls `_fallback()`.
 
-#### `_fallback()` internal
+`executeOnBehalf` does not inspect `action.isStatic`. When a static CALL must be routed via the source proxy during scope navigation, the manager is responsible for invoking `executeOnBehalf` via `staticcall` rather than `call` (see §H).
+
+#### STATICCALL context probe
+
+The proxy carries a transient storage slot `_staticDetector` (EIP-1153 `transient uint256`) and exposes:
 
 ```solidity
-(bool success, bytes memory result) = MANAGER.call{value: msg.value}(
-    abi.encodeCall(ICrossChainManager.executeCrossChainCall, (msg.sender, msg.data))
+function staticCheck() external {
+    _staticDetector = 1;   // `tstore` — reverts under STATICCALL
+}
+```
+
+`staticCheck()` is called only as a self-probe from within `_fallback()`. A successful execution proves the outer context is a regular `call`; an EVM revert proves the outer context is a `staticcall` (since `tstore` is forbidden under STATICCALL).
+
+#### `_fallback()` internal
+
+`_fallback()` first probes the outer context:
+
+```solidity
+(bool isNotStatic, ) = address(this).call(
+    abi.encodeCall(this.staticCheck, ())
 );
 ```
 
-On success: decode `abi.decode(result, (bytes))` and `assembly return` the inner bytes.
-On failure: `assembly revert(result, len)` — forwards raw revert data.
+- If `isNotStatic` is **true** (normal call context): route through the state-mutating path:
+  ```solidity
+  (bool success, bytes memory result) = MANAGER.call{value: msg.value}(
+      abi.encodeCall(ICrossChainManager.executeCrossChainCall, (msg.sender, msg.data))
+  );
+  ```
+- If `isNotStatic` is **false** (STATICCALL context): route through the view-only lookup:
+  ```solidity
+  (bool success, bytes memory result) = MANAGER.staticcall(
+      abi.encodeCall(ICrossChainManager.staticCallLookup, (msg.sender, msg.data))
+  );
+  ```
 
-**Double-encoding note**: `executeCrossChainCall` returns `bytes memory`. The low-level `.call()` ABI-encodes that return value (wrapping the bytes). So `result` is double-encoded: the outer encoding is the function return ABI, the inner is the actual return data from the destination call. `abi.decode(result, (bytes))` strips the outer layer.
+Return-data handling is identical for both branches: on success, `abi.decode(result, (bytes))` strips the outer ABI wrapping and the inner bytes are returned via `assembly return`; on failure, `assembly revert(result, len)` forwards the raw revert data.
+
+**Double-encoding note**: both `executeCrossChainCall` and `staticCallLookup` return `bytes memory`. The low-level `.call()` / `.staticcall()` ABI-encodes that return value (wrapping the bytes). So `result` is double-encoded: the outer encoding is the function return ABI, the inner is the actual return data from the destination call. `abi.decode(result, (bytes))` strips the outer layer.
 
 ---
 
@@ -946,6 +1126,30 @@ terminalResult = Action{
 This applies to all L2TX flows regardless of nesting depth. Even if inner calls return data (e.g. `Counter.increment()` returns `uint256(1)`), the terminal RESULT is always void with the triggering rollupId.
 
 **L1 only**: This convention applies exclusively to the L1 `executeL2TX` terminal. On L2, `executeCrossChainCall` and `executeIncomingCrossChainCall` terminals carry the actual outer call's return value and rollupId (per §C.2), not the L2TX terminal format.
+
+### C.7 Hash for static CALL
+
+The `staticCallLookup` lookup key is a CALL action that differs from its non-static sibling (§C.1) by exactly two fields: `value` is forced to `0` and `isStatic` is `true`. The `scope` field is **always** `[]` — static-call action hashes are computed at root scope even when the static call is nested inside another execution.
+
+```
+staticAction = Action{
+  actionType:    CALL,
+  rollupId:      proxyInfo.originalRollupId,
+  destination:   proxyInfo.originalAddress,
+  value:         0,                 // always 0 for static
+  data:          callData,
+  failed:        false,
+  isStatic:      true,              // the distinguishing field
+  sourceAddress: sourceAddress,
+  sourceRollup:  MAINNET_ROLLUP_ID (L1) or ROLLUP_ID (L2),
+  scope:         []                 // always [] for static-call lookups
+}
+hash = keccak256(abi.encode(staticAction))
+```
+
+**Rationale for root scope**: the proxy-side `staticCallLookup` has no awareness of its enclosing scope (the `staticcall` boundary hides that context), so pinning the hash preimage to root scope keeps proxy-side reconstruction trivial. `staticCallLookup` itself is scope-blind, so this choice costs no expressiveness.
+
+**Relationship to §C.1**: the non-static CALL hash from §C.1 now implicitly has `isStatic = false` included in the `abi.encode` preimage. A static and non-static CALL with otherwise identical fields therefore produce distinct hashes and are routed to distinct tables — `staticCalls` vs `executions` (see §H).
 
 ---
 
@@ -1537,6 +1741,96 @@ Only one `postBatch` can succeed per block on L1. This is a global mutex: the en
 
 A CrossChainProxy represents exactly one (originalAddress, originalRollupId) pair. When a contract on chain A calls a proxy on chain B, the proxy forwards to B's manager with `sourceAddress = msg.sender` (the contract on chain A) and `sourceRollup = B's rollupId` (on L2) or `MAINNET_ROLLUP_ID` (on L1). The resulting CALL action's `sourceAddress` and `sourceRollup` form the caller's cross-chain identity.
 
+### G.9 Static-Call Errors
+
+The static-call subsystem (see §H) introduces these protocol-level errors:
+
+- `StaticCallNotFound` — `staticCallLookup` could not find any entry in `staticCalls` whose `actionHash` matches the constructed action hash. Emitted on both L1 and L2.
+- `StaticCallStateRootMismatch` — L1 only. A matching entry was found, but at least one pinned `(rollupId, stateRoot)` pair in `StaticCall.stateRoots` does not equal the current `rollups[rollupId].stateRoot`.
+- `StaticCallStateRootsNotSupported` — L2 only. A matching entry was found, but its `stateRoots` array is non-empty; L2 cannot validate state roots and requires `stateRoots.length == 0` for every `StaticCall` entry.
+- `RollingHashMismatch` — a matching entry was found and (L1) its `stateRoots` verified, but the on-chain replay of `calls[]` produced a folded keccak-chain different from the committed `rollingHash`. Emitted on both L1 and L2. Typical cause: the intermediate state referenced by one of the sub-calls shifted between commit and lookup, or the prover's `calls` ordering does not match the target's actual STATICCALL order.
+- `ProxyNotDeployed` — a `StaticSubCall` references `(sourceAddress, sourceRollup)` whose `CrossChainProxy` is not yet deployed at lookup time. `staticCallLookup` is `view` and cannot `CREATE2`, so the referenced proxy must either pre-exist or be deployed earlier in the block. Emitted on both L1 and L2.
+- `DuplicateStaticCallActionHash` — L2 only, emitted by `loadExecutionTable` when two `StaticCall` entries in the same batch share an `actionHash`. Rejected at load because L2 has no `stateRoots` disambiguator.
+
+All lookup-time errors are permission-independent (revert happens after the proxy-authorization check). None of them mutate state — `staticCallLookup` is a `view` function. The load-time `DuplicateStaticCallActionHash` error runs under `SYSTEM_ADDRESS` authority before any state is written, so the batch is rejected wholesale.
+
+The access-control matrix in §G.3 gains one row:
+
+| Function | Who can call |
+|----------|-------------|
+| `staticCallLookup` (L1 and L2) | Registered proxies only |
+
 ---
 
-*End of specification. This document covers the `feature/contract_updates` branch as of 2026-03-21. Audit corrections applied 2026-03-26.*
+## H. Static-Call Subsystem
+
+### H.1 Purpose
+
+A static cross-chain call is a read-only query from one rollup to another. The caller needs the return value of a foreign contract but does not mutate foreign state. The protocol supports static calls through a parallel table (`staticCalls`) committed by `postBatch` / `loadExecutionTable` alongside the execution table. Unlike execution entries, static-call entries never advance state and are never consumed.
+
+### H.2 Detection (proxy side)
+
+Every `CrossChainProxy` probes whether it is being invoked in a STATICCALL context before routing the call. The probe is a self-call to `staticCheck()`, a helper that attempts a `tstore` to a transient dummy slot (`_staticDetector`). Under STATICCALL, `tstore` reverts; the probe's revert tells the proxy to route through `staticCallLookup` (a view function) rather than `executeCrossChainCall` (a state-mutating function). See §B.3 for the exact fallback logic.
+
+### H.3 Table commitment
+
+`postBatch` on L1 accepts a `StaticCall[]` parameter in addition to `ExecutionEntry[]`. The public inputs hash folds the static-call table into its last term as `keccak256(abi.encode(_staticCalls))` — see §B.1 for the full formula.
+
+Off-chain provers MUST reproduce Solidity's `abi.encode` of `StaticCall[]` byte-for-byte (nested dynamic-type encoding included). An earlier draft of this spec used a hand-rolled per-entry digest helper (`_hashStaticCall` / `_hashSubCalls` / `_hashStateRoots`); that helper was dropped as over-engineering — the ZK prover is expected to model `abi.encode` anyway, so the extra indirection bought nothing. `loadExecutionTable` on L2 mirrors the struct layout but substitutes system-address authority for the proof; it additionally pre-rejects batches containing any duplicate `StaticCall.actionHash` with `DuplicateStaticCallActionHash`, since L2 has no `stateRoots` to disambiguate at lookup time.
+
+**Why the sub-call list is flat.** `StaticCall.calls` is a flat `StaticSubCall[]` rather than a scope tree. The execution-table path has to carry a scope tree because regular CALLs mutate state — nested scopes exist so `newScope` + `ScopeReverted` + `REVERT_CONTINUE` can roll back the right subset of deltas on partial failure. Static calls mutate nothing, so none of that bookkeeping is needed: `_processNStaticCalls` replays every sub-call in a plain loop, folds `(success, returnData)` into a rolling keccak, and treats individual sub-call reverts as legitimate (just hash `(false, revertBytes)` and keep going). Flattening would be unsafe for regular calls; it is the natural shape for reads, and the prover-committed `rollingHash` is the full integrity check over the dependency chain without any scope-tree overhead. See `STATIC_CALLS.md §A.1` for the extended argument.
+
+### H.4 Lookup semantics
+
+`staticCallLookup(sourceAddress, callData)` is a view function. It constructs the same CALL action the proxy would have built for `executeCrossChainCall`, but with `value = 0`, `isStatic = true`, and `scope = []`, hashes it, and scans `staticCalls` for a matching `actionHash`.
+
+On match, three integrity checks run in order:
+
+1. **State-root pins** (L1 only). Every pinned `RollupStateRoot` in `StaticCall.stateRoots` MUST equal the current `rollups[rollupId].stateRoot`; mismatch reverts `StaticCallStateRootMismatch`. On L2 the array MUST be empty — non-empty reverts `StaticCallStateRootsNotSupported`.
+2. **Sub-call rolling-hash replay** (both L1 and L2). If `sc.calls.length > 0`, each `StaticSubCall` is re-executed via `computeCrossChainProxyAddress(cc.sourceAddress, cc.sourceRollup).staticcall(abi.encodeCall(executeOnBehalf, (cc.destination, cc.data)))`, and the folded `h = keccak256(abi.encodePacked(h, success, ret))` is compared against `sc.rollingHash`. Any drift (reordering, state shift inside a sub-call target, fabricated intermediate value) surfaces as `RollingHashMismatch`. A referenced source proxy whose code is not yet deployed reverts `ProxyNotDeployed` — the lookup is `view` and cannot `CREATE2`.
+3. **Failure replay**. If `sc.failed`, raw-revert with `returnData` verbatim via inline assembly (no ABI wrapping). Otherwise return `returnData`.
+
+The rolling-hash replay is the on-chain integrity check for cross-dependency tampering: it guarantees that the intermediate STATICCALL results the target view function observed at commit time are identical to those observable now, regardless of whether `stateRoots` pinning is used. EIP-1153 forbids `TSTORE`/`SSTORE` inside STATICCALL, so there is no room for a persisted disambiguation cursor — `staticCallLookup` stays `view`, and overlapping entries are resolved by `(actionHash, stateRoots)` on L1 and by load-time uniqueness on L2.
+
+Entries are **not consumed** — static lookups are pure reads. A single entry can be hit arbitrarily many times within the same block.
+
+### H.5 Root-scope action hashes (invariant)
+
+Static-call action hashes are ALWAYS computed at root scope: `scope: uint256[](0)`. This holds even when the static call is nested inside another action's execution — the `scope` field in the preimage is empty regardless of depth.
+
+**Rationale**: the proxy-side reconstruction is scope-oblivious (the `staticcall` boundary hides the enclosing scope), so binding the hash preimage to root scope keeps proxy-side reconstruction trivial. `staticCallLookup` is itself scope-blind anyway, so this choice costs no expressiveness.
+
+### H.6 Top-level vs nested static calls
+
+There are three distinct execution paths for a static CALL. The distinction matters for provers, explorers, and anyone reasoning about L2 state advancement.
+
+| Scenario | Path | L2 state advances? | Commitment |
+|---|---|---|---|
+| Top-level L1→L2 static call (user calls a proxy in STATICCALL context from L1) | `staticCallLookup` only — no on-chain execution on L2 | **No** | Must be present in `_staticCalls` committed by `postBatch` |
+| L2→L1 static via `executeL2TX` (L2 user tx includes a read-only cross-chain call to L1) | `_processCallAtScope` → `sourceProxy.staticcall(executeOnBehalf(...))` on L1 (admin path, no `staticCallLookup`); L2 user STATICCALLs the proxy → `staticCallLookup` matches a pre-committed `StaticCall` entry | L1 destination runs read-only; L2 resolves via `StaticCall` table (no execution entries consumed on L2) | `StaticCall` table needed on L2; not needed on L1 (admin path resolves directly). Commitment rides on the L2TX entry's proof obligation |
+| Nested static CALL inside `executeL2TX` or inside another CALL that is mid-execution | `_processCallAtScope` → `sourceProxy.staticcall(executeOnBehalf(...))` | No state mutation by the STATICCALL itself, but it runs on-chain through the proxy's admin path and is part of the ongoing scope | Commitment rides on the enclosing entry's proof obligation |
+
+**L2→L1 static via `executeL2TX` detail**: On L2, the user STATICCALLs the proxy → proxy detects static context via TSTORE probe → `CrossChainManagerL2.staticCallLookup` matches a pre-committed `StaticCall` entry and returns `returnData`. No execution entries consumed on L2. On L1, `executeL2TX` processes the batch; the L2TX entry's `nextAction` is a CALL with `isStatic = true`. `_processCallAtScope` invokes `sourceProxy.staticcall(executeOnBehalf(destination, data))`. The proxy takes the admin path (`msg.sender == MANAGER`) and forwards to `destination.call{value: msg.value}(data)`. Because the frame is under STATICCALL, the EVM static flag propagates and the destination runs read-only on L1. `StaticCall` table is needed on L2 (for the user's static lookup); not needed on L1 (admin path resolves directly).
+
+**Key invariant**: a top-level L1→L2 static lookup MUST NOT appear as an L2 execution on-chain. It is resolved purely from the pre-committed `staticCalls` table, which is why the table is proven but the lookup itself is `view` and consumes nothing. Conversely, a static call encountered *during* the execution of another action (e.g. a nested STATICCALL from inside an `executeL2TX`) is executed through the proxy's admin path and shows up in the on-chain trace of that enclosing execution.
+
+### H.7 Failed static calls
+
+A `StaticCall` may carry `failed = true`. In that case `staticCallLookup` forwards `returnData` as the raw revert payload via inline assembly (no ABI wrapping), exactly mirroring how a real STATICCALL to a reverting destination would behave.
+
+### H.8 Value transfers
+
+Static CALLs MUST have `value == 0`. `_processCallAtScope` invokes the source proxy via `staticcall` (not `call`) when `action.isStatic` is true, so no ETH is forwarded. `_etherDelta` is untouched in the static branch.
+
+### H.9 Errors
+
+- `StaticCallNotFound` — no entry in `staticCalls` matches the constructed action hash.
+- `StaticCallStateRootMismatch` — matching entry exists but at least one pinned rollup state root does not match current on-chain state (L1 only).
+- `StaticCallStateRootsNotSupported` — matching entry on L2 carries non-empty `stateRoots` (L2 only).
+- `RollingHashMismatch` — on-chain replay of `sc.calls` produced a digest different from `sc.rollingHash` (L1 and L2).
+- `ProxyNotDeployed` — a sub-call references a `(sourceAddress, sourceRollup)` whose `CrossChainProxy` has not been deployed at lookup time (L1 and L2).
+- `DuplicateStaticCallActionHash` — L2 only, at `loadExecutionTable` time: two entries share `actionHash`.
+
+---
+
+*End of specification. This document covers the `feature/contract_updates` branch as of 2026-03-21. Audit corrections applied 2026-03-26. Static-call subsystem added 2026-04-15. Flatten static-call refactor added 2026-04-16.*

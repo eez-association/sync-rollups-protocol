@@ -5,7 +5,7 @@ import {Script, console} from "forge-std/Script.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 import {Rollups} from "../../../src/Rollups.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
+import {Action, ActionType, ExecutionEntry, StateDelta, StaticCall} from "../../../src/ICrossChainManager.sol";
 import {RevertCounter} from "../../../test/mocks/CounterContracts.sol";
 import {L2TXBatcher, L2TXActionsBase, getOrCreateProxy} from "../shared/E2EHelpers.sol";
 
@@ -48,6 +48,7 @@ abstract contract RevertCounterL2Actions is L2TXActionsBase {
             value: 0,
             data: abi.encodeWithSelector(RevertCounter.increment.selector),
             failed: false,
+            isStatic: false,
             sourceAddress: sourceAddr,
             sourceRollup: L2_ROLLUP_ID,
             scope: new uint256[](0)
@@ -62,6 +63,7 @@ abstract contract RevertCounterL2Actions is L2TXActionsBase {
             value: 0,
             data: _revertData(),
             failed: true,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -79,6 +81,7 @@ abstract contract RevertCounterL2Actions is L2TXActionsBase {
             value: 0,
             data: abi.encodeWithSelector(RevertCounter.increment.selector),
             failed: false,
+            isStatic: false,
             sourceAddress: sourceAddr,
             sourceRollup: L2_ROLLUP_ID,
             scope: scope0
@@ -95,6 +98,7 @@ abstract contract RevertCounterL2Actions is L2TXActionsBase {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: scope0
@@ -109,6 +113,7 @@ abstract contract RevertCounterL2Actions is L2TXActionsBase {
             value: 0,
             data: "",
             failed: true,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -123,6 +128,7 @@ abstract contract RevertCounterL2Actions is L2TXActionsBase {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -251,7 +257,7 @@ contract ExecuteL2 is Script, RevertCounterL2Actions {
         // Predict RevertCallHelper address — it will be the sourceAddress (msg.sender at proxy level)
         address helperAddr = vm.computeCreateAddress(msg.sender, vm.getNonce(msg.sender));
 
-        manager.loadExecutionTable(_l2Entries(revertCounterL1Addr, helperAddr));
+        manager.loadExecutionTable(_l2Entries(revertCounterL1Addr, helperAddr), new StaticCall[](0));
 
         // Alice calls RevertCounter proxy on L2 — expected to revert.
         // Use RevertCallHelper so forge broadcasts a successful tx (the helper catches the revert).

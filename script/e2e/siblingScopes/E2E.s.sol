@@ -5,7 +5,7 @@ import {Script, console} from "forge-std/Script.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 import {Rollups} from "../../../src/Rollups.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
+import {Action, ActionType, ExecutionEntry, StateDelta, StaticCall} from "../../../src/ICrossChainManager.sol";
 import {Counter, CallTwoProxies} from "../../../test/mocks/CounterContracts.sol";
 import {L2TXBatcher, L2TXActionsBase, getOrCreateProxy} from "../shared/E2EHelpers.sol";
 
@@ -52,6 +52,7 @@ abstract contract SiblingScopesActions is L2TXActionsBase {
             value: 0,
             data: abi.encodeWithSelector(Counter.increment.selector),
             failed: false,
+            isStatic: false,
             sourceAddress: scx,
             sourceRollup: L2_ROLLUP_ID,
             scope: scope
@@ -66,6 +67,7 @@ abstract contract SiblingScopesActions is L2TXActionsBase {
             value: 0,
             data: abi.encode(uint256(1)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -194,7 +196,7 @@ contract ExecuteL2 is Script, SiblingScopesActions {
 
         vm.startBroadcast();
 
-        manager.loadExecutionTable(_l2Entries(counterAAddr, counterBAddr, scxAddr));
+        manager.loadExecutionTable(_l2Entries(counterAAddr, counterBAddr, scxAddr), new StaticCall[](0));
 
         // Alice calls SCX.callBoth() on L2
         CallTwoProxies(scxAddr).callBoth();

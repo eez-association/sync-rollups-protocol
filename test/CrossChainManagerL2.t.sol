@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import {Test, Vm} from "forge-std/Test.sol";
 import {CrossChainManagerL2} from "../src/CrossChainManagerL2.sol";
 import {CrossChainProxy} from "../src/CrossChainProxy.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta, ProxyInfo} from "../src/ICrossChainManager.sol";
+import {Action, ActionType, ExecutionEntry, StateDelta, StaticCall, ProxyInfo} from "../src/ICrossChainManager.sol";
 
 contract L2TestTarget {
     uint256 public value;
@@ -55,6 +55,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: data,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -72,7 +73,7 @@ contract CrossChainManagerL2Test is Test {
         entries[0].actionHash = actionHash;
         entries[0].nextAction = nextAction;
         vm.prank(SYSTEM_ADDRESS);
-        manager.loadExecutionTable(entries);
+        manager.loadExecutionTable(entries, new StaticCall[](0));
     }
 
     function _makeCallAction(
@@ -95,6 +96,7 @@ contract CrossChainManagerL2Test is Test {
             value: value_,
             data: data,
             failed: false,
+            isStatic: false,
             sourceAddress: sourceAddress,
             sourceRollup: sourceRollup,
             scope: scope
@@ -109,6 +111,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: scope
@@ -123,6 +126,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: "",
             failed: true,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -144,16 +148,16 @@ contract CrossChainManagerL2Test is Test {
     function test_LoadExecutionTable_RevertsIfNotSystem() public {
         ExecutionEntry[] memory entries = new ExecutionEntry[](0);
         vm.expectRevert(CrossChainManagerL2.Unauthorized.selector);
-        manager.loadExecutionTable(entries);
+        manager.loadExecutionTable(entries, new StaticCall[](0));
         vm.prank(address(0xBEEF));
         vm.expectRevert(CrossChainManagerL2.Unauthorized.selector);
-        manager.loadExecutionTable(entries);
+        manager.loadExecutionTable(entries, new StaticCall[](0));
     }
 
     function test_LoadExecutionTable_SystemCanLoadEmpty() public {
         ExecutionEntry[] memory entries = new ExecutionEntry[](0);
         vm.prank(SYSTEM_ADDRESS);
-        manager.loadExecutionTable(entries);
+        manager.loadExecutionTable(entries, new StaticCall[](0));
     }
 
     function test_LoadExecutionTable_StoresEntries() public {
@@ -166,6 +170,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: callData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: TEST_ROLLUP_ID,
             scope: new uint256[](0)
@@ -185,6 +190,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: callData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: TEST_ROLLUP_ID,
             scope: new uint256[](0)
@@ -198,7 +204,7 @@ contract CrossChainManagerL2Test is Test {
             entries[i].nextAction = _emptyResult();
         }
         vm.prank(SYSTEM_ADDRESS);
-        manager.loadExecutionTable(entries);
+        manager.loadExecutionTable(entries, new StaticCall[](0));
         for (uint256 i = 0; i < 3; i++) {
             (bool success,) = proxy.call(callData);
             assertTrue(success);
@@ -269,7 +275,7 @@ contract CrossChainManagerL2Test is Test {
         bytes memory callData = abi.encodeCall(L2TestTarget.setValue, (42));
         // Load empty table so block check passes
         vm.prank(SYSTEM_ADDRESS);
-        manager.loadExecutionTable(new ExecutionEntry[](0));
+        manager.loadExecutionTable(new ExecutionEntry[](0), new StaticCall[](0));
         vm.expectRevert(CrossChainManagerL2.ExecutionNotFound.selector);
         (bool s,) = proxy.call(callData);
         s;
@@ -285,6 +291,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: callData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: TEST_ROLLUP_ID,
             scope: new uint256[](0)
@@ -305,6 +312,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: callData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: TEST_ROLLUP_ID,
             scope: new uint256[](0)
@@ -326,6 +334,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: callData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: TEST_ROLLUP_ID,
             scope: new uint256[](0)
@@ -337,6 +346,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: "",
             failed: true,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -357,6 +367,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: callData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: TEST_ROLLUP_ID,
             scope: new uint256[](0)
@@ -371,7 +382,7 @@ contract CrossChainManagerL2Test is Test {
         entries[1].actionHash = actionHash;
         entries[1].nextAction = _resultAction(abi.encode(uint256(222)));
         vm.prank(SYSTEM_ADDRESS);
-        manager.loadExecutionTable(entries);
+        manager.loadExecutionTable(entries, new StaticCall[](0));
         // _consumeExecution takes executions[0] (swap-and-pop from front) → FIFO
         (bool s1, bytes memory r1) = proxy.call(callData);
         assertTrue(s1);
@@ -394,6 +405,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: callData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: TEST_ROLLUP_ID,
             scope: new uint256[](0)
@@ -405,6 +417,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -436,6 +449,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: expectedReturnData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -459,6 +473,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: expectedReturnData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -482,6 +497,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: expectedReturnData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -509,6 +525,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: expectedReturnData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -520,13 +537,15 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: "",
             failed: true,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
         });
         _loadEntry(keccak256(abi.encode(resultFromCall)), failedResult);
         vm.prank(SYSTEM_ADDRESS);
-        vm.expectRevert(CrossChainManagerL2.CallExecutionFailed.selector);
+        // _resolveScopes now replays failed RESULT's `data` as raw revert bytes (empty here).
+        vm.expectRevert(bytes(""));
         manager.executeIncomingCrossChainCall(address(target), 0, callData, sourceAddr, sourceRollup, scope);
     }
 
@@ -543,6 +562,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: expectedReturnData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -554,6 +574,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -576,6 +597,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: callData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: TEST_ROLLUP_ID,
             scope: new uint256[](0)
@@ -590,6 +612,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: nestedCallData,
             failed: false,
+            isStatic: false,
             sourceAddress: nestedSource,
             sourceRollup: nestedSourceRollup,
             scope: new uint256[](0)
@@ -602,6 +625,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: expectedReturnData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -615,7 +639,7 @@ contract CrossChainManagerL2Test is Test {
         entries[1].actionHash = keccak256(abi.encode(resultFromNestedCall));
         entries[1].nextAction = _emptyResult();
         vm.prank(SYSTEM_ADDRESS);
-        manager.loadExecutionTable(entries);
+        manager.loadExecutionTable(entries, new StaticCall[](0));
         (bool success,) = proxy.call(callData);
         assertTrue(success);
         assertEq(target.value(), 200);
@@ -658,6 +682,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: expectedReturnData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -745,6 +770,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: callData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: TEST_ROLLUP_ID,
             scope: new uint256[](0)
@@ -765,6 +791,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: expectedReturnData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -785,7 +812,7 @@ contract CrossChainManagerL2Test is Test {
         entries[2].actionHash = revertContinueHash;
         entries[2].nextAction = finalResult;
         vm.prank(SYSTEM_ADDRESS);
-        manager.loadExecutionTable(entries);
+        manager.loadExecutionTable(entries, new StaticCall[](0));
         (bool success, bytes memory ret) = proxy.call(callData);
         assertTrue(success);
         assertEq(ret, abi.encode(uint256(777)));
@@ -810,6 +837,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: callData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: TEST_ROLLUP_ID,
             scope: new uint256[](0)
@@ -830,6 +858,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: expectedReturnData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -857,7 +886,7 @@ contract CrossChainManagerL2Test is Test {
         entries[2].actionHash = revertContinueHash;
         entries[2].nextAction = finalResult;
         vm.prank(SYSTEM_ADDRESS);
-        manager.loadExecutionTable(entries);
+        manager.loadExecutionTable(entries, new StaticCall[](0));
         (bool success, bytes memory ret) = proxy.call(callData);
         assertTrue(success);
         assertEq(ret, abi.encode(uint256(888)));
@@ -872,7 +901,7 @@ contract CrossChainManagerL2Test is Test {
         uint256[] memory scope = new uint256[](0);
         // Load empty table so block check passes
         vm.prank(SYSTEM_ADDRESS);
-        manager.loadExecutionTable(new ExecutionEntry[](0));
+        manager.loadExecutionTable(new ExecutionEntry[](0), new StaticCall[](0));
         vm.prank(SYSTEM_ADDRESS);
         vm.expectRevert(CrossChainManagerL2.InvalidRevertData.selector);
         manager.executeIncomingCrossChainCall(address(target), 0, callData, sourceAddr, sourceRollup, scope);
@@ -899,6 +928,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: expectedReturnData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -925,6 +955,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: expectedReturnData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -951,6 +982,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: revertMsg,
             failed: true,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -975,6 +1007,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: expectedReturnData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -992,7 +1025,7 @@ contract CrossChainManagerL2Test is Test {
         entries[1].actionHash = revertContinueHash;
         entries[1].nextAction = finalResult;
         vm.prank(SYSTEM_ADDRESS);
-        manager.loadExecutionTable(entries);
+        manager.loadExecutionTable(entries, new StaticCall[](0));
         vm.prank(SYSTEM_ADDRESS);
         bytes memory result = manager.executeIncomingCrossChainCall(address(target), 0, callData, sourceAddr, sourceRollup, scope);
         assertEq(result, abi.encode(uint256(555)));
@@ -1071,6 +1104,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: expectedReturnData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -1103,6 +1137,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: expectedReturnData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -1136,6 +1171,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: expectedReturnData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -1151,7 +1187,7 @@ contract CrossChainManagerL2Test is Test {
         entries[1].actionHash = resultHash;
         entries[1].nextAction = _emptyResult();
         vm.prank(SYSTEM_ADDRESS);
-        manager.loadExecutionTable(entries);
+        manager.loadExecutionTable(entries, new StaticCall[](0));
         vm.prank(address(manager));
         Action memory returned = manager.newScope(emptyScope, firstCall);
         assertEq(uint8(returned.actionType), uint8(ActionType.RESULT));
@@ -1174,6 +1210,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: expectedReturnData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -1202,6 +1239,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: expectedReturnData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -1219,7 +1257,7 @@ contract CrossChainManagerL2Test is Test {
         entries[1].actionHash = revertContinueHash;
         entries[1].nextAction = continuationResult;
         vm.prank(SYSTEM_ADDRESS);
-        manager.loadExecutionTable(entries);
+        manager.loadExecutionTable(entries, new StaticCall[](0));
         vm.prank(address(manager));
         Action memory returned = manager.newScope(new uint256[](0), callAtChildScope);
         assertEq(uint8(returned.actionType), uint8(ActionType.RESULT));
@@ -1236,7 +1274,7 @@ contract CrossChainManagerL2Test is Test {
         CrossChainProxy p = CrossChainProxy(payable(proxy));
         // Load empty table so block check passes
         vm.prank(SYSTEM_ADDRESS);
-        manager.loadExecutionTable(new ExecutionEntry[](0));
+        manager.loadExecutionTable(new ExecutionEntry[](0), new StaticCall[](0));
         // Non-manager callers are routed through _fallback() (cross-chain path),
         // which calls executeCrossChainCall and reverts with ExecutionNotFound
         vm.prank(address(0xDEAD));
@@ -1261,6 +1299,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: abi.encode(uint256(42)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -1290,6 +1329,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: callData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: TEST_ROLLUP_ID,
             scope: new uint256[](0)
@@ -1303,6 +1343,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: callData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: TEST_ROLLUP_ID,
             scope: new uint256[](0)
@@ -1315,6 +1356,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: abi.encode(uint256(99)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -1331,7 +1373,7 @@ contract CrossChainManagerL2Test is Test {
         entries[1].actionHash = keccak256(abi.encode(resultFromCall));
         entries[1].nextAction = finalResult;
         vm.prank(SYSTEM_ADDRESS);
-        manager.loadExecutionTable(entries);
+        manager.loadExecutionTable(entries, new StaticCall[](0));
 
         (bool success, bytes memory ret) = proxy.call(callData);
         assertTrue(success);
@@ -1371,7 +1413,7 @@ contract CrossChainManagerL2Test is Test {
 
         vm.recordLogs();
         vm.prank(SYSTEM_ADDRESS);
-        manager.loadExecutionTable(entries);
+        manager.loadExecutionTable(entries, new StaticCall[](0));
 
         Vm.Log[] memory logs = vm.getRecordedLogs();
         (bool found, uint256 idx) = _findExecutionTableLoadedLog(logs);
@@ -1389,7 +1431,7 @@ contract CrossChainManagerL2Test is Test {
 
         vm.recordLogs();
         vm.prank(SYSTEM_ADDRESS);
-        manager.loadExecutionTable(entries);
+        manager.loadExecutionTable(entries, new StaticCall[](0));
 
         Vm.Log[] memory logs = vm.getRecordedLogs();
         (bool found, uint256 idx) = _findExecutionTableLoadedLog(logs);
@@ -1411,6 +1453,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: callData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: TEST_ROLLUP_ID,
             scope: new uint256[](0)
@@ -1451,6 +1494,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: callData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: TEST_ROLLUP_ID,
             scope: new uint256[](0)
@@ -1467,7 +1511,7 @@ contract CrossChainManagerL2Test is Test {
         entries[1].actionHash = actionHash;
         entries[1].nextAction = _emptyResult();
         vm.prank(SYSTEM_ADDRESS);
-        manager.loadExecutionTable(entries);
+        manager.loadExecutionTable(entries, new StaticCall[](0));
 
         vm.recordLogs();
         (bool s1,) = proxy.call(callData);
@@ -1499,6 +1543,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: callData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(this),
             sourceRollup: TEST_ROLLUP_ID,
             scope: new uint256[](0)
@@ -1544,6 +1589,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: expectedReturnData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -1563,6 +1609,7 @@ contract CrossChainManagerL2Test is Test {
             value: 0,
             data: callData,
             failed: false,
+            isStatic: false,
             sourceAddress: sourceAddr,
             sourceRollup: sourceRollup,
             scope: scope

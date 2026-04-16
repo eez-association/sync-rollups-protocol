@@ -177,6 +177,97 @@ Each simple call produces 1 entry (CALL→RESULT).
 
 ---
 
+## Static Call Patterns
+
+### L1→L2 top-level static read
+
+No ExecutionEntries on either side. One `StaticCall` entry on L1.
+
+**L1 entries:** none
+**L2 entries:** none
+**L1 StaticCall table (1):**
+```
+StaticCall({
+    actionHash: keccak256(abi.encode(Action({CALL, rollupId=L2, dest=target, value=0,
+        data=selector, failed=false, isStatic=true,
+        sourceAddr=<caller contract>, sourceRollup=MAINNET, scope=[]}))),
+    returnData: abi.encode(<expected value>),
+    failed: false, calls: [], rollingHash: 0, stateRoots: []
+})
+```
+
+User STATICCALLs a proxy on L1 → proxy detects static via TSTORE probe → routes to `Rollups.staticCallLookup` → matches → returns `returnData`. L2 is uninvolved.
+
+`sourceAddress` = the contract that STATICCALLs the proxy (the `msg.sender` the proxy sees), NOT the Batcher.
+
+Reference: `script/e2e/staticCall/E2E.s.sol`
+
+---
+
+### L2→L1 static read (via executeL2TX)
+
+Follows the L2-starting (`counterL2`) pattern but with `isStatic=true` on the L1 CALL nextAction.
+
+**L1 entries (2):**
+```
+[0] trigger: L2TX(L2, rlpTx)
+    next:    CALL(MAINNET, target, isStatic=true, from=callerL2, sourceRollup=L2, scope=[])
+    deltas:  [{L2, s0→s1}]
+
+[1] trigger: RESULT(MAINNET, data=returnValue)
+    next:    RESULT(L2, data="")  [terminal]
+    deltas:  [{L2, s1→s2}]
+```
+
+**L2 execution entries:** none
+
+**L2 StaticCall table (1):**
+```
+StaticCall({
+    actionHash: keccak256(abi.encode(Action({CALL, rollupId=MAINNET, dest=target, value=0,
+        data=selector, failed=false, isStatic=true,
+        sourceAddr=callerL2, sourceRollup=L2, scope=[]}))),
+    returnData: abi.encode(<expected value>),
+    failed: false, calls: [], rollingHash: 0, stateRoots: []
+})
+```
+
+**No StaticCall table on L1** — the admin path resolves the call directly.
+
+On L1, `_processCallAtScope` calls `sourceProxy.staticcall(executeOnBehalf(dest, data))`. The proxy takes the **admin path** (`msg.sender == MANAGER`) and forwards directly — no TSTORE probe, no `staticCallLookup`. The target runs natively on L1.
+
+On L2, the user STATICCALLs the proxy → proxy detects static via TSTORE probe → routes to `CrossChainManagerL2.staticCallLookup` → matches the `StaticCall` entry → returns `returnData`. The commitment rides on the L2TX entry's proof obligation on L1.
+
+Reference: `script/e2e/staticCallL2/E2E.s.sol`
+
+---
+
+### Nested static call (inside a regular CALL or executeL2TX)
+
+When a CALL action's `nextAction` has `isStatic=true`, `_processCallAtScope` on the executing chain dispatches via STATICCALL to the source proxy's `executeOnBehalf`. This takes the **admin path** — `msg.sender == MANAGER` — and forwards directly to the destination. No `staticCallLookup` involved on the executing side. The destination runs natively under the STATICCALL flag.
+
+**Key differences from top-level static:**
+- No `StaticCall` table entry needed on the chain where scope navigation runs — the admin path resolves directly.
+- The RESULT from a nested static call is built normally (`isStatic=false` on RESULT) and consumed from the **execution table**, not the static table.
+- `_etherDelta` is not touched (no value transfer under STATICCALL).
+
+**When a nested static call also crosses chains** (e.g., L1 scope navigation STATICCALLs a destination that lives on L2), the destination proxy's `executeOnBehalf` uses the admin path on the chain where it runs. If the destination needs data from the OTHER chain, that inner hop is yet another static entry — but at the admin-path level it's always a direct forward.
+
+**All proxies must be pre-deployed before any static call executes.** In non-static flows, `_processCallAtScope` auto-creates missing proxies via `_createCrossChainProxyInternal` (CREATE2) on-the-fly. This does NOT work for static calls because STATICCALL forbids CREATE2 — the auto-create path reverts. Every proxy that will be touched during a nested static call's execution must already exist on-chain.
+
+This applies to:
+- The **source proxy** used by `_processCallAtScope` (`computeCrossChainProxyAddress(action.sourceAddress, action.sourceRollup)`).
+- Any **destination proxies** the target contract calls internally — if the target view function crosses another proxy boundary, that proxy must exist too.
+- Any proxies referenced by `StaticSubCall` entries in the flatten sub-call replay (`_processNStaticCalls` reverts `ProxyNotDeployed` if `sourceProxy.code.length == 0`).
+
+**Always deploy proxies in the Deploy phase** — use `getOrCreateProxy(manager, originalAddress, originalRollupId)` for every `(address, rollupId)` pair that could be touched. The lookup is `view` and cannot CREATE2; the scope execution under STATICCALL cannot CREATE2 either.
+
+For L2→L1 static flows via `executeL2TX`, the source proxy needed on L1 is for `(ValueReaderL2, L2_ROLLUP_ID)` — deploy it in a `Deploy2` step on L1 (see the counterL2 pattern).
+
+Reference: `script/e2e/nestedStaticCall/E2E.s.sol`
+
+---
+
 ## Revert Patterns
 
 ### Terminal failure (call fails, caller fails too)

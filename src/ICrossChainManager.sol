@@ -19,6 +19,7 @@ struct Action {
     uint256 value;
     bytes data;
     bool failed;
+    bool isStatic; // if true, the CALL must be executed via STATICCALL to the source proxy
     address sourceAddress;
     uint256 sourceRollup;
     uint256[] scope;
@@ -39,6 +40,36 @@ struct ExecutionEntry {
     Action nextAction;
 }
 
+/// @notice (rollupId, stateRoot) pair pinning the state at which a static call result is valid
+struct RollupStateRoot {
+    uint256 rollupId;
+    bytes32 stateRoot;
+}
+
+/// @notice A flat STATICCALL sub-call dependency that the target view function invokes through a source proxy
+/// @dev Each sub-call is re-executed at lookup time via the computed source proxy; results are chained into `rollingHash`.
+struct StaticSubCall {
+    address destination;
+    bytes data;
+    address sourceAddress;
+    uint256 sourceRollup;
+}
+
+/// @notice Pre-computed result for a static (read-only) cross-chain call
+/// @dev Matched by actionHash. If `failed`, staticCallLookup replays `returnData` as the revert payload.
+///      `stateRoots` pins the rollup state roots under which `returnData` is valid; the lookup
+///      rejects if any listed rollup's current stateRoot diverges from the expected value.
+///      `calls` is the flat list of STATICCALL dependencies replayed in order; their chained
+///      keccak256 digest must equal `rollingHash` or the lookup reverts.
+struct StaticCall {
+    bytes32 actionHash; // keccak256(abi.encode(CALL action)) isStatic=true
+    bytes returnData; // pre-computed return data (or revert payload if failed)
+    bool failed; // if true, staticCallLookup reverts with returnData
+    StaticSubCall[] calls; // flat list of STATICCALL sub-calls to re-execute and fold into rollingHash
+    bytes32 rollingHash; // keccak-chain over sub-call (success, retData); must match _processNStaticCalls output
+    RollupStateRoot[] stateRoots; // rollup state roots this result is valid against (L1 only)
+}
+
 /// @notice Stores the identity of an authorized CrossChainProxy
 struct ProxyInfo {
     address originalAddress;
@@ -48,9 +79,31 @@ struct ProxyInfo {
 /// @title ICrossChainManager
 /// @notice Interface for cross-chain manager contracts (L1 Rollups and L2 CrossChainManagerL2)
 interface ICrossChainManager {
+    /// @notice Error when a static call lookup finds no matching entry
+    error StaticCallNotFound();
+
+    /// @notice Error when a pinned rollup stateRoot on the StaticCall entry does not match current state
+    error StaticCallStateRootMismatch();
+
+    /// @notice Error when a StaticCall entry carries non-empty stateRoots on a manager that does not support pinning (L2)
+    error StaticCallStateRootsNotSupported();
+
+    /// @notice Error when the replayed sub-call rolling hash does not match the entry's committed `rollingHash`
+    error RollingHashMismatch();
+
+    /// @notice Error when a sub-call's source proxy has not been deployed at lookup time
+    error ProxyNotDeployed();
+
+    /// @notice Error when two StaticCall entries share the same `actionHash` within one load
+    error DuplicateStaticCallActionHash();
+
     function executeCrossChainCall(address sourceAddress, bytes calldata callData)
         external
         payable
+        returns (bytes memory result);
+    function staticCallLookup(address sourceAddress, bytes calldata callData)
+        external
+        view
         returns (bytes memory result);
     function createCrossChainProxy(address originalAddress, uint256 originalRollupId) external returns (address proxy);
     function computeCrossChainProxyAddress(address originalAddress, uint256 originalRollupId)

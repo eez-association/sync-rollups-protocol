@@ -5,7 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {tmpECDSAVerifier} from "../src/verifier/tmpECDSAVerifier.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Rollups} from "../src/Rollups.sol";
-import {ExecutionEntry, StateDelta, Action, ActionType} from "../src/ICrossChainManager.sol";
+import {ExecutionEntry, StateDelta, StaticCall, Action, ActionType} from "../src/ICrossChainManager.sol";
 
 contract tmpECDSAVerifierTest is Test {
     tmpECDSAVerifier verifier;
@@ -76,6 +76,7 @@ contract tmpECDSAVerifierTest is Test {
                 value: 0,
                 data: "",
                 failed: false,
+                isStatic: false,
                 sourceAddress: address(0),
                 sourceRollup: 0,
                 scope: new uint256[](0)
@@ -103,8 +104,9 @@ contract tmpECDSAVerifierTest is Test {
                 blockhash(block.number - 1),
                 block.timestamp,
                 abi.encode(entryHashes),
-                abi.encode(new bytes32[](0)), // no blobs
-                keccak256("")                 // empty callData
+                abi.encode(new bytes32[](0)),                   // no blobs
+                keccak256(""),                                  // empty callData
+                keccak256(abi.encode(new StaticCall[](0)))      // empty static-call table
             )
         );
 
@@ -112,7 +114,7 @@ contract tmpECDSAVerifierTest is Test {
         bytes memory proof = _sign(SIGNER_PK, publicInputsHash);
 
         // postBatch should succeed
-        rollups.postBatch(entries, 0, "", proof);
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", proof);
 
         // Verify state was updated
         (, , bytes32 stateRoot,) = rollups.rollups(rollupId);

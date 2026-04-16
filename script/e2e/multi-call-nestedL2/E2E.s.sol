@@ -5,7 +5,7 @@ import {Script, console} from "forge-std/Script.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 import {Rollups} from "../../../src/Rollups.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
+import {Action, ActionType, ExecutionEntry, StateDelta, StaticCall} from "../../../src/ICrossChainManager.sol";
 import {Counter, CounterAndProxy} from "../../../test/mocks/CounterContracts.sol";
 import {CallTwiceNestedAndOnce} from "../../../test/mocks/MultiCallContracts.sol";
 import {L2TXBatcher, L2TXActionsBase, getOrCreateProxy} from "../shared/E2EHelpers.sol";
@@ -64,6 +64,7 @@ abstract contract MultiCallNestedL2Actions is L2TXActionsBase {
             value: 0,
             data: abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),
             failed: false,
+            isStatic: false,
             sourceAddress: callTwiceNested,
             sourceRollup: L2_ROLLUP_ID,
             scope: new uint256[](0)
@@ -82,6 +83,7 @@ abstract contract MultiCallNestedL2Actions is L2TXActionsBase {
             value: 0,
             data: abi.encodeWithSelector(Counter.increment.selector),
             failed: false,
+            isStatic: false,
             sourceAddress: cap1Addr,
             sourceRollup: MAINNET_ROLLUP_ID,
             scope: scope
@@ -100,6 +102,7 @@ abstract contract MultiCallNestedL2Actions is L2TXActionsBase {
             value: 0,
             data: abi.encodeWithSelector(Counter.increment.selector),
             failed: false,
+            isStatic: false,
             sourceAddress: callTwiceNested,
             sourceRollup: L2_ROLLUP_ID,
             scope: new uint256[](0)
@@ -114,6 +117,7 @@ abstract contract MultiCallNestedL2Actions is L2TXActionsBase {
             value: 0,
             data: abi.encode(uint256(1)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -128,6 +132,7 @@ abstract contract MultiCallNestedL2Actions is L2TXActionsBase {
             value: 0,
             data: abi.encode(uint256(2)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -142,6 +147,7 @@ abstract contract MultiCallNestedL2Actions is L2TXActionsBase {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -156,6 +162,7 @@ abstract contract MultiCallNestedL2Actions is L2TXActionsBase {
             value: 0,
             data: abi.encode(uint256(1)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -171,6 +178,7 @@ abstract contract MultiCallNestedL2Actions is L2TXActionsBase {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -395,7 +403,8 @@ contract ExecuteL2 is Script, MultiCallNestedL2Actions {
         vm.startBroadcast();
 
         manager.loadExecutionTable(
-            _l2Entries(counterL2Addr, counterAndProxyAddr, counterL1Addr, callTwiceNestedAddr)
+            _l2Entries(counterL2Addr, counterAndProxyAddr, counterL1Addr, callTwiceNestedAddr),
+            new StaticCall[](0)
         );
 
         // User calls CallTwiceNestedAndOnce.execute(cap1ProxyL2, counterL1ProxyL2)

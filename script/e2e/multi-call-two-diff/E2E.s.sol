@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import {Script, console} from "forge-std/Script.sol";
 import {Rollups} from "../../../src/Rollups.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
+import {Action, ActionType, ExecutionEntry, StateDelta, StaticCall} from "../../../src/ICrossChainManager.sol";
 import {Counter} from "../../../test/mocks/CounterContracts.sol";
 import {CallTwoDifferent} from "../../../test/mocks/MultiCallContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
@@ -20,6 +20,7 @@ abstract contract MultiCallTwoDiffActions {
             value: 0,
             data: abi.encodeWithSelector(Counter.increment.selector),
             failed: false,
+            isStatic: false,
             sourceAddress: callTwoDiff,
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -34,6 +35,7 @@ abstract contract MultiCallTwoDiffActions {
             value: 0,
             data: abi.encode(uint256(1)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -97,7 +99,7 @@ contract Batcher {
         address counterAProxy,
         address counterBProxy
     ) external returns (uint256 a, uint256 b) {
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
         (a, b) = app.callBothCounters(counterAProxy, counterBProxy);
     }
 }
@@ -174,7 +176,7 @@ contract ExecuteL2 is Script, MultiCallTwoDiffActions {
 
         vm.startBroadcast();
 
-        manager.loadExecutionTable(_l2Entries(counterBAddr, callTwoDiffAddr));
+        manager.loadExecutionTable(_l2Entries(counterBAddr, callTwoDiffAddr), new StaticCall[](0));
 
         // Single call: increment counterA (0→1). Chaining handles counterB.
         manager.executeIncomingCrossChainCall(

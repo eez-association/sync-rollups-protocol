@@ -5,7 +5,7 @@ import {console} from "forge-std/Test.sol";
 import {Rollups, RollupConfig} from "../src/Rollups.sol";
 import {CrossChainManagerL2} from "../src/CrossChainManagerL2.sol";
 import {CrossChainProxy} from "../src/CrossChainProxy.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta, ProxyInfo} from "../src/ICrossChainManager.sol";
+import {Action, ActionType, ExecutionEntry, StateDelta, StaticCall, ProxyInfo} from "../src/ICrossChainManager.sol";
 import {Counter} from "./mocks/CounterContracts.sol";
 import {CallTwice, CallTwoDifferent, ConditionalCallTwice} from "./mocks/MultiCallContracts.sol";
 import {MockZKVerifier, IntegrationTestBase} from "./helpers/TestBase.sol";
@@ -109,6 +109,7 @@ contract MultiCallIntegrationTest is IntegrationTestBase {
             value: 0,
             data: abi.encode(uint256(1)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -122,6 +123,7 @@ contract MultiCallIntegrationTest is IntegrationTestBase {
             value: 0,
             data: abi.encode(uint256(2)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -139,7 +141,7 @@ contract MultiCallIntegrationTest is IntegrationTestBase {
             entries[1].nextAction = result2;
 
             vm.prank(SYSTEM_ADDRESS);
-            managerL2.loadExecutionTable(entries);
+            managerL2.loadExecutionTable(entries, new StaticCall[](0));
         }
 
         // First call: B.counter 0 -> 1
@@ -184,6 +186,7 @@ contract MultiCallIntegrationTest is IntegrationTestBase {
             value: 0,
             data: incrementCallData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(callTwice),
             sourceRollup: MAINNET_ROLLUP_ID,
             scope: new uint256[](0)
@@ -213,7 +216,7 @@ contract MultiCallIntegrationTest is IntegrationTestBase {
             entries[1].actionHash = keccak256(abi.encode(callAction));
             entries[1].nextAction = result2;
 
-            rollups.postBatch(entries, 0, "", "proof");
+            rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
         }
 
         // Alice triggers: E calls B' twice -> two executeCrossChainCall resolutions
@@ -257,6 +260,7 @@ contract MultiCallIntegrationTest is IntegrationTestBase {
             value: 0,
             data: abi.encode(uint256(1)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -274,7 +278,7 @@ contract MultiCallIntegrationTest is IntegrationTestBase {
             entries[1].nextAction = result1;
 
             vm.prank(SYSTEM_ADDRESS);
-            managerL2.loadExecutionTable(entries);
+            managerL2.loadExecutionTable(entries, new StaticCall[](0));
         }
 
         // B1.increment()
@@ -305,6 +309,7 @@ contract MultiCallIntegrationTest is IntegrationTestBase {
             value: 0,
             data: incrementCallData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(callTwoDifferent),
             sourceRollup: MAINNET_ROLLUP_ID,
             scope: new uint256[](0)
@@ -318,6 +323,7 @@ contract MultiCallIntegrationTest is IntegrationTestBase {
             value: 0,
             data: incrementCallData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(callTwoDifferent),
             sourceRollup: MAINNET_ROLLUP_ID,
             scope: new uint256[](0)
@@ -345,7 +351,7 @@ contract MultiCallIntegrationTest is IntegrationTestBase {
             entries[1].actionHash = keccak256(abi.encode(callToB2));
             entries[1].nextAction = result1;
 
-            rollups.postBatch(entries, 0, "", "proof");
+            rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
         }
 
         // Alice triggers: F calls B1' then B2'
@@ -381,6 +387,7 @@ contract MultiCallIntegrationTest is IntegrationTestBase {
             value: 0,
             data: abi.encode(uint256(1)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -397,7 +404,7 @@ contract MultiCallIntegrationTest is IntegrationTestBase {
             entries[1].nextAction = result1;
 
             vm.prank(SYSTEM_ADDRESS);
-            managerL2.loadExecutionTable(entries);
+            managerL2.loadExecutionTable(entries, new StaticCall[](0));
         }
 
         vm.prank(SYSTEM_ADDRESS);
@@ -426,6 +433,7 @@ contract MultiCallIntegrationTest is IntegrationTestBase {
             value: 0,
             data: incrementCallData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(conditionalCallTwice),
             sourceRollup: MAINNET_ROLLUP_ID,
             scope: new uint256[](0)
@@ -438,6 +446,7 @@ contract MultiCallIntegrationTest is IntegrationTestBase {
             value: 0,
             data: incrementCallData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(conditionalCallTwice),
             sourceRollup: MAINNET_ROLLUP_ID,
             scope: new uint256[](0)
@@ -464,7 +473,7 @@ contract MultiCallIntegrationTest is IntegrationTestBase {
             entries[1].actionHash = keccak256(abi.encode(callToB2));
             entries[1].nextAction = result1;
 
-            rollups.postBatch(entries, 0, "", "proof");
+            rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
         }
 
         // threshold=100: counter B returns 1, which is < 100 -> no revert
@@ -506,6 +515,7 @@ contract MultiCallIntegrationTest is IntegrationTestBase {
             value: 0,
             data: abi.encode(uint256(1)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -518,6 +528,7 @@ contract MultiCallIntegrationTest is IntegrationTestBase {
             value: 0,
             data: incrementCallData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(conditionalCallTwice),
             sourceRollup: MAINNET_ROLLUP_ID,
             scope: new uint256[](0)
@@ -530,6 +541,7 @@ contract MultiCallIntegrationTest is IntegrationTestBase {
             value: 0,
             data: incrementCallData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(conditionalCallTwice),
             sourceRollup: MAINNET_ROLLUP_ID,
             scope: new uint256[](0)
@@ -556,7 +568,7 @@ contract MultiCallIntegrationTest is IntegrationTestBase {
             entries[1].actionHash = keccak256(abi.encode(callToB2));
             entries[1].nextAction = result1;
 
-            rollups.postBatch(entries, 0, "", "proof");
+            rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
         }
 
         bytes32 stateBefore = _getRollupState(L2_ROLLUP_ID);

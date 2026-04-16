@@ -2,7 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {Rollups} from "../../../src/Rollups.sol";
-import {Action, ActionType, ExecutionEntry, ICrossChainManager} from "../../../src/ICrossChainManager.sol";
+import {Action, ActionType, ExecutionEntry, StaticCall, ICrossChainManager} from "../../../src/ICrossChainManager.sol";
 
 /// @notice Idempotent proxy creation — returns existing proxy if already deployed.
 function getOrCreateProxy(ICrossChainManager manager, address originalAddress, uint256 originalRollupId)
@@ -21,7 +21,7 @@ contract L2TXBatcher {
     function execute(Rollups rollups, ExecutionEntry[] calldata entries, uint256 rollupId, bytes calldata rlpTx)
         external
     {
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
         rollups.executeL2TX(rollupId, rlpTx);
     }
 }
@@ -39,6 +39,7 @@ abstract contract L2TXActionsBase {
             value: 0,
             data: rlpEncodedTx,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: MAINNET_ROLLUP_ID,
             scope: new uint256[](0)
@@ -55,6 +56,7 @@ abstract contract L2TXActionsBase {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)

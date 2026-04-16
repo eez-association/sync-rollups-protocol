@@ -5,7 +5,7 @@ import {console} from "forge-std/Test.sol";
 import {Rollups, RollupConfig} from "../src/Rollups.sol";
 import {CrossChainManagerL2} from "../src/CrossChainManagerL2.sol";
 import {CrossChainProxy} from "../src/CrossChainProxy.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta, ProxyInfo} from "../src/ICrossChainManager.sol";
+import {Action, ActionType, ExecutionEntry, StateDelta, StaticCall, ProxyInfo} from "../src/ICrossChainManager.sol";
 import {Bridge} from "../src/periphery/Bridge.sol";
 import {WrappedToken} from "../src/periphery/WrappedToken.sol";
 import {FlashLoan} from "../src/periphery/defiMock/FlashLoan.sol";
@@ -181,6 +181,7 @@ contract IntegrationTestFlashLoan is IntegrationTestBase {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -194,6 +195,7 @@ contract IntegrationTestFlashLoan is IntegrationTestBase {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -207,6 +209,7 @@ contract IntegrationTestFlashLoan is IntegrationTestBase {
             value: 0,
             data: retReceiveTokensCalldata,
             failed: false,
+            isStatic: false,
             sourceAddress: address(bridgeL2),
             sourceRollup: L2_ROLLUP_ID,
             scope: new uint256[](0)
@@ -220,6 +223,7 @@ contract IntegrationTestFlashLoan is IntegrationTestBase {
             value: 0,
             data: claimAndBridgeBackCalldata,
             failed: false,
+            isStatic: false,
             sourceAddress: address(executor),
             sourceRollup: MAINNET_ROLLUP_ID,
             scope: new uint256[](0)
@@ -260,7 +264,7 @@ contract IntegrationTestFlashLoan is IntegrationTestBase {
             l2Entries[2].nextAction = result_L2_void;
 
             vm.prank(SYSTEM_ADDRESS);
-            managerL2.loadExecutionTable(l2Entries);
+            managerL2.loadExecutionTable(l2Entries, new StaticCall[](0));
         }
 
         // Single system call: receiveTokens on Bridge_L2, then claimAndBridgeBack on executorL2
@@ -304,6 +308,7 @@ contract IntegrationTestFlashLoan is IntegrationTestBase {
             value: 0,
             data: fwdReceiveTokensCalldata,
             failed: false,
+            isStatic: false,
             sourceAddress: address(bridgeL1),
             sourceRollup: MAINNET_ROLLUP_ID,
             scope: new uint256[](0)
@@ -318,6 +323,7 @@ contract IntegrationTestFlashLoan is IntegrationTestBase {
             value: 0,
             data: claimAndBridgeBackCalldata,
             failed: false,
+            isStatic: false,
             sourceAddress: address(executor),
             sourceRollup: MAINNET_ROLLUP_ID,
             scope: new uint256[](0)
@@ -334,6 +340,7 @@ contract IntegrationTestFlashLoan is IntegrationTestBase {
             value: 0,
             data: retReceiveTokensCalldata,
             failed: false,
+            isStatic: false,
             sourceAddress: address(bridgeL2),
             sourceRollup: L2_ROLLUP_ID,
             scope: scope0
@@ -372,7 +379,7 @@ contract IntegrationTestFlashLoan is IntegrationTestBase {
             entries[2].actionHash = keccak256(abi.encode(result_MAINNET_void));
             entries[2].nextAction = result_L2_void;
 
-            rollups.postBatch(entries, 0, "", "proof");
+            rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
         }
 
         // Alice triggers the flash loan → full cross-chain flow

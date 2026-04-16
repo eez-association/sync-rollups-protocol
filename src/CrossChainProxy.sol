@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.28;
 
 import {ICrossChainManager} from "./ICrossChainManager.sol";
 
@@ -18,6 +18,10 @@ contract CrossChainProxy {
 
     /// @notice The original rollup ID
     uint256 internal immutable ORIGINAL_ROLLUP_ID;
+
+    /// @dev Dummy transient variable used to detect STATICCALL context.
+    ///      Writing to it reverts in a static context; the self-call in _fallback catches this.
+    uint256 transient _staticDetector;
 
     /// @param _manager The manager contract address (Rollups on L1, CrossChainManagerL2 on L2)
     /// @param _originalAddress The original address this proxy represents
@@ -54,8 +58,22 @@ contract CrossChainProxy {
         }
     }
 
+    /// @notice Attempts a tstore to detect STATICCALL context
+    /// @dev In a static context, tstore reverts. Called via self-call so the revert is caught.
+    ///      When called by anyone other than self, routes through _fallback() (same transparent proxy pattern).
+    function staticCheck() external {
+        if (msg.sender == address(this)) {
+            _staticDetector = 0;
+        } else {
+            _fallback();
+        }
+    }
+
     /// @dev Internal fallback that forwards the call to the manager as a cross-chain execution.
     ///      Uses assembly return/revert which terminates the entire call context.
+    ///
+    ///      Static context detection: a self-call to staticCheck() attempts a transient store.
+    ///      If it reverts we're in a STATICCALL — route to staticCallLookup (view) instead.
     ///
     ///      Result decoding:
     ///      The low-level `.call()` returns ABI-encoded return data. Since `executeCrossChainCall`
@@ -64,21 +82,37 @@ contract CrossChainProxy {
     ///      the inner bytes before returning them to the caller.
     ///      On revert, the raw revert data is not ABI-wrapped, so we forward it directly.
     function _fallback() internal {
-        (bool success, bytes memory result) = MANAGER.call{value: msg.value}(
-            abi.encodeCall(ICrossChainManager.executeCrossChainCall, (msg.sender, msg.data))
-        );
+        // Detect STATICCALL context: a plain CALL with value=0 is allowed inside a STATICCALL,
+        // but the callee inherits the static flag, so staticCheck()'s TSTORE will revert. That
+        // revert is caught here and signals "we are in static context".
+        // Note: an OOG on this self-call would also return success=false, but that is safe —
+        // if 63/64 of remaining gas can't cover a single TSTORE (~100 gas), the subsequent
+        // MANAGER.staticcall / MANAGER.call below will also revert due to insufficient gas, so
+        // a misrouted path fails loudly rather than silently.
+        (bool success,) = address(this).call(abi.encodeCall(this.staticCheck, ()));
+        bytes memory result;
+
+        if (!success) {
+            // Static context — look up pre-computed result via view function
+            (success, result) = MANAGER.staticcall(
+                abi.encodeCall(ICrossChainManager.staticCallLookup, (msg.sender, msg.data))
+            );
+        } else {
+            // Normal context — execute cross-chain call
+            (success, result) = MANAGER.call{value: msg.value}(
+                abi.encodeCall(ICrossChainManager.executeCrossChainCall, (msg.sender, msg.data))
+            );
+        }
 
         if (success) {
             // Decode the inner `bytes` from the ABI-encoded return value
-            bytes memory resultDecoded = abi.decode(result, (bytes));
-            assembly {
-                return(add(resultDecoded, 0x20), mload(resultDecoded))
-            }
-        } else {
-            // Revert data is not ABI-wrapped, forward as-is
-            assembly {
-                revert(add(result, 0x20), mload(result))
-            }
+            result = abi.decode(result, (bytes));
+        }
+
+        assembly {
+            switch success
+            case 0 { revert(add(result, 0x20), mload(result)) }
+            default { return(add(result, 0x20), mload(result)) }
         }
     }
 }

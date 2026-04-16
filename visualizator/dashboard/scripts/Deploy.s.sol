@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import {Script, console} from "forge-std/Script.sol";
 import {Rollups, RollupConfig} from "src/Rollups.sol";
 import {CrossChainManagerL2} from "src/CrossChainManagerL2.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta} from "src/ICrossChainManager.sol";
+import {Action, ActionType, ExecutionEntry, StateDelta, StaticCall} from "src/ICrossChainManager.sol";
 import {IZKVerifier} from "src/IZKVerifier.sol";
 import {Counter, CounterAndProxy} from "test/mocks/CounterContracts.sol";
 
@@ -132,7 +132,7 @@ contract Scenario1_L2 is Script {
             entries[0].actionHash = keccak256(abi.encode(resultAction));
             entries[0].nextAction = resultAction;
 
-            managerL2.loadExecutionTable(entries);
+            managerL2.loadExecutionTable(entries, new StaticCall[](0));
         }
 
         // Execute incoming cross-chain call (B.increment() on L2)

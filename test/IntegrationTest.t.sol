@@ -5,7 +5,7 @@ import {console} from "forge-std/Test.sol";
 import {Rollups, RollupConfig} from "../src/Rollups.sol";
 import {CrossChainManagerL2} from "../src/CrossChainManagerL2.sol";
 import {CrossChainProxy} from "../src/CrossChainProxy.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta, ProxyInfo} from "../src/ICrossChainManager.sol";
+import {Action, ActionType, ExecutionEntry, StateDelta, StaticCall, ProxyInfo} from "../src/ICrossChainManager.sol";
 import {Counter, RevertCounter, CounterAndProxy} from "./mocks/CounterContracts.sol";
 import {RLPTxEncoder} from "./helpers/RLPTxEncoder.sol";
 import {MockZKVerifier, IntegrationTestBase} from "./helpers/TestBase.sol";
@@ -129,6 +129,7 @@ contract IntegrationTest is IntegrationTestBase {
             value: 0,
             data: abi.encode(uint256(1)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -142,7 +143,7 @@ contract IntegrationTest is IntegrationTestBase {
             entries[0].nextAction = resultAction;
 
             vm.prank(SYSTEM_ADDRESS);
-            managerL2.loadExecutionTable(entries);
+            managerL2.loadExecutionTable(entries, new StaticCall[](0));
         }
 
         // SYSTEM triggers the actual execution on L2
@@ -177,6 +178,7 @@ contract IntegrationTest is IntegrationTestBase {
             value: 0,
             data: incrementCallData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(counterAndProxy), // A
             sourceRollup: MAINNET_ROLLUP_ID,
             scope: new uint256[](0)
@@ -200,7 +202,7 @@ contract IntegrationTest is IntegrationTestBase {
             entries[0].actionHash = keccak256(abi.encode(callAction));
             entries[0].nextAction = resultAction;
 
-            rollups.postBatch(entries, 0, "", "proof");
+            rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
         }
 
         // Alice triggers the resolution
@@ -266,6 +268,7 @@ contract IntegrationTest is IntegrationTestBase {
             value: 0,
             data: rlpEncodedTx,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: MAINNET_ROLLUP_ID,
             scope: new uint256[](0)
@@ -280,6 +283,7 @@ contract IntegrationTest is IntegrationTestBase {
             value: 0,
             data: incrementCallData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(counterAndProxyL2), // D (who called C')
             sourceRollup: L2_ROLLUP_ID,                // D lives on L2
             scope: new uint256[](0)
@@ -293,6 +297,7 @@ contract IntegrationTest is IntegrationTestBase {
             value: 0,
             data: abi.encode(uint256(1)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -332,7 +337,7 @@ contract IntegrationTest is IntegrationTestBase {
             entries[1].actionHash = keccak256(abi.encode(resultAction));
             entries[1].nextAction = resultAction;
 
-            rollups.postBatch(entries, 0, "", "proof");
+            rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
         }
 
         // Trigger: executeL2TX -> L2TX matched -> CALL -> scope nav -> C.increment()
@@ -360,7 +365,7 @@ contract IntegrationTest is IntegrationTestBase {
             l2Entries[0].nextAction = resultAction;
 
             vm.prank(SYSTEM_ADDRESS);
-            managerL2.loadExecutionTable(l2Entries);
+            managerL2.loadExecutionTable(l2Entries, new StaticCall[](0));
         }
 
         // Alice triggers the resolution on L2
@@ -429,6 +434,7 @@ contract IntegrationTest is IntegrationTestBase {
             value: 0,
             data: rlpAliceTx,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: MAINNET_ROLLUP_ID,
             scope: new uint256[](0)
@@ -443,6 +449,7 @@ contract IntegrationTest is IntegrationTestBase {
             value: 0,
             data: incrementProxyCallData,
             failed: false,
+            isStatic: false,
             sourceAddress: alice,                       // Alice initiated
             sourceRollup: L2_ROLLUP_ID,                 // from L2
             scope: new uint256[](0)
@@ -458,6 +465,7 @@ contract IntegrationTest is IntegrationTestBase {
             value: 0,
             data: incrementCallData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(counterAndProxy),    // A (called B')
             sourceRollup: MAINNET_ROLLUP_ID,            // A is on MAINNET
             scope: new uint256[](0)
@@ -471,6 +479,7 @@ contract IntegrationTest is IntegrationTestBase {
             value: 0,
             data: abi.encode(uint256(1)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -485,6 +494,7 @@ contract IntegrationTest is IntegrationTestBase {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -526,7 +536,7 @@ contract IntegrationTest is IntegrationTestBase {
             entries[2].actionHash = keccak256(abi.encode(resultFromA));
             entries[2].nextAction = resultFromA;
 
-            rollups.postBatch(entries, 0, "", "proof");
+            rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
         }
 
         // Trigger: executeL2TX -> L2TX -> CALL to A -> A runs -> A calls B' ->
@@ -559,6 +569,7 @@ contract IntegrationTest is IntegrationTestBase {
             value: 0,
             data: incrementProxyCallData,
             failed: false,
+            isStatic: false,
             sourceAddress: alice,
             sourceRollup: L2_ROLLUP_ID,
             scope: new uint256[](0)
@@ -575,6 +586,7 @@ contract IntegrationTest is IntegrationTestBase {
             value: 0,
             data: incrementCallData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(counterAndProxy),    // A
             sourceRollup: MAINNET_ROLLUP_ID,
             scope: scope0
@@ -594,7 +606,7 @@ contract IntegrationTest is IntegrationTestBase {
             l2Entries[1].nextAction = resultFromB;
 
             vm.prank(SYSTEM_ADDRESS);
-            managerL2.loadExecutionTable(l2Entries);
+            managerL2.loadExecutionTable(l2Entries, new StaticCall[](0));
         }
 
         // Alice calls A' on L2 (low-level call — A' is a proxy, no incrementProxy())
@@ -659,6 +671,7 @@ contract IntegrationTest is IntegrationTestBase {
             value: 0,
             data: incrementProxyCallData,
             failed: false,
+            isStatic: false,
             sourceAddress: alice,
             sourceRollup: MAINNET_ROLLUP_ID,
             scope: new uint256[](0)
@@ -674,6 +687,7 @@ contract IntegrationTest is IntegrationTestBase {
             value: 0,
             data: incrementCallData,
             failed: false,
+            isStatic: false,
             sourceAddress: address(counterAndProxyL2),   // D (called C')
             sourceRollup: L2_ROLLUP_ID,                  // D is on L2
             scope: new uint256[](0)
@@ -687,6 +701,7 @@ contract IntegrationTest is IntegrationTestBase {
             value: 0,
             data: abi.encode(uint256(1)),
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -735,7 +750,7 @@ contract IntegrationTest is IntegrationTestBase {
             entries[1].actionHash = keccak256(abi.encode(resultFromC));
             entries[1].nextAction = resultFromC;
 
-            rollups.postBatch(entries, 0, "", "proof");
+            rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
         }
 
         // Alice calls D' on L1 (low-level call — D' is a proxy)
@@ -764,6 +779,7 @@ contract IntegrationTest is IntegrationTestBase {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -785,7 +801,7 @@ contract IntegrationTest is IntegrationTestBase {
             entries[1].nextAction = resultFromD;
 
             vm.prank(SYSTEM_ADDRESS);
-            managerL2.loadExecutionTable(entries);
+            managerL2.loadExecutionTable(entries, new StaticCall[](0));
         }
 
         // SYSTEM triggers: executeIncomingCrossChainCall -> CALL to D -> D runs ->
@@ -852,6 +868,7 @@ contract IntegrationTest is IntegrationTestBase {
             value: 0,
             data: rlpEncodedTx,
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: MAINNET_ROLLUP_ID,
             scope: new uint256[](0)
@@ -868,6 +885,7 @@ contract IntegrationTest is IntegrationTestBase {
             value: 0,
             data: incrementCallData,
             failed: false,
+            isStatic: false,
             sourceAddress: alice,
             sourceRollup: L2_ROLLUP_ID,
             scope: scope0
@@ -883,6 +901,7 @@ contract IntegrationTest is IntegrationTestBase {
             value: 0,
             data: revertData,
             failed: true,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -896,6 +915,7 @@ contract IntegrationTest is IntegrationTestBase {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: scope0
@@ -909,6 +929,7 @@ contract IntegrationTest is IntegrationTestBase {
             value: 0,
             data: "",
             failed: true,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -922,6 +943,7 @@ contract IntegrationTest is IntegrationTestBase {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -960,7 +982,7 @@ contract IntegrationTest is IntegrationTestBase {
             entries[2].actionHash = keccak256(abi.encode(revertContinue));
             entries[2].nextAction = terminalResult;
 
-            rollups.postBatch(entries, 0, "", "proof");
+            rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
         }
 
         // Trigger: executeL2TX -> CALL(RC) -> reverts -> REVERT -> REVERT_CONTINUE -> ok
@@ -968,8 +990,9 @@ contract IntegrationTest is IntegrationTestBase {
 
         // RC.counter should still be 0 — increment() reverted inside the scope
         assertEq(revertCounterL1.counter(), 0, "RC counter should be 0 (reverted)");
-        // State should be S2 — restored by _handleScopeRevert after ScopeReverted
-        assertEq(_getRollupState(L2_ROLLUP_ID), s2, "L2 state should be S2 (restored after ScopeReverted)");
+        // REVERT_CONTINUE is consumed BEFORE the ScopeReverted revert captures state,
+        // so the captured/restored L2 stateRoot is S3 (after REVERT_CONTINUE deltas applied).
+        assertEq(_getRollupState(L2_ROLLUP_ID), s3, "L2 state should be S3 (restored after ScopeReverted)");
 
         // ════════════════════════════════════════════
         //  Phase 2: L2 — Alice calls RC' (expected to revert)
@@ -985,6 +1008,7 @@ contract IntegrationTest is IntegrationTestBase {
             value: 0,
             data: incrementCallData,
             failed: false,
+            isStatic: false,
             sourceAddress: alice,
             sourceRollup: L2_ROLLUP_ID,
             scope: new uint256[](0)
@@ -997,7 +1021,7 @@ contract IntegrationTest is IntegrationTestBase {
             l2Entries[0].nextAction = resultFailed;
 
             vm.prank(SYSTEM_ADDRESS);
-            managerL2.loadExecutionTable(l2Entries);
+            managerL2.loadExecutionTable(l2Entries, new StaticCall[](0));
         }
 
         // Alice calls RC' — expected to revert (terminal failure on L2)

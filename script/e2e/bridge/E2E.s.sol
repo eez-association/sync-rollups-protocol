@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import {Script, console} from "forge-std/Script.sol";
 import {Rollups} from "../../../src/Rollups.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
+import {Action, ActionType, ExecutionEntry, StateDelta, StaticCall} from "../../../src/ICrossChainManager.sol";
 import {Bridge} from "../../../src/periphery/Bridge.sol";
 import {_deployBridge, _computeBridgeAddress} from "../../DeployBridge.s.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
@@ -19,6 +19,7 @@ abstract contract BridgeActions {
             value: 1 ether,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: bridge,
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -33,6 +34,7 @@ abstract contract BridgeActions {
             value: 0,
             data: "",
             failed: false,
+            isStatic: false,
             sourceAddress: address(0),
             sourceRollup: 0,
             scope: new uint256[](0)
@@ -80,7 +82,7 @@ contract Batcher {
         uint256 rollupId,
         address destination
     ) external payable {
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(entries, new StaticCall[](0), 0, "", "proof");
         bridge.bridgeEther{value: msg.value}(rollupId, destination);
     }
 }
@@ -121,7 +123,7 @@ contract ExecuteL2 is Script, BridgeActions {
 
         vm.startBroadcast();
 
-        manager.loadExecutionTable(_l2Entries());
+        manager.loadExecutionTable(_l2Entries(), new StaticCall[](0));
 
         // Execute: system sends 1 ETH to destination via proxy for bridge
         manager.executeIncomingCrossChainCall{value: 1 ether}(
