@@ -70,9 +70,23 @@ Summary rule: **top-level static = lookup only; nested static = on-chain STATICC
 | L1 → L2 | top-level | L1 `staticCallLookup` via proxy fallback | **none** — never executed on L2 |
 | L1 → L2 | nested | L2 `_processCallAtScope` static branch, STATICCALL to source proxy | yes, on L2 |
 | L2 → L1 | top-level | L2 `staticCallLookup` via proxy fallback | none — never executed on L1 |
-| L2 → L1 | nested | L1 `_processCallAtScope` static branch, STATICCALL to source proxy | yes, on L1 |
+| L2 → L1 | via `executeL2TX` | L1 `_processCallAtScope` static branch, STATICCALL to source proxy (see detail below) | yes, on L1 |
 | L2 → L2 (intra-/cross-) | top-level | origin-side `staticCallLookup` | none on destination |
 | L2 → L2 (intra-/cross-) | nested | destination-side `_processCallAtScope` static branch | yes, on destination |
+
+### L2→L1 static via `executeL2TX`
+
+The most common L2→L1 static call is not a standalone top-level lookup; it is an L2 user transaction whose execution includes a read-only cross-chain call to L1. The flow:
+
+1. **L2 side**: the user STATICCALLs a proxy on L2. The proxy detects static context via the TSTORE probe and routes to `CrossChainManagerL2.staticCallLookup`, which matches a pre-committed `StaticCall` entry and returns the result. No execution entries consumed on L2 — the `StaticCall` table is used.
+2. **L1 side**: `executeL2TX` processes the L2 transaction. Entry [0] is triggered by the L2TX action; its `nextAction` is a CALL with `isStatic = true`, targeting the L1 contract (e.g., CounterL1).
+3. `_processCallAtScope` on L1 sees `isStatic == true` and calls `sourceProxy.staticcall(abi.encodeCall(executeOnBehalf, (destination, data)))`. The proxy takes the **admin path** (see §D) — `msg.sender == MANAGER` — and forwards directly to `destination.call{value: msg.value}(data)`. Because the entire frame is under STATICCALL, the EVM static flag propagates: `msg.value == 0`, the `.call` behaves as a STATICCALL, and the destination contract runs read-only on L1.
+4. The destination contract (e.g., CounterL1) executes natively on L1 — no static-call table lookup involved.
+
+Key points:
+- **No `StaticCall` table on L1.** The L1 side resolves the call directly via the proxy's admin path — the destination contract runs natively on L1.
+- **`StaticCall` table on L2.** The user's contract on L2 STATICCALLs the proxy → proxy detects static context via the TSTORE probe → `CrossChainManagerL2.staticCallLookup` matches the pre-committed `StaticCall` entry and returns `returnData`. No execution entries consumed on L2.
+- **The proxy's admin path on L1 does NOT involve `staticCallLookup`.** The manager calls `executeOnBehalf` directly, which takes the admin path.
 
 Consequence for observability: a top-level L1→L2 static call leaves **no trace on L2**. Tooling that reconstructs cross-chain flow from block logs alone will miss it. The origin side is observable: the `staticCalls[]` storage array is public, and the proxy's STATICCALL calldata plus `StaticCallNotFound`/`StaticCallStateRootMismatch` reverts are visible in traces.
 
@@ -187,6 +201,16 @@ On detection:
 Return data decoding is unchanged: on success, the manager's `bytes memory` return value is double-ABI-encoded, so the proxy decodes one layer before returning. On revert, the raw revert bytes are forwarded directly.
 
 Gas footprint: one self-call + one TSTORE (~100 gas plus call overhead) per fallback entry. An OOG'd probe cannot silently mis-route — the subsequent `MANAGER.staticcall` / `.call` in the same frame also OOGs. See §H.
+
+### Admin path vs fallback path
+
+The proxy has two structurally distinct entry paths. Understanding which path is taken matters for reasoning about static call routing:
+
+- **Admin path** (`msg.sender == MANAGER`): entered when the manager calls `executeOnBehalf(destination, data)` directly. The proxy forwards to `destination.call{value: msg.value}(data)` via assembly return/revert. **No TSTORE probe, no `staticCheck`, no routing to `staticCallLookup` or `executeCrossChainCall`.** This is the path used by `_processCallAtScope` for both regular and static nested calls.
+
+  When `_processCallAtScope` has a CALL with `isStatic == true`, it invokes `sourceProxy.staticcall(abi.encodeCall(executeOnBehalf, (destination, data)))`. The proxy receives a STATICCALL, enters `executeOnBehalf`, sees `msg.sender == MANAGER`, and does `destination.call{value: msg.value}(data)`. Because the frame is under STATICCALL, the EVM static flag propagates: `msg.value == 0` and the `.call` behaves as a STATICCALL at the EVM level. Note that `executeOnBehalf` itself does not check `isStatic` — the static enforcement comes from the STATICCALL context set by `_processCallAtScope`.
+
+- **Fallback path** (any other caller): entered when an EOA or external contract calls the proxy (either via `fallback()` or via `executeOnBehalf` with `msg.sender != MANAGER`). Goes through `_fallback()` → TSTORE probe → routes to either `executeCrossChainCall` (normal context) or `staticCallLookup` (static context). This is the path used by top-level callers hitting a proxy directly.
 
 ---
 

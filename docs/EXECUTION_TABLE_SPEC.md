@@ -291,12 +291,12 @@ This makes static call support fully transparent to callers: any `staticcall` in
 
 ### Internal scope execution (`isStatic` CALL actions)
 
-When scope navigation processes a CALL whose `action.isStatic == true` (e.g., a nested static call surfaced as a `nextAction`), `_executeCallAtScope` branches:
+When scope navigation processes a CALL whose `action.isStatic == true` (e.g., a nested static call surfaced as a `nextAction`), `_processCallAtScope` branches:
 
-- `isStatic == true` → `sourceProxy.staticcall(abi.encodeCall(executeOnBehalf, (destination, data)))`. No `value` transfer is allowed and the `_etherDelta` accumulator is not touched.
+- `isStatic == true` → `sourceProxy.staticcall(abi.encodeCall(executeOnBehalf, (destination, data)))`. No `value` transfer is allowed and the `_etherDelta` accumulator is not touched. The proxy takes the admin path (`msg.sender == MANAGER`) and forwards to `destination.call{value: msg.value}(data)`. Because the frame is under STATICCALL, the EVM static flag propagates and the destination runs read-only.
 - `isStatic == false` → `sourceProxy.call{value: action.value}(...)` as before, with `_etherDelta -= action.value` on success.
 
-In practice, static calls are resolved end-to-end through the static call table (proxy → `staticCallLookup`), so scope-navigated `isStatic = true` CALLs only appear in advanced builder-composed flows.
+This is the normal path for L2→L1 static calls via `executeL2TX`: the L2TX entry's `nextAction` is a CALL with `isStatic = true`, and `_processCallAtScope` on L1 resolves it directly through the proxy's admin path — no static call table needed on L1. On L2, the user STATICCALLs the proxy, which routes to `staticCallLookup` — so a `StaticCall` table entry IS needed on L2. Top-level L1→L2 static calls (user doing STATICCALL to a proxy on L1) are resolved via `staticCallLookup` on L1.
 
 ### Builder notes
 

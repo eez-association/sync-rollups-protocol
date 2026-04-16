@@ -91,7 +91,7 @@ echo "L2 execution at block $L2_BLOCK"
 
 echo ""
 echo "====== Execute L1 ======"
-EXEC_L1=$(forge script "$SOL:Execute" --rpc-url "$L1_RPC" --broadcast --private-key "$PK" 2>&1) \
+EXEC_L1=$(forge script "$SOL:Execute" --rpc-url "$L1_RPC" --broadcast --private-key "$PK" --gas-limit 7000000 2>&1) \
     && echo "L1 execution succeeded" || { echo "L1 execution FAILED"; FAILED=true; }
 echo "$EXEC_L1" | grep -E "complete|done|counter" || true
 trace_failed_txs "$EXEC_L1" "$L1_RPC"

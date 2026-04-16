@@ -1802,14 +1802,17 @@ Static-call action hashes are ALWAYS computed at root scope: `scope: uint256[](0
 
 ### H.6 Top-level vs nested static calls
 
-There are two distinct execution paths for a static CALL. The distinction matters for provers, explorers, and anyone reasoning about L2 state advancement.
+There are three distinct execution paths for a static CALL. The distinction matters for provers, explorers, and anyone reasoning about L2 state advancement.
 
 | Scenario | Path | L2 state advances? | Commitment |
 |---|---|---|---|
 | Top-level L1→L2 static call (user calls a proxy in STATICCALL context from L1) | `staticCallLookup` only — no on-chain execution on L2 | **No** | Must be present in `_staticCalls` committed by `postBatch` |
-| Nested static CALL inside `executeL2TX` or inside another CALL that is mid-execution | `_processCallAtScope` → `sourceProxy.staticcall(executeOnBehalf(...))` | No state mutation by the STATICCALL itself, but it runs on-chain through the proxy's STATICCALL path and is part of the ongoing scope | Commitment rides on the enclosing entry's proof obligation |
+| L2→L1 static via `executeL2TX` (L2 user tx includes a read-only cross-chain call to L1) | `_processCallAtScope` → `sourceProxy.staticcall(executeOnBehalf(...))` on L1 (admin path, no `staticCallLookup`); L2 user STATICCALLs the proxy → `staticCallLookup` matches a pre-committed `StaticCall` entry | L1 destination runs read-only; L2 resolves via `StaticCall` table (no execution entries consumed on L2) | `StaticCall` table needed on L2; not needed on L1 (admin path resolves directly). Commitment rides on the L2TX entry's proof obligation |
+| Nested static CALL inside `executeL2TX` or inside another CALL that is mid-execution | `_processCallAtScope` → `sourceProxy.staticcall(executeOnBehalf(...))` | No state mutation by the STATICCALL itself, but it runs on-chain through the proxy's admin path and is part of the ongoing scope | Commitment rides on the enclosing entry's proof obligation |
 
-**Key invariant**: a top-level L1→L2 static lookup MUST NOT appear as an L2 execution on-chain. It is resolved purely from the pre-committed `staticCalls` table, which is why the table is proven but the lookup itself is `view` and consumes nothing. Conversely, a static call encountered *during* the execution of another action (e.g. a nested STATICCALL from inside an `executeL2TX`) is executed through the proxy's STATICCALL path and shows up in the on-chain trace of that enclosing execution.
+**L2→L1 static via `executeL2TX` detail**: On L2, the user STATICCALLs the proxy → proxy detects static context via TSTORE probe → `CrossChainManagerL2.staticCallLookup` matches a pre-committed `StaticCall` entry and returns `returnData`. No execution entries consumed on L2. On L1, `executeL2TX` processes the batch; the L2TX entry's `nextAction` is a CALL with `isStatic = true`. `_processCallAtScope` invokes `sourceProxy.staticcall(executeOnBehalf(destination, data))`. The proxy takes the admin path (`msg.sender == MANAGER`) and forwards to `destination.call{value: msg.value}(data)`. Because the frame is under STATICCALL, the EVM static flag propagates and the destination runs read-only on L1. `StaticCall` table is needed on L2 (for the user's static lookup); not needed on L1 (admin path resolves directly).
+
+**Key invariant**: a top-level L1→L2 static lookup MUST NOT appear as an L2 execution on-chain. It is resolved purely from the pre-committed `staticCalls` table, which is why the table is proven but the lookup itself is `view` and consumes nothing. Conversely, a static call encountered *during* the execution of another action (e.g. a nested STATICCALL from inside an `executeL2TX`) is executed through the proxy's admin path and shows up in the on-chain trace of that enclosing execution.
 
 ### H.7 Failed static calls
 
