@@ -253,6 +253,17 @@ When a CALL action's `nextAction` has `isStatic=true`, `_processCallAtScope` on 
 
 **When a nested static call also crosses chains** (e.g., L1 scope navigation STATICCALLs a destination that lives on L2), the destination proxy's `executeOnBehalf` uses the admin path on the chain where it runs. If the destination needs data from the OTHER chain, that inner hop is yet another static entry — but at the admin-path level it's always a direct forward.
 
+**All proxies must be pre-deployed before any static call executes.** In non-static flows, `_processCallAtScope` auto-creates missing proxies via `_createCrossChainProxyInternal` (CREATE2) on-the-fly. This does NOT work for static calls because STATICCALL forbids CREATE2 — the auto-create path reverts. Every proxy that will be touched during a nested static call's execution must already exist on-chain.
+
+This applies to:
+- The **source proxy** used by `_processCallAtScope` (`computeCrossChainProxyAddress(action.sourceAddress, action.sourceRollup)`).
+- Any **destination proxies** the target contract calls internally — if the target view function crosses another proxy boundary, that proxy must exist too.
+- Any proxies referenced by `StaticSubCall` entries in the flatten sub-call replay (`_processNStaticCalls` reverts `ProxyNotDeployed` if `sourceProxy.code.length == 0`).
+
+**Always deploy proxies in the Deploy phase** — use `getOrCreateProxy(manager, originalAddress, originalRollupId)` for every `(address, rollupId)` pair that could be touched. The lookup is `view` and cannot CREATE2; the scope execution under STATICCALL cannot CREATE2 either.
+
+For L2→L1 static flows via `executeL2TX`, the source proxy needed on L1 is for `(ValueReaderL2, L2_ROLLUP_ID)` — deploy it in a `Deploy2` step on L1 (see the counterL2 pattern).
+
 Reference: `script/e2e/nestedStaticCall/E2E.s.sol`
 
 ---
