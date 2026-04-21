@@ -1,0 +1,534 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.28;
+
+import {Script, console} from "forge-std/Script.sol";
+import {Vm} from "forge-std/Vm.sol";
+import {
+    Action,
+    StateDelta,
+    CrossChainCall,
+    NestedAction,
+    ExecutionEntry,
+    StaticCall
+} from "../../../src/ICrossChainManager.sol";
+
+// ══════════════════════════════════════════════════════════════════════
+//  Shared helpers — event signatures + formatting
+// ══════════════════════════════════════════════════════════════════════
+
+abstract contract VerifyHelpers is Script {
+    // BatchPosted(ExecutionEntry[] entries, bytes32 publicInputsHash)
+    //   ExecutionEntry = (StateDelta[], bytes32, CrossChainCall[], NestedAction[], uint256, bytes, bool, bytes32)
+    //   StateDelta     = (uint256, bytes32, int256)
+    //   CrossChainCall = (address, uint256, bytes, address, uint256, uint256)
+    //   NestedAction   = (bytes32, uint256, bytes)
+    bytes32 constant SIG_BATCH_POSTED = keccak256(
+        "BatchPosted(((uint256,bytes32,int256)[],bytes32,(address,uint256,bytes,address,uint256,uint256)[],(bytes32,uint256,bytes)[],uint256,bytes,bool,bytes32)[],bytes32)"
+    );
+
+    // ExecutionTableLoaded(ExecutionEntry[] entries)
+    bytes32 constant SIG_TABLE_LOADED = keccak256(
+        "ExecutionTableLoaded(((uint256,bytes32,int256)[],bytes32,(address,uint256,bytes,address,uint256,uint256)[],(bytes32,uint256,bytes)[],uint256,bytes,bool,bytes32)[])"
+    );
+
+    // CrossChainCallExecuted(bytes32 actionHash, address proxy, address sourceAddress, bytes callData, uint256 value)
+    bytes32 constant SIG_CROSSCHAIN_CALL = keccak256(
+        "CrossChainCallExecuted(bytes32,address,address,bytes,uint256)"
+    );
+
+    function _entryHash(ExecutionEntry memory e) internal pure returns (bytes32) {
+        return keccak256(abi.encode(e.actionHash, e.rollingHash));
+    }
+
+    function _shortHash(bytes32 h) internal pure returns (string memory) {
+        string memory full = vm.toString(h);
+        return string.concat(_sub(full, 0, 6), "..", _sub(full, 62, 66));
+    }
+
+    function _shortBytes(bytes memory b) internal pure returns (string memory) {
+        if (b.length == 0) return "0x";
+        if (b.length <= 36) return vm.toString(b);
+        string memory full = vm.toString(b);
+        return string.concat(_sub(full, 0, 10), "...(", vm.toString(b.length), " bytes)");
+    }
+
+    function _sub(string memory str, uint256 s, uint256 e) internal pure returns (string memory) {
+        bytes memory b = bytes(str);
+        if (e > b.length) e = b.length;
+        if (s >= e) return "";
+        bytes memory r = new bytes(e - s);
+        for (uint256 i = s; i < e; i++) {
+            r[i - s] = b[i];
+        }
+        return string(r);
+    }
+
+    function _printEntryDetailed(uint256 idx, ExecutionEntry memory e) internal pure {
+        bool immediate = e.actionHash == bytes32(0);
+        console.log(
+            "  [%s] %s  actionHash=%s",
+            idx,
+            immediate ? "IMMEDIATE" : "DEFERRED",
+            vm.toString(e.actionHash)
+        );
+        console.log("      rollingHash: %s", vm.toString(e.rollingHash));
+        console.log("      callCount=%s  calls=%s  nested=%s", e.callCount, e.calls.length, e.nestedActions.length);
+        for (uint256 d = 0; d < e.stateDeltas.length; d++) {
+            StateDelta memory sd = e.stateDeltas[d];
+            console.log(
+                string.concat(
+                    "      stateDelta: rollup ",
+                    vm.toString(sd.rollupId),
+                    " -> ",
+                    _shortHash(sd.newState),
+                    "  ether=",
+                    vm.toString(sd.etherDelta)
+                )
+            );
+        }
+        for (uint256 c = 0; c < e.calls.length; c++) {
+            CrossChainCall memory cc = e.calls[c];
+            console.log(
+                string.concat(
+                    "      call[",
+                    vm.toString(c),
+                    "]: dest=",
+                    vm.toString(cc.destination),
+                    "  value=",
+                    vm.toString(cc.value),
+                    "  revertSpan=",
+                    vm.toString(cc.revertSpan)
+                )
+            );
+            console.log(
+                string.concat(
+                    "               from=",
+                    vm.toString(cc.sourceAddress),
+                    " @ rollup ",
+                    vm.toString(cc.sourceRollup),
+                    "  data=",
+                    _shortBytes(cc.data)
+                )
+            );
+        }
+        for (uint256 n = 0; n < e.nestedActions.length; n++) {
+            NestedAction memory na = e.nestedActions[n];
+            console.log(
+                string.concat(
+                    "      nested[",
+                    vm.toString(n),
+                    "]: actionHash=",
+                    _shortHash(na.actionHash),
+                    "  callCount=",
+                    vm.toString(na.callCount)
+                )
+            );
+        }
+        if (e.returnData.length > 0) {
+            console.log("      returnData: %s", _shortBytes(e.returnData));
+        }
+        if (e.failed) {
+            console.log("      failed: TRUE");
+        }
+        console.log("      entryHash: %s", vm.toString(_entryHash(e)));
+    }
+
+    // ── Log collection: decode BatchPosted ──
+
+    function _collectBatchEntries(Vm.EthGetLogs[] memory logs) internal pure returns (ExecutionEntry[] memory) {
+        uint256 totalCount;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics[0] == SIG_BATCH_POSTED) {
+                (ExecutionEntry[] memory entries,) = abi.decode(logs[i].data, (ExecutionEntry[], bytes32));
+                totalCount += entries.length;
+            }
+        }
+        ExecutionEntry[] memory all = new ExecutionEntry[](totalCount);
+        uint256 idx;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics[0] == SIG_BATCH_POSTED) {
+                (ExecutionEntry[] memory entries,) = abi.decode(logs[i].data, (ExecutionEntry[], bytes32));
+                for (uint256 j = 0; j < entries.length; j++) {
+                    all[idx++] = entries[j];
+                }
+            }
+        }
+        return all;
+    }
+
+    // ── Log collection: decode ExecutionTableLoaded ──
+
+    function _collectTableEntries(Vm.EthGetLogs[] memory logs) internal pure returns (ExecutionEntry[] memory) {
+        uint256 totalCount;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics[0] == SIG_TABLE_LOADED) {
+                ExecutionEntry[] memory entries = abi.decode(logs[i].data, (ExecutionEntry[]));
+                totalCount += entries.length;
+            }
+        }
+        ExecutionEntry[] memory all = new ExecutionEntry[](totalCount);
+        uint256 idx;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics[0] == SIG_TABLE_LOADED) {
+                ExecutionEntry[] memory entries = abi.decode(logs[i].data, (ExecutionEntry[]));
+                for (uint256 j = 0; j < entries.length; j++) {
+                    all[idx++] = entries[j];
+                }
+            }
+        }
+        return all;
+    }
+
+    function _findMissingHashes(bytes32[] memory actual, bytes32[] calldata expected)
+        internal
+        pure
+        returns (bytes32[] memory)
+    {
+        bytes32[] memory tmp = new bytes32[](expected.length);
+        uint256 count;
+        for (uint256 i = 0; i < expected.length; i++) {
+            bool found = false;
+            for (uint256 j = 0; j < actual.length; j++) {
+                if (actual[j] == expected[i]) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) tmp[count++] = expected[i];
+        }
+        bytes32[] memory result = new bytes32[](count);
+        for (uint256 i = 0; i < count; i++) {
+            result[i] = tmp[i];
+        }
+        return result;
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  VerifyL1Batch — check BatchPosted logs in a given block contain
+//  all expected entry hashes (subset match).
+// ══════════════════════════════════════════════════════════════════════
+
+contract VerifyL1Batch is VerifyHelpers {
+    function run(uint256 blockNumber, address rollups, bytes32[] calldata expectedEntryHashes) external view {
+        bytes32[] memory topics = new bytes32[](0);
+        Vm.EthGetLogs[] memory logs = vm.eth_getLogs(blockNumber, blockNumber, rollups, topics);
+
+        ExecutionEntry[] memory actual = _collectBatchEntries(logs);
+
+        bytes32[] memory actualHashes = new bytes32[](actual.length);
+        for (uint256 i = 0; i < actual.length; i++) {
+            actualHashes[i] = _entryHash(actual[i]);
+        }
+
+        bytes32[] memory missing = _findMissingHashes(actualHashes, expectedEntryHashes);
+
+        if (missing.length > 0) {
+            console.log(
+                "FAIL: %s/%s expected entries missing in block %s",
+                missing.length,
+                expectedEntryHashes.length,
+                blockNumber
+            );
+            console.log("");
+            console.log("=== ACTUAL EXECUTION TABLE (L1 block %s, %s entries) ===", blockNumber, actual.length);
+            for (uint256 i = 0; i < actual.length; i++) {
+                _printEntryDetailed(i, actual[i]);
+            }
+            console.log("");
+            console.log("=== MISSING ENTRY HASHES ===");
+            for (uint256 i = 0; i < missing.length; i++) {
+                console.log("  %s", vm.toString(missing[i]));
+            }
+            revert("Verification failed");
+        }
+
+        console.log(
+            "PASS: %s/%s expected entries found in block %s",
+            expectedEntryHashes.length,
+            expectedEntryHashes.length,
+            blockNumber
+        );
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics[0] == SIG_BATCH_POSTED) {
+                console.log("L1_BATCH_TX=%s", vm.toString(logs[i].transactionHash));
+                break;
+            }
+        }
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  VerifyL2Blocks — check ExecutionTableLoaded events in one of the
+//  given blocks contain all expected entry hashes.
+// ══════════════════════════════════════════════════════════════════════
+
+contract VerifyL2Blocks is VerifyHelpers {
+    function run(uint256[] calldata l2Blocks, address managerL2, bytes32[] calldata expectedEntryHashes)
+        external
+        view
+    {
+        if (l2Blocks.length == 0) {
+            console.log("FAIL: no L2 blocks to check");
+            revert("No L2 blocks");
+        }
+
+        for (uint256 i = 0; i < l2Blocks.length; i++) {
+            ExecutionEntry[] memory entries = _getEntries(l2Blocks[i], managerL2);
+            if (_allPresent(entries, expectedEntryHashes)) {
+                console.log(
+                    "PASS: all %s expected entries found at L2 block %s",
+                    expectedEntryHashes.length,
+                    l2Blocks[i]
+                );
+                bytes32[] memory topics = new bytes32[](0);
+                Vm.EthGetLogs[] memory blkLogs = vm.eth_getLogs(l2Blocks[i], l2Blocks[i], managerL2, topics);
+                for (uint256 j = 0; j < blkLogs.length; j++) {
+                    if (blkLogs[j].topics[0] == SIG_TABLE_LOADED) {
+                        console.log("L2_TABLE_TX=%s", vm.toString(blkLogs[j].transactionHash));
+                        break;
+                    }
+                }
+                return;
+            }
+        }
+
+        console.log("FAIL: expected entries not found in any of %s L2 blocks", l2Blocks.length);
+        for (uint256 i = 0; i < l2Blocks.length; i++) {
+            ExecutionEntry[] memory entries = _getEntries(l2Blocks[i], managerL2);
+            console.log("");
+            console.log("=== L2 BLOCK %s (%s entries) ===", l2Blocks[i], entries.length);
+            for (uint256 j = 0; j < entries.length; j++) {
+                _printEntryDetailed(j, entries[j]);
+            }
+        }
+        console.log("");
+        console.log("=== MISSING ENTRY HASHES ===");
+        for (uint256 i = 0; i < expectedEntryHashes.length; i++) {
+            console.log("  %s", vm.toString(expectedEntryHashes[i]));
+        }
+        revert("Verification failed");
+    }
+
+    function _getEntries(uint256 blockNumber, address managerL2) internal view returns (ExecutionEntry[] memory) {
+        bytes32[] memory topics = new bytes32[](0);
+        Vm.EthGetLogs[] memory logs = vm.eth_getLogs(blockNumber, blockNumber, managerL2, topics);
+        return _collectTableEntries(logs);
+    }
+
+    function _allPresent(ExecutionEntry[] memory entries, bytes32[] calldata expectedEntryHashes)
+        internal
+        pure
+        returns (bool)
+    {
+        bytes32[] memory actualHashes = new bytes32[](entries.length);
+        for (uint256 i = 0; i < entries.length; i++) {
+            actualHashes[i] = _entryHash(entries[i]);
+        }
+        for (uint256 i = 0; i < expectedEntryHashes.length; i++) {
+            bool found = false;
+            for (uint256 j = 0; j < actualHashes.length; j++) {
+                if (actualHashes[j] == expectedEntryHashes[i]) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) return false;
+        }
+        return true;
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  VerifyL2Calls — check CrossChainCallExecuted events on L2 match
+//  expected action hashes (for L1→L2 direction).
+// ══════════════════════════════════════════════════════════════════════
+
+contract VerifyL2Calls is VerifyHelpers {
+    function run(uint256[] calldata l2Blocks, address managerL2, bytes32[] calldata expectedCallHashes)
+        external
+        view
+    {
+        if (l2Blocks.length == 0) {
+            console.log("FAIL: no L2 blocks to check");
+            revert("No L2 blocks");
+        }
+
+        bytes32[] memory found = _collectActionHashes(l2Blocks, managerL2);
+        bytes32[] memory missing = _findMissingHashes(found, expectedCallHashes);
+
+        if (missing.length > 0) {
+            console.log("FAIL: %s/%s expected L2 calls missing", missing.length, expectedCallHashes.length);
+            console.log("");
+            console.log("=== ACTUAL CROSS-CHAIN CALL HASHES ===");
+            for (uint256 i = 0; i < found.length; i++) {
+                console.log("  %s", vm.toString(found[i]));
+            }
+            console.log("");
+            console.log("=== MISSING CALL HASHES ===");
+            for (uint256 i = 0; i < missing.length; i++) {
+                console.log("  %s", vm.toString(missing[i]));
+            }
+            revert("Verification failed");
+        }
+
+        console.log(
+            "PASS: %s/%s expected L2 calls verified", expectedCallHashes.length, expectedCallHashes.length
+        );
+        for (uint256 i = 0; i < l2Blocks.length; i++) {
+            bytes32[] memory topics = new bytes32[](0);
+            Vm.EthGetLogs[] memory blkLogs = vm.eth_getLogs(l2Blocks[i], l2Blocks[i], managerL2, topics);
+            for (uint256 j = 0; j < blkLogs.length; j++) {
+                if (blkLogs[j].topics[0] == SIG_CROSSCHAIN_CALL) {
+                    console.log("L2_CALL_TX=%s", vm.toString(blkLogs[j].transactionHash));
+                }
+            }
+        }
+    }
+
+    function _collectActionHashes(uint256[] calldata blocks, address managerL2)
+        internal
+        view
+        returns (bytes32[] memory)
+    {
+        uint256 count;
+        for (uint256 i = 0; i < blocks.length; i++) {
+            bytes32[] memory topics = new bytes32[](0);
+            Vm.EthGetLogs[] memory logs = vm.eth_getLogs(blocks[i], blocks[i], managerL2, topics);
+            for (uint256 j = 0; j < logs.length; j++) {
+                if (logs[j].topics[0] == SIG_CROSSCHAIN_CALL) count++;
+            }
+        }
+        bytes32[] memory result = new bytes32[](count);
+        uint256 idx;
+        for (uint256 i = 0; i < blocks.length; i++) {
+            bytes32[] memory topics = new bytes32[](0);
+            Vm.EthGetLogs[] memory logs = vm.eth_getLogs(blocks[i], blocks[i], managerL2, topics);
+            for (uint256 j = 0; j < logs.length; j++) {
+                if (logs[j].topics[0] == SIG_CROSSCHAIN_CALL) {
+                    // actionHash is topics[1] (first indexed parameter)
+                    result[idx++] = logs[j].topics[1];
+                }
+            }
+        }
+        return result;
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  VerifyL2Absent — check specific entry hashes are NOT present on L2.
+//  Used for terminal revert scenarios where no L2 table should exist.
+// ══════════════════════════════════════════════════════════════════════
+
+contract VerifyL2Absent is VerifyHelpers {
+    function run(uint256[] calldata l2Blocks, address managerL2, bytes32[] calldata absentEntryHashes)
+        external
+        view
+    {
+        bytes32[] memory actualHashes = _collectEntryHashes(l2Blocks, managerL2);
+
+        for (uint256 i = 0; i < absentEntryHashes.length; i++) {
+            for (uint256 j = 0; j < actualHashes.length; j++) {
+                if (actualHashes[j] == absentEntryHashes[i]) {
+                    console.log("FAIL: unexpected L2 entry found: %s", vm.toString(absentEntryHashes[i]));
+                    revert("Unexpected L2 entry");
+                }
+            }
+        }
+
+        if (actualHashes.length == 0) {
+            console.log("PASS: no L2 table entries found (expected for terminal revert)");
+        } else {
+            console.log(
+                "PASS: %s L2 entries found but none match the %s absent hashes",
+                actualHashes.length,
+                absentEntryHashes.length
+            );
+        }
+    }
+
+    function _collectEntryHashes(uint256[] calldata blocks, address managerL2)
+        internal
+        view
+        returns (bytes32[] memory)
+    {
+        uint256 count;
+        for (uint256 i = 0; i < blocks.length; i++) {
+            bytes32[] memory topics = new bytes32[](0);
+            Vm.EthGetLogs[] memory logs = vm.eth_getLogs(blocks[i], blocks[i], managerL2, topics);
+            ExecutionEntry[] memory entries = _collectTableEntries(logs);
+            count += entries.length;
+        }
+        bytes32[] memory result = new bytes32[](count);
+        uint256 idx;
+        for (uint256 i = 0; i < blocks.length; i++) {
+            bytes32[] memory topics = new bytes32[](0);
+            Vm.EthGetLogs[] memory logs = vm.eth_getLogs(blocks[i], blocks[i], managerL2, topics);
+            ExecutionEntry[] memory entries = _collectTableEntries(logs);
+            for (uint256 j = 0; j < entries.length; j++) {
+                result[idx++] = _entryHash(entries[j]);
+            }
+        }
+        return result;
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  VerifyL1BatchRange — scan a block range for matching entries.
+// ══════════════════════════════════════════════════════════════════════
+
+contract VerifyL1BatchRange is VerifyHelpers {
+    function run(uint256 blockFrom, uint256 blockTo, address rollups, bytes32[] calldata expectedEntryHashes)
+        external
+        view
+    {
+        for (uint256 b = blockFrom; b <= blockTo; b++) {
+            bytes32[] memory topics = new bytes32[](0);
+            Vm.EthGetLogs[] memory logs = vm.eth_getLogs(b, b, rollups, topics);
+            ExecutionEntry[] memory entries = _collectBatchEntries(logs);
+            if (entries.length == 0) continue;
+
+            bytes32[] memory actualHashes = new bytes32[](entries.length);
+            for (uint256 i = 0; i < entries.length; i++) {
+                actualHashes[i] = _entryHash(entries[i]);
+            }
+
+            bytes32[] memory missing = _findMissingHashes(actualHashes, expectedEntryHashes);
+            if (missing.length == 0) {
+                console.log(
+                    "PASS: %s/%s expected entries found in block %s",
+                    expectedEntryHashes.length,
+                    expectedEntryHashes.length,
+                    b
+                );
+                console.log("L1_MATCH_BLOCK=%s", b);
+                for (uint256 i = 0; i < logs.length; i++) {
+                    if (logs[i].topics[0] == SIG_BATCH_POSTED) {
+                        console.log("L1_BATCH_TX=%s", vm.toString(logs[i].transactionHash));
+                        break;
+                    }
+                }
+                return;
+            }
+        }
+
+        console.log("FAIL: expected entries not found in blocks %s..%s", blockFrom, blockTo);
+        for (uint256 b = blockFrom; b <= blockTo; b++) {
+            bytes32[] memory topics = new bytes32[](0);
+            Vm.EthGetLogs[] memory logs = vm.eth_getLogs(b, b, rollups, topics);
+            ExecutionEntry[] memory entries = _collectBatchEntries(logs);
+            if (entries.length == 0) continue;
+            console.log("");
+            console.log("=== L1 BLOCK %s (%s entries) ===", b, entries.length);
+            for (uint256 i = 0; i < entries.length; i++) {
+                _printEntryDetailed(i, entries[i]);
+            }
+        }
+        console.log("");
+        console.log("=== MISSING ENTRY HASHES ===");
+        for (uint256 i = 0; i < expectedEntryHashes.length; i++) {
+            console.log("  %s", vm.toString(expectedEntryHashes[i]));
+        }
+        revert("Verification failed");
+    }
+}
