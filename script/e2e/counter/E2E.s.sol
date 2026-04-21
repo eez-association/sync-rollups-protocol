@@ -1,99 +1,110 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 import {Rollups} from "../../../src/Rollups.sol";
-import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
+import {
+    Action,
+    StateDelta,
+    CrossChainCall,
+    NestedAction,
+    ExecutionEntry,
+    StaticCall
+} from "../../../src/ICrossChainManager.sol";
 import {Counter, CounterAndProxy} from "../../../test/mocks/CounterContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
+import {actionHash, noStaticCalls, noNestedActions, noCalls} from "../shared/E2EHelpers.sol";
 
-/// @dev Centralized action & entry definitions for the counter scenario.
-///   Single source of truth — used by Execute, ExecuteL2, and ComputeExpected.
+// ═══════════════════════════════════════════════════════════════════════
+//  Counter scenario — L1-starting, simplest case
+//
+//  Flow:
+//    1. postBatch loads ONE deferred L1 entry with precomputed return=uint256(1)
+//    2. User calls CounterAndProxy.incrementProxy() on L1
+//    3. CounterAndProxy calls CounterProxy (L1 proxy for Counter@L2)
+//    4. Proxy forwards to Rollups.executeCrossChainCall
+//    5. Entry consumed, returns abi.encode(1)
+//    6. CounterAndProxy: counter=1, targetCounter=1
+//    7. L2 rollup stateRoot updated via StateDelta (no L2 code runs)
+//
+//  The L2 chain does NOT need to execute anything in this simple flow —
+//  this is the flatten model's sharpest improvement over scope-based designs.
+// ═══════════════════════════════════════════════════════════════════════
+
+uint256 constant L2_ROLLUP_ID = 1;
+uint256 constant MAINNET_ROLLUP_ID = 0;
+
+/// @dev Centralized action + entry definitions — single source of truth for all contracts.
 abstract contract CounterActions {
+    function _incrementCallData() internal pure returns (bytes memory) {
+        return abi.encodeWithSelector(Counter.increment.selector);
+    }
+
     function _callAction(address counterL2, address counterAndProxy) internal pure returns (Action memory) {
         return Action({
-            actionType: ActionType.CALL,
-            rollupId: 1,
+            rollupId: L2_ROLLUP_ID,
             destination: counterL2,
             value: 0,
-            data: abi.encodeWithSelector(Counter.increment.selector),
-            failed: false,
+            data: _incrementCallData(),
             sourceAddress: counterAndProxy,
-            sourceRollup: 0,
-            scope: new uint256[](0)
+            sourceRollup: MAINNET_ROLLUP_ID
         });
     }
 
-    function _resultAction() internal pure returns (Action memory) {
-        return Action({
-            actionType: ActionType.RESULT,
-            rollupId: 1,
-            destination: address(0),
-            value: 0,
-            data: abi.encode(uint256(1)),
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-    }
-
+    /// @dev Single L1 entry — matches Scenario 1 of IntegrationTest.t.sol.
     function _l1Entries(address counterL2, address counterAndProxy)
         internal
         pure
         returns (ExecutionEntry[] memory entries)
     {
-        Action memory call_ = _callAction(counterL2, counterAndProxy);
-        Action memory result = _resultAction();
-
         StateDelta[] memory deltas = new StateDelta[](1);
         deltas[0] = StateDelta({
-            rollupId: 1,
-            currentState: keccak256("l2-initial-state"),
-            newState: keccak256("l2-state-after-scenario1"),
+            rollupId: L2_ROLLUP_ID,
+            newState: keccak256("l2-state-after-counter"),
             etherDelta: 0
         });
 
         entries = new ExecutionEntry[](1);
-        entries[0].stateDeltas = deltas;
-        entries[0].actionHash = keccak256(abi.encode(call_));
-        entries[0].nextAction = result;
-    }
-
-    function _l2Entries() internal pure returns (ExecutionEntry[] memory entries) {
-        Action memory result = _resultAction();
-
-        entries = new ExecutionEntry[](1);
-        entries[0].stateDeltas = new StateDelta[](0);
-        entries[0].actionHash = keccak256(abi.encode(result));
-        entries[0].nextAction = result;
+        entries[0] = ExecutionEntry({
+            stateDeltas: deltas,
+            actionHash: actionHash(_callAction(counterL2, counterAndProxy)),
+            calls: noCalls(),
+            nestedActions: noNestedActions(),
+            callCount: 0,
+            returnData: abi.encode(uint256(1)),
+            failed: false,
+            rollingHash: bytes32(0)
+        });
     }
 }
 
-/// @notice Batcher: postBatch + incrementProxy in one tx (local mode only)
+/// @notice Batcher: postBatch + incrementProxy in one tx (local mode only).
 contract Batcher {
-    function execute(Rollups rollups, ExecutionEntry[] calldata entries, CounterAndProxy cap) external {
-        rollups.postBatch(entries, 0, "", "proof");
+    function execute(Rollups rollups, ExecutionEntry[] calldata entries, StaticCall[] calldata statics, CounterAndProxy cap)
+        external
+    {
+        rollups.postBatch(entries, statics, 0, "", "proof");
         cap.incrementProxy();
     }
 }
 
-/// @title DeployL2 — Deploy counter on L2
+// ═══════════════════════════════════════════════════════════════════════
+//  Deploys
+// ═══════════════════════════════════════════════════════════════════════
+
+/// @title DeployL2 — deploy Counter on L2
 /// Outputs: COUNTER_L2
 contract DeployL2 is Script {
     function run() external {
         vm.startBroadcast();
-
         Counter counterL2 = new Counter();
         console.log("COUNTER_L2=%s", address(counterL2));
-
         vm.stopBroadcast();
     }
 }
 
-/// @title Deploy — Deploy counter app contracts on L1
-/// @dev Env: ROLLUPS, COUNTER_L2
+/// @title Deploy — on L1, create proxy for counterL2 + deploy CounterAndProxy
+/// Env: ROLLUPS, COUNTER_L2
 /// Outputs: COUNTER_PROXY, COUNTER_AND_PROXY
 contract Deploy is Script {
     function run() external {
@@ -101,81 +112,53 @@ contract Deploy is Script {
         address counterL2Addr = vm.envAddress("COUNTER_L2");
 
         vm.startBroadcast();
-
         Rollups rollups = Rollups(rollupsAddr);
 
-        // Try to create proxy; if it already exists (CreateCollision), compute the address
         address counterProxy;
-        try rollups.createCrossChainProxy(counterL2Addr, 1) returns (address proxy) {
-            counterProxy = proxy;
+        try rollups.createCrossChainProxy(counterL2Addr, L2_ROLLUP_ID) returns (address p) {
+            counterProxy = p;
         } catch {
-            counterProxy = rollups.computeCrossChainProxyAddress(counterL2Addr, 1);
+            counterProxy = rollups.computeCrossChainProxyAddress(counterL2Addr, L2_ROLLUP_ID);
         }
 
-        CounterAndProxy counterAndProxy = new CounterAndProxy(Counter(counterProxy));
+        CounterAndProxy cap = new CounterAndProxy(Counter(counterProxy));
 
         console.log("COUNTER_PROXY=%s", counterProxy);
-        console.log("COUNTER_AND_PROXY=%s", address(counterAndProxy));
-
+        console.log("COUNTER_AND_PROXY=%s", address(cap));
         vm.stopBroadcast();
     }
 }
 
-/// @title ExecuteL2 — Load execution table + executeIncomingCrossChainCall on L2
-/// @dev Follows integration test Scenario 1 Phase 1 pattern.
-///   1. Load L2 execution table: RESULT hash -> same RESULT (terminal, self-referencing)
-///   2. System calls executeIncomingCrossChainCall to execute Counter.increment() on L2
-/// Env: MANAGER_L2, COUNTER_L2, COUNTER_AND_PROXY
-contract ExecuteL2 is Script, CounterActions {
-    function run() external {
-        address managerL2Addr = vm.envAddress("MANAGER_L2");
-        address counterL2Addr = vm.envAddress("COUNTER_L2");
-        address counterAndProxyAddr = vm.envAddress("COUNTER_AND_PROXY");
+// ═══════════════════════════════════════════════════════════════════════
+//  Executes
+// ═══════════════════════════════════════════════════════════════════════
 
-        CrossChainManagerL2 manager = CrossChainManagerL2(managerL2Addr);
-
-        vm.startBroadcast();
-
-        manager.loadExecutionTable(_l2Entries());
-
-        // Execute the actual counter increment on L2
-        manager.executeIncomingCrossChainCall(
-            counterL2Addr, 0, abi.encodeWithSelector(Counter.increment.selector), counterAndProxyAddr, 0, new uint256[](0)
-        );
-
-        console.log("done");
-
-        vm.stopBroadcast();
-    }
-}
-
-/// @title Execute — Local mode: postBatch + incrementProxy via Batcher
-/// @dev Env: ROLLUPS, COUNTER_L2, COUNTER_AND_PROXY
+/// @title Execute — local mode: postBatch + incrementProxy via Batcher
+/// Env: ROLLUPS, COUNTER_L2, COUNTER_AND_PROXY
 contract Execute is Script, CounterActions {
     function run() external {
         address rollupsAddr = vm.envAddress("ROLLUPS");
         address counterL2Addr = vm.envAddress("COUNTER_L2");
-        address counterAndProxyAddr = vm.envAddress("COUNTER_AND_PROXY");
+        address capAddr = vm.envAddress("COUNTER_AND_PROXY");
 
         vm.startBroadcast();
-
         Batcher batcher = new Batcher();
-        batcher.execute(Rollups(rollupsAddr), _l1Entries(counterL2Addr, counterAndProxyAddr), CounterAndProxy(counterAndProxyAddr));
+        batcher.execute(
+            Rollups(rollupsAddr),
+            _l1Entries(counterL2Addr, capAddr),
+            noStaticCalls(),
+            CounterAndProxy(capAddr)
+        );
 
         console.log("done");
-        console.log("counter=%s", CounterAndProxy(counterAndProxyAddr).counter());
-        console.log("targetCounter=%s", CounterAndProxy(counterAndProxyAddr).targetCounter());
-
+        console.log("counter=%s", CounterAndProxy(capAddr).counter());
+        console.log("targetCounter=%s", CounterAndProxy(capAddr).targetCounter());
         vm.stopBroadcast();
     }
 }
 
-/// @title ExecuteNetwork — Network mode: user transaction only (no Batcher)
-/// @dev Env: COUNTER_AND_PROXY
-/// Returns (target, value, calldata) so the runner can send via `cast send`.
-/// We can't use `forge script --broadcast` because the tx reverts in local simulation
-/// (no execution table loaded yet). The system intercepts the tx from the mempool
-/// and inserts postBatch before it in the same block.
+/// @title ExecuteNetwork — network mode: outputs user tx fields (no Batcher)
+/// Env: COUNTER_AND_PROXY
 contract ExecuteNetwork is Script {
     function run() external view {
         address target = vm.envAddress("COUNTER_AND_PROXY");
@@ -186,8 +169,10 @@ contract ExecuteNetwork is Script {
     }
 }
 
-/// @title ComputeExpected — Compute expected actionHashes + print expected table
-/// @dev Env: COUNTER_L2, COUNTER_AND_PROXY
+// ═══════════════════════════════════════════════════════════════════════
+//  ComputeExpected — print expected table for verification
+// ═══════════════════════════════════════════════════════════════════════
+
 contract ComputeExpected is ComputeExpectedBase, CounterActions {
     function _name(address a) internal view override returns (string memory) {
         if (a == vm.envAddress("COUNTER_L2")) return "Counter";
@@ -202,49 +187,18 @@ contract ComputeExpected is ComputeExpectedBase, CounterActions {
 
     function run() external view {
         address counterL2Addr = vm.envAddress("COUNTER_L2");
-        address counterAndProxyAddr = vm.envAddress("COUNTER_AND_PROXY");
+        address capAddr = vm.envAddress("COUNTER_AND_PROXY");
 
-        // Actions (single source of truth)
-        Action memory callAction = _callAction(counterL2Addr, counterAndProxyAddr);
-        Action memory resultAction = _resultAction();
+        ExecutionEntry[] memory l1 = _l1Entries(counterL2Addr, capAddr);
 
-        // Entries (single source of truth)
-        ExecutionEntry[] memory l1 = _l1Entries(counterL2Addr, counterAndProxyAddr);
-        ExecutionEntry[] memory l2 = _l2Entries();
+        bytes32 l1Hash = _entryHash(l1[0]);
+        bytes32 callHash = l1[0].actionHash;
 
-        // Compute hashes from entries
-        bytes32 l1Hash = _entryHash(l1[0].actionHash, l1[0].nextAction);
-        bytes32 l2Hash = _entryHash(l2[0].actionHash, l2[0].nextAction);
-        bytes32 callActionHash = l1[0].actionHash;
-
-        // Parseable lines
         console.log("EXPECTED_L1_HASHES=[%s]", vm.toString(l1Hash));
-        console.log("EXPECTED_L2_HASHES=[%s]", vm.toString(l2Hash));
-        console.log("EXPECTED_L2_CALL_HASHES=[%s]", vm.toString(callActionHash));
+        console.log("EXPECTED_L1_CALL_HASHES=[%s]", vm.toString(callHash));
 
-        // Summary
-        console.log("");
-        console.log("=== EXPECTED SUMMARY ===");
-        _logEntrySummary(0, callAction, resultAction, false);
-
-        // Human-readable: L1 execution table
         console.log("");
         console.log("=== EXPECTED L1 EXECUTION TABLE (1 entry) ===");
-        _logEntry(0, l1Hash, l1[0].stateDeltas, _fmtCall(callAction), _fmtResult(resultAction, "uint256(1)"));
-
-        // Human-readable: L2 execution table
-        console.log("");
-        console.log("=== EXPECTED L2 EXECUTION TABLE (1 entry) ===");
-        _logL2Entry(
-            0,
-            l2Hash,
-            _fmtResult(resultAction, "uint256(1)"),
-            string.concat(_fmtResult(resultAction, "uint256(1)"), "  (terminal)")
-        );
-
-        // Human-readable: L2 calls
-        console.log("");
-        console.log("=== EXPECTED L2 CALLS (1 call) ===");
-        _logL2Call(0, callActionHash, callAction);
+        _logEntry(0, l1[0]);
     }
 }

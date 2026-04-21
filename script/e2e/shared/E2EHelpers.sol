@@ -1,10 +1,29 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.28;
 
 import {Rollups} from "../../../src/Rollups.sol";
-import {Action, ActionType, ExecutionEntry, ICrossChainManager} from "../../../src/ICrossChainManager.sol";
+import {
+    ICrossChainManager,
+    Action,
+    ExecutionEntry,
+    StaticCall,
+    CrossChainCall,
+    NestedAction
+} from "../../../src/ICrossChainManager.sol";
 
-/// @notice Idempotent proxy creation — returns existing proxy if already deployed.
+// ══════════════════════════════════════════════════════════════════════
+//  Rolling hash tag constants (must match Rollups.sol / CrossChainManagerL2.sol)
+// ══════════════════════════════════════════════════════════════════════
+uint8 constant CALL_BEGIN = 1;
+uint8 constant CALL_END = 2;
+uint8 constant NESTED_BEGIN = 3;
+uint8 constant NESTED_END = 4;
+
+// ══════════════════════════════════════════════════════════════════════
+//  Idempotent proxy creation helper
+// ══════════════════════════════════════════════════════════════════════
+
+/// @notice Returns existing proxy if already deployed, otherwise creates it.
 function getOrCreateProxy(ICrossChainManager manager, address originalAddress, uint256 originalRollupId)
     returns (address proxy)
 {
@@ -15,50 +34,74 @@ function getOrCreateProxy(ICrossChainManager manager, address originalAddress, u
     }
 }
 
-/// @notice Batcher for L2TX scenarios: postBatch + executeL2TX in one tx (local mode only).
-///         Ensures both calls happen in the same block (same-block requirement).
-contract L2TXBatcher {
-    function execute(Rollups rollups, ExecutionEntry[] calldata entries, uint256 rollupId, bytes calldata rlpTx)
-        external
+/// @notice Action hash builder matching Rollups._computeActionInputHash.
+function actionHash(Action memory a) pure returns (bytes32) {
+    return keccak256(abi.encode(a.rollupId, a.destination, a.value, a.data, a.sourceAddress, a.sourceRollup));
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  RollingHashBuilder — replay the same tagged-hash sequence that
+//  Rollups._processNCalls / _consumeNestedAction produce on-chain.
+// ══════════════════════════════════════════════════════════════════════
+
+library RollingHashBuilder {
+    /// @notice keccak256(prev ++ CALL_BEGIN ++ callNumber)
+    function appendCallBegin(bytes32 prev, uint256 callNumber) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked(prev, CALL_BEGIN, callNumber));
+    }
+
+    /// @notice keccak256(prev ++ CALL_END ++ callNumber ++ success ++ retData)
+    function appendCallEnd(bytes32 prev, uint256 callNumber, bool success, bytes memory retData)
+        internal
+        pure
+        returns (bytes32)
     {
-        rollups.postBatch(entries, 0, "", "proof");
-        rollups.executeL2TX(rollupId, rlpTx);
+        return keccak256(abi.encodePacked(prev, CALL_END, callNumber, success, retData));
+    }
+
+    /// @notice keccak256(prev ++ NESTED_BEGIN ++ nestedNumber)
+    function appendNestedBegin(bytes32 prev, uint256 nestedNumber) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked(prev, NESTED_BEGIN, nestedNumber));
+    }
+
+    /// @notice keccak256(prev ++ NESTED_END ++ nestedNumber)
+    function appendNestedEnd(bytes32 prev, uint256 nestedNumber) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked(prev, NESTED_END, nestedNumber));
     }
 }
 
-/// @dev Shared base for e2e scenarios that start with an L2TX action.
-abstract contract L2TXActionsBase {
-    uint256 internal constant L2_ROLLUP_ID = 1;
-    uint256 internal constant MAINNET_ROLLUP_ID = 0;
+// ══════════════════════════════════════════════════════════════════════
+//  L2TXBatcher — postBatch + executeL2TX in one tx (local mode).
+//  Satisfies the same-block requirement.
+// ══════════════════════════════════════════════════════════════════════
 
-    function _l2txAction(bytes memory rlpEncodedTx) internal pure returns (Action memory) {
-        return Action({
-            actionType: ActionType.L2TX,
-            rollupId: L2_ROLLUP_ID,
-            destination: address(0),
-            value: 0,
-            data: rlpEncodedTx,
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: MAINNET_ROLLUP_ID,
-            scope: new uint256[](0)
-        });
+contract L2TXBatcher {
+    function execute(Rollups rollups, ExecutionEntry[] calldata entries, StaticCall[] calldata staticCalls) external {
+        rollups.postBatch(entries, staticCalls, 0, "", "proof");
+        rollups.executeL2TX();
     }
+}
 
-    /// @dev Spec C.6: Terminal RESULT for L2TX flows.
-    ///   rollupId = L2_ROLLUP_ID, data = "", failed = false.
-    function _terminalResultL2Tx() internal pure returns (Action memory) {
-        return Action({
-            actionType: ActionType.RESULT,
-            rollupId: L2_ROLLUP_ID,
-            destination: address(0),
-            value: 0,
-            data: "",
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-    }
+// ══════════════════════════════════════════════════════════════════════
+//  Common empty helpers (saves boilerplate in E2E scripts)
+// ══════════════════════════════════════════════════════════════════════
 
+/// @notice Returns an empty StaticCall[] (for tests that don't use static calls).
+function noStaticCalls() pure returns (StaticCall[] memory) {
+    return new StaticCall[](0);
+}
+
+/// @notice Returns an empty StateDelta[] (for L2 entries).
+function noStateDeltas() pure returns (ExecutionEntry memory e) {
+    // kept for symmetry — callers normally build StateDelta[] directly
+}
+
+/// @notice Returns an empty NestedAction[].
+function noNestedActions() pure returns (NestedAction[] memory) {
+    return new NestedAction[](0);
+}
+
+/// @notice Returns an empty CrossChainCall[].
+function noCalls() pure returns (CrossChainCall[] memory) {
+    return new CrossChainCall[](0);
 }

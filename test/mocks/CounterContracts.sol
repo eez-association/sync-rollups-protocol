@@ -53,7 +53,7 @@ contract CounterAndProxy {
     }
 }
 
-/// @notice Wraps CounterAndProxy to create scope depth [0,0] in cross-chain tests.
+/// @notice Wraps CounterAndProxy to create a deeper call stack in cross-chain tests.
 contract NestedCaller {
     CounterAndProxy public target;
     uint256 public counter;
@@ -69,7 +69,6 @@ contract NestedCaller {
 }
 
 /// @notice Calls target via self-call that reverts, then calls target directly.
-/// Used to test that cross-chain entry consumption is rolled back by the self-call revert.
 contract SelfCallerWithRevert {
     Counter public target;
     uint256 public lastResult;
@@ -91,7 +90,6 @@ contract SelfCallerWithRevert {
 
 /// @notice Paired counter — returns (ownCounter, otherCounter, id).
 /// Deploy two with different IDs and link via setOther() to get distinct return data.
-/// Used to work around the L2 duplicate-actionHash limitation (see CAVEATS.md).
 contract JoinedCounter {
     JoinedCounter public other;
     uint256 public counter;
@@ -112,7 +110,6 @@ contract JoinedCounter {
 }
 
 /// @notice Calls targetA in a reverting self-call, then calls targetB.
-/// Used with JoinedCounter pairs so the two cross-chain calls produce different RESULT hashes.
 contract DualCallerWithRevert {
     JoinedCounter public targetA;
     JoinedCounter public targetB;
@@ -133,7 +130,7 @@ contract DualCallerWithRevert {
     }
 }
 
-/// @notice Calls increment() on two Counter proxies sequentially — produces sibling scopes [0],[1].
+/// @notice Calls increment() on two Counter proxies sequentially.
 contract CallTwoProxies {
     Counter public target1;
     Counter public target2;

@@ -1,24 +1,17 @@
 #!/usr/bin/env bash
-# ═══════════════════════════════════════════════════════════════════════
-# Cross-chain block decoder
-# ═══════════════════════════════════════════════════════════════════════
-#
-# Given an L1 block, decodes:
-#   1. L1 events: BatchPosted entries, consumed executions, triggers
-#   2. Extracts L2 block numbers from the postBatch tx calldata
-#   3. L2 events: ExecutionTableLoaded, consumed executions, calls
+# Cross-chain block decoder.
+# Given an L1 block, decodes L1 events + extracts L2 block numbers from
+# postBatch callData + decodes L2 events.
 #
 # Usage:
 #   bash script/e2e/shared/decode-block.sh \
 #     --l1-block <N> --l1-rpc <RPC> --l2-rpc <RPC> \
 #     --rollups <ADDR> --manager-l2 <ADDR>
-#
 set -euo pipefail
 export FOUNDRY_DISABLE_NIGHTLY_WARNING=1
 
 source "$(dirname "$0")/E2EBase.sh"
 
-# ── Parse args ──
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --l1-block)     L1_BLOCK="$2"; shift 2;;
@@ -39,9 +32,7 @@ done
 
 DECODE_SCRIPT="script/DecodeExecutions.s.sol:DecodeExecutions"
 
-# ══════════════════════════════════════════════
-#  1. Decode L1 block
-# ══════════════════════════════════════════════
+# 1. Decode L1 block
 echo ""
 echo "====== L1 Block $L1_BLOCK (Rollups @ $ROLLUPS) ======"
 echo ""
@@ -50,12 +41,9 @@ forge script "$DECODE_SCRIPT" \
     --sig "runBlock(uint256,address)" "$L1_BLOCK" "$ROLLUPS" 2>&1 \
     | sed -n '/^  /p'
 
-# ══════════════════════════════════════════════
-#  2. Extract L2 blocks from postBatch tx
-# ══════════════════════════════════════════════
-SIG_BATCH_POSTED="0x2f482312f12dceb86aac9ef0e0e1d9421ac62910326b3d50695d63117321b520"
+# 2. Extract L2 blocks from postBatch tx
+SIG_BATCH_POSTED=$(cast keccak 'BatchPosted(((uint256,bytes32,int256)[],bytes32,(address,uint256,bytes,address,uint256,uint256)[],(bytes32,uint256,bytes)[],uint256,bytes,bool,bytes32)[],bytes32)')
 
-# Find the postBatch tx hash from BatchPosted event
 BATCH_TX=$(cast logs \
     --from-block "$L1_BLOCK" --to-block "$L1_BLOCK" \
     --address "$ROLLUPS" \
@@ -70,11 +58,8 @@ fi
 echo ""
 echo "====== L2 Blocks extracted: $L2_BLOCKS (from tx $BATCH_TX) ======"
 
-# ══════════════════════════════════════════════
-#  3. Decode each L2 block
-# ══════════════════════════════════════════════
+# 3. Decode each L2 block
 if [[ "$L2_BLOCKS" != "[]" ]]; then
-    # Strip brackets and iterate
     BLOCKS_CSV=$(echo "$L2_BLOCKS" | tr -d '[] ')
     IFS=',' read -ra BLOCK_ARR <<< "$BLOCKS_CSV"
     for b in "${BLOCK_ARR[@]}"; do

@@ -3,7 +3,6 @@ pragma solidity ^0.8.24;
 
 /// @title CallTwice
 /// @notice Calls counter.increment() twice on the SAME target address via low-level call.
-///         Used to test multiple cross-chain calls to the same proxy in a single execution.
 contract CallTwice {
     function callCounterTwice(address counter) external returns (uint256 first, uint256 second) {
         (bool ok1, bytes memory ret1) = counter.call(abi.encodeWithSignature("increment()"));
@@ -18,7 +17,6 @@ contract CallTwice {
 
 /// @title CallTwoDifferent
 /// @notice Calls increment() on two DIFFERENT counter addresses via low-level call.
-///         Used to test multiple cross-chain calls to different proxies in a single execution.
 contract CallTwoDifferent {
     function callBothCounters(address counterA, address counterB) external returns (uint256 a, uint256 b) {
         (bool ok1, bytes memory ret1) = counterA.call(abi.encodeWithSignature("increment()"));
@@ -32,9 +30,7 @@ contract CallTwoDifferent {
 }
 
 /// @title CallTwiceNestedAndOnce
-/// @notice Calls nestedProxy.incrementProxy() twice, then simpleProxy.increment() once via low-level call.
-///         Used to test multiple cross-chain calls where two trigger nested scope navigation
-///         and one is a simple cross-chain call.
+/// @notice Calls nestedProxy.incrementProxy() twice, then simpleProxy.increment() once.
 contract CallTwiceNestedAndOnce {
     function execute(address nestedProxy, address simpleProxy) external returns (uint256) {
         (bool ok1,) = nestedProxy.call(abi.encodeWithSignature("incrementProxy()"));
@@ -52,8 +48,6 @@ contract CallTwiceNestedAndOnce {
 /// @title ConditionalCallTwice
 /// @notice Calls two different L2 counter proxies, then conditionally reverts
 ///         based on the second counter's return value.
-///         Tests cross-chain atomicity: if the L1 execution reverts after
-///         both cross-chain calls, do the state deltas also get rolled back?
 contract ConditionalCallTwice {
     function callBothConditional(
         address counterA,
