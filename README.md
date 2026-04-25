@@ -24,10 +24,11 @@ This restores the synchronous execution semantics that DeFi protocols depend on�
 
 | Contract | Description |
 |----------|-------------|
-| `Rollups.sol` | L1 contract managing rollup state roots, ZK-proven execution tables, and cross-chain call execution |
+| `Rollups.sol` | L1 contract managing rollup state roots, proven execution tables, and cross-chain call execution. Inherits `ProofSystemRegistry` |
+| `ProofSystemRegistry.sol` | Permissionless registry of proof systems — anyone can register an `IProofSystem` implementation, rollups then bind to one |
 | `CrossChainProxy.sol` | Proxy contract deployed via CREATE2 for each (address, rollupId) pair. Forwards calls to the manager and executes on behalf of cross-chain callers |
-| `CrossChainManagerL2.sol` | L2-side contract for cross-chain execution via pre-computed execution tables loaded by a system address (no ZK proofs on L2) |
-| `IZKVerifier.sol` | Interface for ZK proof verification |
+| `CrossChainManagerL2.sol` | L2-side contract for cross-chain execution via pre-computed execution tables loaded by a system address (no proof verification on L2) |
+| `IProofSystem.sol` | Interface for proof-verifying systems (ZK, ECDSA, etc.) |
 
 ### Data Types
 
@@ -66,10 +67,13 @@ struct ProxyInfo {
 
 struct RollupConfig {
     address owner;
-    bytes32 verificationKey;
+    address proofSystem;     // the proof system this rollup is bound to
     bytes32 stateRoot;
     uint256 etherBalance;
 }
+
+// Per-rollup verification keys live in a side mapping:
+//   mapping(uint256 rollupId => mapping(address proofSystem => bytes32 vkey))
 ```
 
 ### Execution Flow
@@ -156,16 +160,24 @@ bash script/e2e/counter/run-network.sh --rpc $RPC --pk $PK --rollups $ROLLUPS
 
 ## Usage
 
-### Creating a Rollup
+### Registering a Proof System and Creating a Rollup
 
 ```solidity
-Rollups rollups = new Rollups(zkVerifierAddress, startingRollupId);
+Rollups rollups = new Rollups(startingRollupId);
 
+// Anyone can register a proof system (a contract implementing IProofSystem).
+rollups.registerProofSystem(IProofSystem(myVerifier));
+
+// Each rollup is bound to one proof system at a time.
 uint256 rollupId = rollups.createRollup(
     initialState,      // bytes32
+    address(myVerifier),
     verificationKey,   // bytes32
     owner              // address
 );
+
+// Later the owner can swap proof systems atomically:
+// rollups.setProofSystem(rollupId, newProofSystem, newVkey);
 ```
 
 ### Creating a CrossChainProxy
@@ -196,7 +208,8 @@ entries[1] = ExecutionEntry({
     nextAction: nextAction
 });
 
-rollups.postBatch(entries, blobCount, callData, zkProof);
+// Pass the proof-system address — every touched non-mainnet rollup must be bound to it.
+rollups.postBatch(address(myVerifier), entries, blobCount, callData, proof);
 ```
 
 ### Computing Proxy Addresses

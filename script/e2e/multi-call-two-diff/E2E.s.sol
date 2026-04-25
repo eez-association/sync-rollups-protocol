@@ -92,12 +92,13 @@ abstract contract MultiCallTwoDiffActions {
 contract Batcher {
     function execute(
         Rollups rollups,
+        address proofSystem,
         ExecutionEntry[] calldata entries,
         CallTwoDifferent app,
         address counterAProxy,
         address counterBProxy
     ) external returns (uint256 a, uint256 b) {
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(proofSystem, entries, 0, "", "proof");
         (a, b) = app.callBothCounters(counterAProxy, counterBProxy);
     }
 }
@@ -205,7 +206,7 @@ contract Execute is Script, MultiCallTwoDiffActions {
         Batcher batcher = new Batcher();
 
         (uint256 a, uint256 b) = batcher.execute(
-            Rollups(rollupsAddr),
+            Rollups(rollupsAddr), vm.envAddress("PROOF_SYSTEM"),
             _l1Entries(counterAAddr, counterBAddr, callTwoDiffAddr),
             CallTwoDifferent(callTwoDiffAddr),
             proxyAAddr,

@@ -56,8 +56,9 @@ contract MultiCallIntegrationTest is IntegrationTestBase {
     function setUp() public {
         // ── L1 infrastructure ──
         verifier = new MockZKVerifier();
-        rollups = new Rollups(address(verifier), 1);
-        rollups.createRollup(keccak256("l2-initial-state"), DEFAULT_VK, address(this));
+        rollups = new Rollups(1);
+        _registerDefaultProofSystem();
+        rollups.createRollup(keccak256("l2-initial-state"), address(verifier), DEFAULT_VK, address(this));
 
         // ── L2 infrastructure ──
         managerL2 = new CrossChainManagerL2(L2_ROLLUP_ID, SYSTEM_ADDRESS);
@@ -213,7 +214,7 @@ contract MultiCallIntegrationTest is IntegrationTestBase {
             entries[1].actionHash = keccak256(abi.encode(callAction));
             entries[1].nextAction = result2;
 
-            rollups.postBatch(entries, 0, "", "proof");
+            rollups.postBatch(address(verifier), entries, 0, "", "proof");
         }
 
         // Alice triggers: E calls B' twice -> two executeCrossChainCall resolutions
@@ -345,7 +346,7 @@ contract MultiCallIntegrationTest is IntegrationTestBase {
             entries[1].actionHash = keccak256(abi.encode(callToB2));
             entries[1].nextAction = result1;
 
-            rollups.postBatch(entries, 0, "", "proof");
+            rollups.postBatch(address(verifier), entries, 0, "", "proof");
         }
 
         // Alice triggers: F calls B1' then B2'
@@ -464,7 +465,7 @@ contract MultiCallIntegrationTest is IntegrationTestBase {
             entries[1].actionHash = keccak256(abi.encode(callToB2));
             entries[1].nextAction = result1;
 
-            rollups.postBatch(entries, 0, "", "proof");
+            rollups.postBatch(address(verifier), entries, 0, "", "proof");
         }
 
         // threshold=100: counter B returns 1, which is < 100 -> no revert
@@ -556,7 +557,7 @@ contract MultiCallIntegrationTest is IntegrationTestBase {
             entries[1].actionHash = keccak256(abi.encode(callToB2));
             entries[1].nextAction = result1;
 
-            rollups.postBatch(entries, 0, "", "proof");
+            rollups.postBatch(address(verifier), entries, 0, "", "proof");
         }
 
         bytes32 stateBefore = _getRollupState(L2_ROLLUP_ID);

@@ -73,8 +73,8 @@ abstract contract CounterActions {
 
 /// @notice Batcher: postBatch + incrementProxy in one tx (local mode only)
 contract Batcher {
-    function execute(Rollups rollups, ExecutionEntry[] calldata entries, CounterAndProxy cap) external {
-        rollups.postBatch(entries, 0, "", "proof");
+    function execute(Rollups rollups, address proofSystem, ExecutionEntry[] calldata entries, CounterAndProxy cap) external {
+        rollups.postBatch(proofSystem, entries, 0, "", "proof");
         cap.incrementProxy();
     }
 }
@@ -160,7 +160,7 @@ contract Execute is Script, CounterActions {
         vm.startBroadcast();
 
         Batcher batcher = new Batcher();
-        batcher.execute(Rollups(rollupsAddr), _l1Entries(counterL2Addr, counterAndProxyAddr), CounterAndProxy(counterAndProxyAddr));
+        batcher.execute(Rollups(rollupsAddr), vm.envAddress("PROOF_SYSTEM"), _l1Entries(counterL2Addr, counterAndProxyAddr), CounterAndProxy(counterAndProxyAddr));
 
         console.log("done");
         console.log("counter=%s", CounterAndProxy(counterAndProxyAddr).counter());

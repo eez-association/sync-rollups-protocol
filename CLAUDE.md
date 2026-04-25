@@ -17,10 +17,11 @@ forge fmt            # Format code
 
 ### Core Contracts
 
-- **Rollups.sol**: L1 contract managing rollup state roots, ZK-proven batch posting (immediate + deferred execution entries), and cross-chain call execution with scope-based nested call navigation
+- **Rollups.sol**: L1 contract managing rollup state roots, proven batch posting (immediate + deferred execution entries), and cross-chain call execution with scope-based nested call navigation. Inherits `ProofSystemRegistry`
+- **ProofSystemRegistry.sol**: Permissionless registry of proof systems. `registerProofSystem(IProofSystem)` marks an address as a registered proof system
 - **CrossChainProxy.sol**: Proxy contract deployed via CREATE2 for each (address, rollupId) pair. Forwards incoming calls to the manager via `executeCrossChainCall()` and executes outgoing calls via `executeOnBehalf()`
-- **CrossChainManagerL2.sol**: L2-side contract for cross-chain execution. No ZK proofs or rollup state management — a system address loads execution tables, which are consumed by proxy calls or incoming cross-chain calls
-- **IZKVerifier.sol**: Interface for external ZK proof verification
+- **CrossChainManagerL2.sol**: L2-side contract for cross-chain execution. No proof verification or rollup state management — a system address loads execution tables, which are consumed by proxy calls or incoming cross-chain calls
+- **IProofSystem.sol**: Interface for proof-verifying systems (ZK, ECDSA, etc.)
 
 ### Data Types
 
@@ -58,25 +59,40 @@ struct ProxyInfo {
 }
 
 struct RollupConfig {
-    address owner;           // Can update state and verification key
-    bytes32 verificationKey; // Used for ZK proof verification
+    address owner;           // Can swap proof system, rotate keys, update state
+    address proofSystem;     // Currently-bound proof system (one per rollup, for now)
     bytes32 stateRoot;       // Current state root
     uint256 etherBalance;    // ETH held by this rollup
+}
+
+// Per-rollup verification keys live in a side mapping (keyed by proof-system address):
+//   mapping(uint256 rollupId => mapping(address proofSystem => bytes32 vkey))
+// bytes32(0) means "this proof system is not allowed for this rollup".
+
+// Block-scoped batch updates (resets lazily on block advance):
+struct BatchUpdate {
+    uint256 blockNumber;
+    bytes32 previousState;
+    bytes32 newState;
+    int256 etherDelta;
 }
 ```
 
 ### Key Functions (L1 - Rollups)
 
-1. **createRollup(initialState, verificationKey, owner)**: Creates a new rollup
-2. **createCrossChainProxy(originalAddress, originalRollupId)**: Deploys CrossChainProxy via CREATE2
-3. **postBatch(entries, blobCount, callData, proof)**: Posts execution entries with ZK proof. Entries with `actionHash == 0` are applied immediately (state commitments); others are stored for deferred consumption. Sum of ether deltas for immediate entries must be zero.
-4. **executeCrossChainCall(sourceAddress, callData)**: Executes a cross-chain call initiated by an authorized proxy
-5. **executeL2TX(rollupId, rlpEncodedTx)**: Executes a pre-computed L2 transaction (permissionless)
-6. **newScope(scope, action)**: Navigates scope tree for nested cross-chain calls with revert handling
-7. **setStateByOwner(rollupId, newStateRoot)**: Updates state root without proof (owner only)
-8. **setVerificationKey(rollupId, newVerificationKey)**: Updates verification key (owner only)
-9. **transferRollupOwnership(rollupId, newOwner)**: Transfers rollup ownership (owner only)
-10. **computeCrossChainProxyAddress(originalAddress, originalRollupId)**: Computes deterministic proxy address
+1. **registerProofSystem(proofSystem)**: Permissionlessly registers an `IProofSystem` (inherited from `ProofSystemRegistry`)
+2. **createRollup(initialState, proofSystem, verificationKey, owner)**: Creates a new rollup bound to a registered proof system
+3. **createCrossChainProxy(originalAddress, originalRollupId)**: Deploys CrossChainProxy via CREATE2
+4. **postBatch(proofSystem, entries, blobCount, callData, proof)**: Posts execution entries proven by `proofSystem`. Every non-mainnet rollup touched by a state delta must be bound to this same proof system. Entries with `actionHash == 0` are applied immediately; others stored for deferred consumption. Sum of ether deltas for immediate entries must be zero. State transitions are also recorded in `batchUpdates` (block-scoped, auto-invalidated on block advance).
+5. **executeCrossChainCall(sourceAddress, callData)**: Executes a cross-chain call initiated by an authorized proxy
+6. **executeL2TX(rollupId, rlpEncodedTx)**: Executes a pre-computed L2 transaction (permissionless)
+7. **newScope(scope, action)**: Navigates scope tree for nested cross-chain calls with revert handling
+8. **setStateByOwner(rollupId, newStateRoot)**: Updates state root without proof (owner only)
+9. **setVerificationKey(rollupId, newVerificationKey)**: Rotates the vkey of the rollup's current proof system (owner only)
+10. **setProofSystem(rollupId, newProofSystem, newVerificationKey)**: Atomically swaps the rollup's proof system and installs a fresh vkey (owner only)
+11. **transferRollupOwnership(rollupId, newOwner)**: Transfers rollup ownership (owner only)
+12. **computeCrossChainProxyAddress(originalAddress, originalRollupId)**: Computes deterministic proxy address
+13. **currentBlockUpdate(rollupId)**: Returns the `BatchUpdate` recorded this block (empty struct if none / stale)
 
 ### Key Functions (L2 - CrossChainManagerL2)
 
@@ -104,4 +120,4 @@ Use `computeCrossChainProxyAddress(originalAddress, originalRollupId)` to predic
 
 ## Testing
 
-Tests use a `MockZKVerifier` that accepts all proofs by default. Set `verifier.setVerifyResult(false)` to test proof rejection.
+Tests use a `MockZKVerifier` (implements `IProofSystem`) that accepts all proofs by default. Set `verifier.setVerifyResult(false)` to test proof rejection. `test/helpers/TestBase.sol` provides `_registerDefaultProofSystem()` which registers the mock on `rollups` for integration tests.

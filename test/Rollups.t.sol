@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Test, Vm} from "forge-std/Test.sol";
 import {Rollups, RollupConfig} from "../src/Rollups.sol";
+import {IProofSystem} from "../src/IProofSystem.sol";
 import {Action, ActionType, ExecutionEntry, StateDelta, ProxyInfo} from "../src/ICrossChainManager.sol";
 import {CrossChainProxy} from "../src/CrossChainProxy.sol";
 import {MockZKVerifier} from "./helpers/TestBase.sol";
@@ -43,8 +44,19 @@ contract RollupsTest is Test {
 
     function setUp() public {
         verifier = new MockZKVerifier();
-        rollups = new Rollups(address(verifier), 1);
+        rollups = new Rollups(1);
+        rollups.registerProofSystem(IProofSystem(address(verifier)));
         target = new TestTarget();
+    }
+
+    function _createRollup(bytes32 initialState, bytes32 vk, address owner) internal returns (uint256) {
+        Rollups _r = rollups;
+        return _r.createRollup(initialState, address(verifier), vk, owner);
+    }
+
+    function _postBatch(ExecutionEntry[] memory entries, uint256 blobs, bytes memory data, bytes memory proof) internal {
+        Rollups _r = rollups;
+        _r.postBatch(address(verifier), entries, blobs, data, proof);
     }
 
     function _getRollupState(uint256 rollupId) internal view returns (bytes32) {
@@ -58,8 +70,7 @@ contract RollupsTest is Test {
     }
 
     function _getRollupVK(uint256 rollupId) internal view returns (bytes32) {
-        (, bytes32 vk,,) = rollups.rollups(rollupId);
-        return vk;
+        return rollups.verificationKeys(rollupId, address(verifier));
     }
 
     function _getRollupEtherBalance(uint256 rollupId) internal view returns (uint256) {
@@ -69,9 +80,13 @@ contract RollupsTest is Test {
 
     /// @notice Directly sets a rollup's ether balance and funds the contract
     function _fundRollup(uint256 rollupId, uint256 amount) internal {
-        // Storage slot: rollupCounter=slot0, rollups mapping=slot1 (immutables/constants don't use storage)
-        // etherBalance is the 4th field (index 3) in RollupConfig struct
-        bytes32 slot = bytes32(uint256(keccak256(abi.encode(rollupId, uint256(1)))) + 3);
+        // Storage layout (Rollups inherits ProofSystemRegistry which occupies slots 0-1):
+        //   isProofSystem mapping  = slot 0
+        //   validators array     = slot 1
+        //   rollupCounter        = slot 2
+        //   rollups mapping      = slot 3
+        // RollupConfig is {owner, validator, stateRoot, etherBalance}; etherBalance is field index 3.
+        bytes32 slot = bytes32(uint256(keccak256(abi.encode(rollupId, uint256(3)))) + 3);
         vm.store(address(rollups), slot, bytes32(amount));
         vm.deal(address(rollups), address(rollups).balance + amount);
     }
@@ -150,10 +165,10 @@ contract RollupsTest is Test {
 
     function test_CreateRollup() public {
         bytes32 initialState = keccak256("initial");
-        uint256 rollupId = rollups.createRollup(initialState, DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(initialState, DEFAULT_VK, alice);
         assertEq(rollupId, 1);
 
-        uint256 rollupId2 = rollups.createRollup(bytes32(0), DEFAULT_VK, bob);
+        uint256 rollupId2 = _createRollup(bytes32(0), DEFAULT_VK, bob);
         assertEq(rollupId2, 2);
 
         assertEq(_getRollupState(rollupId), initialState);
@@ -165,7 +180,7 @@ contract RollupsTest is Test {
     }
 
     function test_CreateCrossChainProxy() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
 
         address targetAddr = address(0x1234);
         address proxy = rollups.createCrossChainProxy(targetAddr, rollupId);
@@ -182,7 +197,7 @@ contract RollupsTest is Test {
     }
 
     function test_ComputeCrossChainProxyAddress() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
         address targetAddr = address(0x5678);
 
         address computedAddr = rollups.computeCrossChainProxyAddress(targetAddr, rollupId);
@@ -192,20 +207,20 @@ contract RollupsTest is Test {
     }
 
     function test_PostBatch_ImmediateStateUpdate() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
         bytes32 newState = keccak256("new state");
 
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         entries[0] = _immediateEntry(rollupId, bytes32(0), newState);
 
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         assertEq(_getRollupState(rollupId), newState);
     }
 
     function test_PostBatch_MultipleRollups() public {
-        uint256 rollupId1 = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
-        uint256 rollupId2 = rollups.createRollup(bytes32(0), DEFAULT_VK, bob);
+        uint256 rollupId1 = _createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId2 = _createRollup(bytes32(0), DEFAULT_VK, bob);
         bytes32 newState1 = keccak256("new state 1");
         bytes32 newState2 = keccak256("new state 2");
 
@@ -213,14 +228,14 @@ contract RollupsTest is Test {
         entries[0] = _immediateEntry(rollupId1, bytes32(0), newState1);
         entries[1] = _immediateEntry(rollupId2, bytes32(0), newState2);
 
-        rollups.postBatch(entries, 0, "shared data", "proof");
+        _postBatch(entries, 0, "shared data", "proof");
 
         assertEq(_getRollupState(rollupId1), newState1);
         assertEq(_getRollupState(rollupId2), newState2);
     }
 
     function test_PostBatch_InvalidProof() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
         bytes32 newState = keccak256("new state");
 
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
@@ -229,11 +244,11 @@ contract RollupsTest is Test {
         verifier.setVerifyResult(false);
 
         vm.expectRevert(Rollups.InvalidProof.selector);
-        rollups.postBatch(entries, 0, "", "bad proof");
+        _postBatch(entries, 0, "", "bad proof");
     }
 
     function test_PostBatch_AfterL2ExecutionSameBlockReverts() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
 
         address proxyAddr = rollups.createCrossChainProxy(address(target), rollupId);
 
@@ -265,7 +280,7 @@ contract RollupsTest is Test {
         entries[0].stateDeltas = stateDeltas;
         entries[0].actionHash = keccak256(abi.encode(action));
         entries[0].nextAction = resultAction;
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         // Execute L2 via proxy fallback
         (bool success,) = proxyAddr.call(callData);
@@ -277,13 +292,13 @@ contract RollupsTest is Test {
         entries2[0] = _immediateEntry(rollupId, newState, keccak256("another state"));
 
         vm.expectRevert(Rollups.StateAlreadyUpdatedThisBlock.selector);
-        rollups.postBatch(entries2, 0, "", "proof");
+        _postBatch(entries2, 0, "", "proof");
 
         assertEq(_getRollupState(rollupId), newState);
     }
 
     function test_SetStateByOwner() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
         bytes32 newState = keccak256("owner set state");
 
         vm.prank(alice);
@@ -293,7 +308,7 @@ contract RollupsTest is Test {
     }
 
     function test_SetStateByOwner_NotOwner() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
         bytes32 newState = keccak256("owner set state");
 
         vm.prank(bob);
@@ -302,7 +317,7 @@ contract RollupsTest is Test {
     }
 
     function test_SetVerificationKey() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
         bytes32 newVK = keccak256("new verification key");
 
         vm.prank(alice);
@@ -312,7 +327,7 @@ contract RollupsTest is Test {
     }
 
     function test_SetVerificationKey_NotOwner() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
         bytes32 newVK = keccak256("new verification key");
 
         vm.prank(bob);
@@ -321,7 +336,7 @@ contract RollupsTest is Test {
     }
 
     function test_TransferRollupOwnership() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
 
         vm.prank(alice);
         rollups.transferRollupOwnership(rollupId, bob);
@@ -337,7 +352,7 @@ contract RollupsTest is Test {
     }
 
     function test_ExecuteCrossChainCall_Simple() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
 
         address proxyAddr = rollups.createCrossChainProxy(address(target), rollupId);
 
@@ -369,7 +384,7 @@ contract RollupsTest is Test {
         entries[0].stateDeltas = stateDeltas;
         entries[0].actionHash = keccak256(abi.encode(action));
         entries[0].nextAction = resultAction;
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         // Execute via proxy fallback
         (bool success,) = proxyAddr.call(callData);
@@ -379,7 +394,7 @@ contract RollupsTest is Test {
     }
 
     function test_ExecuteCrossChainCall_UnauthorizedProxy() public {
-        rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        _createRollup(bytes32(0), DEFAULT_VK, alice);
 
         // Call executeCrossChainCall directly (not from a proxy)
         vm.expectRevert(Rollups.UnauthorizedProxy.selector);
@@ -387,7 +402,7 @@ contract RollupsTest is Test {
     }
 
     function test_ExecuteCrossChainCall_ExecutionNotFound() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
         address proxyAddr = rollups.createCrossChainProxy(address(target), rollupId);
 
         // Call via proxy without loading execution
@@ -398,7 +413,7 @@ contract RollupsTest is Test {
     }
 
     function test_ExecuteL2TX() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
 
         bytes32 currentState = bytes32(0);
         bytes32 newState = keccak256("state1");
@@ -427,7 +442,7 @@ contract RollupsTest is Test {
         entries[0].stateDeltas = stateDeltas;
         entries[0].actionHash = keccak256(abi.encode(action));
         entries[0].nextAction = resultAction;
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         rollups.executeL2TX(rollupId, rlpTx);
 
@@ -435,18 +450,19 @@ contract RollupsTest is Test {
     }
 
     function test_StartingRollupId() public {
-        Rollups rollups2 = new Rollups(address(verifier), 1000);
+        Rollups rollups2 = new Rollups(1000);
+        rollups2.registerProofSystem(IProofSystem(address(verifier)));
 
-        uint256 rollupId = rollups2.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = rollups2.createRollup(bytes32(0), address(verifier), DEFAULT_VK, alice);
         assertEq(rollupId, 1000);
 
-        uint256 rollupId2 = rollups2.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId2 = rollups2.createRollup(bytes32(0), address(verifier), DEFAULT_VK, alice);
         assertEq(rollupId2, 1001);
     }
 
     function test_MultipleProxiesSameTarget() public {
-        uint256 rollup1 = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
-        uint256 rollup2 = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollup1 = _createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollup2 = _createRollup(bytes32(0), DEFAULT_VK, alice);
 
         address targetAddr = address(0x9999);
 
@@ -465,7 +481,7 @@ contract RollupsTest is Test {
         bytes32 customState = keccak256("custom initial state");
         bytes32 customVK = keccak256("custom vk");
 
-        uint256 rollupId = rollups.createRollup(customState, customVK, bob);
+        uint256 rollupId = _createRollup(customState, customVK, bob);
 
         assertEq(_getRollupState(rollupId), customState);
         assertEq(_getRollupVK(rollupId), customVK);
@@ -477,8 +493,8 @@ contract RollupsTest is Test {
     // ──────────────────────────────────────────────
 
     function test_PostBatch_EtherDeltasMustSumToZero() public {
-        uint256 rollupId1 = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
-        uint256 rollupId2 = rollups.createRollup(bytes32(0), DEFAULT_VK, bob);
+        uint256 rollupId1 = _createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId2 = _createRollup(bytes32(0), DEFAULT_VK, bob);
 
         // Fund rollup1 so it has balance to transfer
         _fundRollup(rollupId1, 5 ether);
@@ -496,14 +512,14 @@ contract RollupsTest is Test {
         entries[0].actionHash = bytes32(0);
         entries[0].nextAction = _emptyAction();
 
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         assertEq(_getRollupEtherBalance(rollupId1), 3 ether);
         assertEq(_getRollupEtherBalance(rollupId2), 2 ether);
     }
 
     function test_PostBatch_EtherDeltasNonZeroSumReverts() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
         _fundRollup(rollupId, 5 ether);
 
         StateDelta[] memory deltas = new StateDelta[](1);
@@ -516,11 +532,11 @@ contract RollupsTest is Test {
         entries[0].nextAction = _emptyAction();
 
         vm.expectRevert(Rollups.EtherDeltaMismatch.selector);
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
     }
 
     function test_PostBatch_InsufficientRollupBalanceReverts() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
         // No deposit - balance is 0
 
         StateDelta[] memory deltas = new StateDelta[](1);
@@ -533,11 +549,11 @@ contract RollupsTest is Test {
         entries[0].nextAction = _emptyAction();
 
         vm.expectRevert(Rollups.InsufficientRollupBalance.selector);
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
     }
 
     function test_PostBatch_MixedImmediateAndDeferred() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
         address proxyAddr = rollups.createCrossChainProxy(address(target), rollupId);
 
         bytes32 state1 = keccak256("state1");
@@ -570,7 +586,7 @@ contract RollupsTest is Test {
         entries[1].actionHash = keccak256(abi.encode(callAction));
         entries[1].nextAction = _emptyAction();
 
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         // Immediate was applied
         assertEq(_getRollupState(rollupId), state1);
@@ -582,12 +598,12 @@ contract RollupsTest is Test {
     }
 
     function test_PostBatch_SetsLastStateUpdateBlock() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
 
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         entries[0] = _immediateEntry(rollupId, bytes32(0), keccak256("s"));
 
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         assertEq(rollups.lastStateUpdateBlock(), block.number);
     }
@@ -620,7 +636,7 @@ contract RollupsTest is Test {
     // ──────────────────────────────────────────────
 
     function test_ScopeCall_AtMatchingScope() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
 
         // Create source proxy for (address(this), rollup 0)
         rollups.createCrossChainProxy(address(this), 0);
@@ -683,7 +699,7 @@ contract RollupsTest is Test {
         entries[1].actionHash = resultHash;
         entries[1].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         rollups.executeL2TX(rollupId, rlpTx);
         assertEq(_getRollupState(rollupId), state2);
@@ -696,7 +712,7 @@ contract RollupsTest is Test {
     // ──────────────────────────────────────────────
 
     function test_ScopeCall_AtChildScope() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
 
         rollups.createCrossChainProxy(address(this), 0);
 
@@ -752,7 +768,7 @@ contract RollupsTest is Test {
         entries[1].actionHash = resultHash;
         entries[1].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         rollups.executeL2TX(rollupId, rlpTx);
         assertEq(_getRollupState(rollupId), state2);
@@ -764,7 +780,7 @@ contract RollupsTest is Test {
     // ──────────────────────────────────────────────
 
     function test_ProcessCallAtScope_AutoProxyCreation() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
 
         // Do NOT create proxy for (alice, 0) -- it should be auto-created
         address expectedProxy = rollups.computeCrossChainProxyAddress(alice, 0);
@@ -819,7 +835,7 @@ contract RollupsTest is Test {
         entries[1].actionHash = resultHash;
         entries[1].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         rollups.executeL2TX(rollupId, rlpTx);
 
@@ -834,7 +850,7 @@ contract RollupsTest is Test {
     // ──────────────────────────────────────────────
 
     function test_ProcessCallAtScope_ValueTransfer() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
 
         rollups.createCrossChainProxy(address(this), 0);
 
@@ -895,7 +911,7 @@ contract RollupsTest is Test {
         entries[1].actionHash = resultHash;
         entries[1].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         rollups.executeL2TX(rollupId, rlpTx);
         assertEq(_getRollupState(rollupId), state2);
@@ -907,7 +923,7 @@ contract RollupsTest is Test {
     // ──────────────────────────────────────────────
 
     function test_ApplyStateDeltas_InsufficientBalance() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
         // Rollup has 0 ether balance
 
         // Try to apply a state delta with negative etherDelta → InsufficientRollupBalance
@@ -921,7 +937,7 @@ contract RollupsTest is Test {
         entries[0].nextAction = _emptyAction();
 
         vm.expectRevert(Rollups.InsufficientRollupBalance.selector);
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
     }
 
     // ──────────────────────────────────────────────
@@ -929,7 +945,7 @@ contract RollupsTest is Test {
     // ──────────────────────────────────────────────
 
     function test_ResolveScopes_CallExecutionFailed_FailedResult() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
 
         bytes32 state1 = keccak256("cf1");
 
@@ -966,7 +982,7 @@ contract RollupsTest is Test {
         entries[0].actionHash = l2txHash;
         entries[0].nextAction = failedResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         vm.expectRevert(Rollups.CallExecutionFailed.selector);
         rollups.executeL2TX(rollupId, rlpTx);
@@ -977,7 +993,7 @@ contract RollupsTest is Test {
     // ──────────────────────────────────────────────
 
     function test_ResolveScopes_CallExecutionFailed_NonResult() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
 
         bytes32 state1 = keccak256("nr1");
 
@@ -1015,7 +1031,7 @@ contract RollupsTest is Test {
         entries[0].actionHash = l2txHash;
         entries[0].nextAction = nonResultAction;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         vm.expectRevert(Rollups.CallExecutionFailed.selector);
         rollups.executeL2TX(rollupId, rlpTx);
@@ -1026,7 +1042,7 @@ contract RollupsTest is Test {
     // ──────────────────────────────────────────────
 
     function test_FindAndApplyExecution_SwapAndPop() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
         address proxyAddr = rollups.createCrossChainProxy(address(target), rollupId);
 
         bytes32 state1 = keccak256("sp1");
@@ -1067,7 +1083,7 @@ contract RollupsTest is Test {
         entries[1].actionHash = actionHash;
         entries[1].nextAction = _emptyAction();
 
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         (bool success,) = proxyAddr.call(callData);
         assertTrue(success);
@@ -1079,7 +1095,7 @@ contract RollupsTest is Test {
     // ──────────────────────────────────────────────
 
     function test_FindAndApplyExecution_StateMismatch() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
         address proxyAddr = rollups.createCrossChainProxy(address(target), rollupId);
 
         bytes memory callData = abi.encodeCall(TestTarget.setValue, (456));
@@ -1106,7 +1122,7 @@ contract RollupsTest is Test {
         entries[0].actionHash = actionHash;
         entries[0].nextAction = _emptyAction();
 
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         vm.expectRevert(Rollups.ExecutionNotFound.selector);
         (bool success,) = proxyAddr.call(callData);
@@ -1120,7 +1136,7 @@ contract RollupsTest is Test {
     // ──────────────────────────────────────────────
 
     function test_Scope_RevertAtMatchingScope() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
 
         rollups.createCrossChainProxy(address(this), 0);
 
@@ -1213,7 +1229,7 @@ contract RollupsTest is Test {
         entries[2].actionHash = revertContHash;
         entries[2].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         rollups.executeL2TX(rollupId, rlpTx);
         // State is state2 because state changes from the reverted newScope call are rolled back
@@ -1227,7 +1243,7 @@ contract RollupsTest is Test {
     // ──────────────────────────────────────────────
 
     function test_Scope_CallAtSiblingScope_Breaks() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
 
         rollups.createCrossChainProxy(address(this), 0);
 
@@ -1308,7 +1324,7 @@ contract RollupsTest is Test {
         entries[2].actionHash = resultHash;
         entries[2].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         rollups.executeL2TX(rollupId, rlpTx);
         assertEq(_getRollupState(rollupId), state3);
@@ -1324,7 +1340,7 @@ contract RollupsTest is Test {
         // In newScope([0], ...), REVERT scope [] != [0] -> break -> return to caller
         // In newScope([]), the returned REVERT at [] matches -> ScopeReverted
         // Caught by _resolveScopes -> _handleScopeRevert -> _getRevertContinuation
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
 
         rollups.createCrossChainProxy(address(this), 0);
 
@@ -1406,7 +1422,7 @@ contract RollupsTest is Test {
         entries[2].actionHash = revertContHash;
         entries[2].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         rollups.executeL2TX(rollupId, rlpTx);
         // State changes inside reverted newScope call are rolled back.
@@ -1421,7 +1437,7 @@ contract RollupsTest is Test {
     // ──────────────────────────────────────────────
 
     function test_ResolveScopes_CatchScopeRevert() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
 
         rollups.createCrossChainProxy(address(this), 0);
 
@@ -1502,7 +1518,7 @@ contract RollupsTest is Test {
         entries[2].actionHash = revertContHash;
         entries[2].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         rollups.executeL2TX(rollupId, rlpTx);
         // State changes inside reverted newScope call are rolled back.
@@ -1516,7 +1532,7 @@ contract RollupsTest is Test {
 
     function test_PostBatch_EmptyEntries() public {
         ExecutionEntry[] memory entries = new ExecutionEntry[](0);
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
     }
 
     // ──────────────────────────────────────────────
@@ -1524,19 +1540,19 @@ contract RollupsTest is Test {
     // ──────────────────────────────────────────────
 
     function test_PostBatch_DifferentBlocks() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
         bytes32 state1 = keccak256("s1");
         bytes32 state2 = keccak256("s2");
 
         ExecutionEntry[] memory entries1 = new ExecutionEntry[](1);
         entries1[0] = _immediateEntry(rollupId, bytes32(0), state1);
-        rollups.postBatch(entries1, 0, "", "proof");
+        _postBatch(entries1, 0, "", "proof");
 
         vm.roll(block.number + 1);
 
         ExecutionEntry[] memory entries2 = new ExecutionEntry[](1);
         entries2[0] = _immediateEntry(rollupId, state1, state2);
-        rollups.postBatch(entries2, 0, "", "proof");
+        _postBatch(entries2, 0, "", "proof");
 
         assertEq(_getRollupState(rollupId), state2);
     }
@@ -1547,7 +1563,7 @@ contract RollupsTest is Test {
     // ──────────────────────────────────────────────
 
     function test_ExecuteCrossChainCall_WithScopedNextAction() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
 
         // Create proxy for target
         address proxyAddr = rollups.createCrossChainProxy(address(target), rollupId);
@@ -1607,7 +1623,7 @@ contract RollupsTest is Test {
         entries[1].actionHash = resultHash;
         entries[1].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         (bool success,) = proxyAddr.call(callData);
         assertTrue(success);
@@ -1621,7 +1637,7 @@ contract RollupsTest is Test {
 
     function test_ProcessCallAtScope_FailedCall() public {
         RevertingTarget revertTarget = new RevertingTarget();
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
 
         rollups.createCrossChainProxy(address(this), 0);
 
@@ -1695,7 +1711,7 @@ contract RollupsTest is Test {
         entries[1].actionHash = failedResultHash;
         entries[1].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         rollups.executeL2TX(rollupId, rlpTx);
         assertEq(_getRollupState(rollupId), state2);
@@ -1706,8 +1722,8 @@ contract RollupsTest is Test {
     // ──────────────────────────────────────────────
 
     function test_PostBatch_EtherDeltaPositiveIncrement() public {
-        uint256 rollupId1 = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
-        uint256 rollupId2 = rollups.createRollup(bytes32(0), DEFAULT_VK, bob);
+        uint256 rollupId1 = _createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId2 = _createRollup(bytes32(0), DEFAULT_VK, bob);
 
         _fundRollup(rollupId1, 10 ether);
 
@@ -1723,7 +1739,7 @@ contract RollupsTest is Test {
         entries[0].actionHash = bytes32(0);
         entries[0].nextAction = _emptyAction();
 
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         assertEq(_getRollupEtherBalance(rollupId1), 7 ether);
         assertEq(_getRollupEtherBalance(rollupId2), 3 ether);
@@ -1738,7 +1754,7 @@ contract RollupsTest is Test {
         // Set up a call where the target scope's prefix doesn't match the current scope
         // currentScope = [1], targetScope = [0, 1] - prefix mismatch at index 0
         // This will cause _isChildScope to return false, meaning the scope is not a child
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
 
         rollups.createCrossChainProxy(address(this), 0);
 
@@ -1824,7 +1840,7 @@ contract RollupsTest is Test {
         entries[2].actionHash = resultHash;
         entries[2].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         rollups.executeL2TX(rollupId, rlpTx);
         assertEq(_getRollupState(rollupId), state3);
@@ -1835,8 +1851,8 @@ contract RollupsTest is Test {
     // ──────────────────────────────────────────────
 
     function test_PostBatch_MultipleDeltasPerEntry() public {
-        uint256 r1 = rollups.createRollup(keccak256("a"), DEFAULT_VK, alice);
-        uint256 r2 = rollups.createRollup(keccak256("b"), DEFAULT_VK, bob);
+        uint256 r1 = _createRollup(keccak256("a"), DEFAULT_VK, alice);
+        uint256 r2 = _createRollup(keccak256("b"), DEFAULT_VK, bob);
 
         StateDelta[] memory deltas = new StateDelta[](2);
         deltas[0] = StateDelta({rollupId: r1, currentState: keccak256("a"), newState: keccak256("a2"), etherDelta: 0});
@@ -1847,7 +1863,7 @@ contract RollupsTest is Test {
         entries[0].actionHash = bytes32(0);
         entries[0].nextAction = _emptyAction();
 
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         assertEq(_getRollupState(r1), keccak256("a2"));
         assertEq(_getRollupState(r2), keccak256("b2"));
@@ -1859,7 +1875,7 @@ contract RollupsTest is Test {
     // ──────────────────────────────────────────────
 
     function test_ExecuteCrossChainCall_WithETHValue() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
         address proxyAddr = rollups.createCrossChainProxy(address(target), rollupId);
 
         bytes32 state1 = keccak256("ethv1");
@@ -1889,7 +1905,7 @@ contract RollupsTest is Test {
         entries[0].actionHash = keccak256(abi.encode(callAction));
         entries[0].nextAction = resultAction;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         // Call the proxy with 1 ether value
         (bool success,) = proxyAddr.call{value: 1 ether}(callData);
@@ -1902,7 +1918,7 @@ contract RollupsTest is Test {
     // ──────────────────────────────────────────────
 
     function test_FindAndApplyExecution_EtherDeltaMismatch() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
         address proxyAddr = rollups.createCrossChainProxy(address(target), rollupId);
 
         bytes32 state1 = keccak256("edm1");
@@ -1929,7 +1945,7 @@ contract RollupsTest is Test {
         entries[0].actionHash = keccak256(abi.encode(callAction));
         entries[0].nextAction = _emptyAction();
 
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         vm.expectRevert(Rollups.EtherDeltaMismatch.selector);
         (bool success,) = proxyAddr.call(callData);
@@ -1943,7 +1959,7 @@ contract RollupsTest is Test {
     // ──────────────────────────────────────────────
 
     function test_HandleScopeRevert_InvalidRevertData() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
 
         rollups.createCrossChainProxy(address(this), 0);
 
@@ -1990,7 +2006,7 @@ contract RollupsTest is Test {
         entries[0].actionHash = l2txHash;
         entries[0].nextAction = scopedCall;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         vm.expectRevert(Rollups.InvalidRevertData.selector);
         rollups.executeL2TX(rollupId, rlpTx);
@@ -2002,7 +2018,7 @@ contract RollupsTest is Test {
     // ──────────────────────────────────────────────
 
     function test_ExecuteCrossChainCall_ResolveScopesCatchPath() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
         address proxyAddr = rollups.createCrossChainProxy(address(target), rollupId);
         rollups.createCrossChainProxy(address(this), 0);
 
@@ -2085,7 +2101,7 @@ contract RollupsTest is Test {
         entries[2].actionHash = revertContHash;
         entries[2].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         (bool success,) = proxyAddr.call(callData);
         assertTrue(success);
@@ -2098,7 +2114,7 @@ contract RollupsTest is Test {
     // ──────────────────────────────────────────────
 
     function test_Proxy_Fallback_BubblesRevert() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
         address proxyAddr = rollups.createCrossChainProxy(address(target), rollupId);
 
         // Call proxy with no execution loaded -> ExecutionNotInCurrentBlock bubbles through proxy
@@ -2118,7 +2134,7 @@ contract RollupsTest is Test {
     // ──────────────────────────────────────────────
 
     function test_Proxy_ExecuteOnBehalf_NonManagerFallsThrough() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
         address proxyAddr = rollups.createCrossChainProxy(address(target), rollupId);
         CrossChainProxy proxy = CrossChainProxy(payable(proxyAddr));
 
@@ -2136,7 +2152,7 @@ contract RollupsTest is Test {
     // ──────────────────────────────────────────────
 
     function test_NewScope_ChildScope_CatchesScopeReverted() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
 
         rollups.createCrossChainProxy(address(this), 0);
 
@@ -2220,7 +2236,7 @@ contract RollupsTest is Test {
         entries[2].actionHash = revertContHash;
         entries[2].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         rollups.executeL2TX(rollupId, rlpTx);
         // ScopeReverted at [0,0] is caught by newScope([0]) (child scope catch path)
@@ -2233,8 +2249,8 @@ contract RollupsTest is Test {
     // ──────────────────────────────────────────────
 
     function test_FindAndApplyExecution_MultiDeltaAllMatch() public {
-        uint256 r1 = rollups.createRollup(keccak256("x"), DEFAULT_VK, alice);
-        uint256 r2 = rollups.createRollup(keccak256("y"), DEFAULT_VK, bob);
+        uint256 r1 = _createRollup(keccak256("x"), DEFAULT_VK, alice);
+        uint256 r2 = _createRollup(keccak256("y"), DEFAULT_VK, bob);
         address proxyAddr = rollups.createCrossChainProxy(address(target), r1);
 
         bytes memory callData = abi.encodeCall(TestTarget.setValue, (789));
@@ -2261,7 +2277,7 @@ contract RollupsTest is Test {
         entries[0].actionHash = actionHash;
         entries[0].nextAction = _emptyAction();
 
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         (bool success,) = proxyAddr.call(callData);
         assertTrue(success);
@@ -2274,8 +2290,8 @@ contract RollupsTest is Test {
     // ──────────────────────────────────────────────
 
     function test_FindAndApplyExecution_MultiDeltaPartialMismatch() public {
-        uint256 r1 = rollups.createRollup(keccak256("a"), DEFAULT_VK, alice);
-        uint256 r2 = rollups.createRollup(keccak256("b"), DEFAULT_VK, bob);
+        uint256 r1 = _createRollup(keccak256("a"), DEFAULT_VK, alice);
+        uint256 r2 = _createRollup(keccak256("b"), DEFAULT_VK, bob);
         address proxyAddr = rollups.createCrossChainProxy(address(target), r1);
 
         bytes memory callData = abi.encodeCall(TestTarget.setValue, (111));
@@ -2303,7 +2319,7 @@ contract RollupsTest is Test {
         entries[0].actionHash = actionHash;
         entries[0].nextAction = _emptyAction();
 
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         vm.expectRevert(Rollups.ExecutionNotFound.selector);
         (bool success,) = proxyAddr.call(callData);
@@ -2315,7 +2331,7 @@ contract RollupsTest is Test {
     // ──────────────────────────────────────────────
 
     function test_PostBatch_OnlyDeferredEntries() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
 
         Action memory callAction = Action({
             actionType: ActionType.CALL,
@@ -2340,7 +2356,7 @@ contract RollupsTest is Test {
 
         // Deferred entries do NOT have their ether deltas summed
         // (only immediate entries do), so this should pass
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         // State should NOT have changed (deferred entry)
         assertEq(_getRollupState(rollupId), bytes32(0));
@@ -2351,7 +2367,7 @@ contract RollupsTest is Test {
     // ──────────────────────────────────────────────
 
     function test_TransferRollupOwnership_NotOwner() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
 
         vm.prank(bob);
         vm.expectRevert(Rollups.NotRollupOwner.selector);
@@ -2363,7 +2379,7 @@ contract RollupsTest is Test {
     // ──────────────────────────────────────────────
 
     function test_ApplyStateDeltas_ZeroEtherDelta() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
         _fundRollup(rollupId, 5 ether);
 
         StateDelta[] memory deltas = new StateDelta[](1);
@@ -2374,7 +2390,7 @@ contract RollupsTest is Test {
         entries[0].actionHash = bytes32(0);
         entries[0].nextAction = _emptyAction();
 
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         assertEq(_getRollupEtherBalance(rollupId), 5 ether);
         assertEq(_getRollupState(rollupId), keccak256("zd"));
@@ -2389,7 +2405,7 @@ contract RollupsTest is Test {
     // ──────────────────────────────────────────────
 
     function test_PostBatch_WithBlobCount() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
 
         // Set blob hashes for the transaction
         bytes32[] memory blobs = new bytes32[](2);
@@ -2401,7 +2417,7 @@ contract RollupsTest is Test {
         entries[0] = _immediateEntry(rollupId, bytes32(0), keccak256("blobState"));
 
         // blobCount=2 makes the contract read blobhash(0) and blobhash(1)
-        rollups.postBatch(entries, 2, "", "proof");
+        _postBatch(entries, 2, "", "proof");
 
         assertEq(_getRollupState(rollupId), keccak256("blobState"));
     }
@@ -2412,12 +2428,12 @@ contract RollupsTest is Test {
 
     function test_CreateRollup_EmitsEvent() public {
         vm.expectEmit(true, true, true, true);
-        emit Rollups.RollupCreated(1, alice, DEFAULT_VK, keccak256("init"));
-        rollups.createRollup(keccak256("init"), DEFAULT_VK, alice);
+        emit Rollups.RollupCreated(1, alice, address(verifier), DEFAULT_VK, keccak256("init"));
+        _createRollup(keccak256("init"), DEFAULT_VK, alice);
     }
 
     function test_SetStateByOwner_EmitsEvent() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
         bytes32 newState = keccak256("emitState");
 
         vm.prank(alice);
@@ -2427,17 +2443,17 @@ contract RollupsTest is Test {
     }
 
     function test_SetVerificationKey_EmitsEvent() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
         bytes32 newVK = keccak256("newVK");
 
         vm.prank(alice);
         vm.expectEmit(true, true, true, true);
-        emit Rollups.VerificationKeyUpdated(rollupId, newVK);
+        emit Rollups.VerificationKeyUpdated(rollupId, address(verifier), newVK);
         rollups.setVerificationKey(rollupId, newVK);
     }
 
     function test_TransferOwnership_EmitsEvent() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
 
         vm.prank(alice);
         vm.expectEmit(true, true, true, true);
@@ -2446,7 +2462,7 @@ contract RollupsTest is Test {
     }
 
     function test_CreateCrossChainProxy_EmitsEvent() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
         address expectedProxy = rollups.computeCrossChainProxyAddress(address(target), rollupId);
 
         vm.expectEmit(true, true, true, true);
@@ -2459,7 +2475,7 @@ contract RollupsTest is Test {
     // ──────────────────────────────────────────────
 
     function test_ScopeCall_ResultWithUint256Return() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
 
         rollups.createCrossChainProxy(address(this), 0);
 
@@ -2537,7 +2553,7 @@ contract RollupsTest is Test {
         entries[1].actionHash = resultHash;
         entries[1].nextAction = finalResult;
 
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         bytes memory result = rollups.executeL2TX(rollupId, rlpTx);
         uint256 decoded = abi.decode(result, (uint256));
@@ -2564,14 +2580,14 @@ contract RollupsTest is Test {
     }
 
     function test_BatchPosted_EmitsOnImmediateEntry() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
         bytes32 newState = keccak256("bp1");
 
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         entries[0] = _immediateEntry(rollupId, bytes32(0), newState);
 
         vm.recordLogs();
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         Vm.Log[] memory logs = vm.getRecordedLogs();
         (bool found, uint256 idx) = _findBatchPostedLog(logs);
@@ -2587,7 +2603,7 @@ contract RollupsTest is Test {
     }
 
     function test_BatchPosted_EmitsOnDeferredEntry() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
         bytes memory callData = abi.encodeCall(TestTarget.setValue, (42));
 
         Action memory action = Action({
@@ -2612,7 +2628,7 @@ contract RollupsTest is Test {
         entries[0].nextAction = _emptyAction();
 
         vm.recordLogs();
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         Vm.Log[] memory logs = vm.getRecordedLogs();
         (bool found, uint256 idx) = _findBatchPostedLog(logs);
@@ -2626,7 +2642,7 @@ contract RollupsTest is Test {
     }
 
     function test_BatchPosted_MixedImmediateAndDeferred() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
         bytes32 state1 = keccak256("s1");
 
         bytes memory callData = abi.encodeCall(TestTarget.setValue, (42));
@@ -2652,7 +2668,7 @@ contract RollupsTest is Test {
         entries[1].nextAction = _emptyAction();
 
         vm.recordLogs();
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         Vm.Log[] memory logs = vm.getRecordedLogs();
         (bool found, uint256 idx) = _findBatchPostedLog(logs);
@@ -2672,7 +2688,7 @@ contract RollupsTest is Test {
     // ══════════════════════════════════════════════
 
     function test_CrossChainCallExecuted_L1_EmitsOnProxyCall() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
         address proxyAddr = rollups.createCrossChainProxy(address(target), rollupId);
 
         bytes32 currentState = bytes32(0);
@@ -2699,7 +2715,7 @@ contract RollupsTest is Test {
         entries[0].stateDeltas = stateDeltas;
         entries[0].actionHash = actionHash;
         entries[0].nextAction = _emptyAction();
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         vm.recordLogs();
         (bool success,) = proxyAddr.call(callData);
@@ -2728,7 +2744,7 @@ contract RollupsTest is Test {
     // ══════════════════════════════════════════════
 
     function test_L2TXExecuted_EmitsOnExecute() public {
-        uint256 rollupId = rollups.createRollup(bytes32(0), DEFAULT_VK, alice);
+        uint256 rollupId = _createRollup(bytes32(0), DEFAULT_VK, alice);
 
         bytes32 currentState = bytes32(0);
         bytes32 newState = keccak256("state1");
@@ -2754,7 +2770,7 @@ contract RollupsTest is Test {
         entries[0].stateDeltas = stateDeltas;
         entries[0].actionHash = actionHash;
         entries[0].nextAction = _emptyAction();
-        rollups.postBatch(entries, 0, "", "proof");
+        _postBatch(entries, 0, "", "proof");
 
         vm.recordLogs();
         rollups.executeL2TX(rollupId, rlpTx);

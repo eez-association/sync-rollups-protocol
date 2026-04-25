@@ -75,12 +75,13 @@ abstract contract BridgeActions {
 contract Batcher {
     function execute(
         Rollups rollups,
+        address proofSystem,
         ExecutionEntry[] calldata entries,
         Bridge bridge,
         uint256 rollupId,
         address destination
     ) external payable {
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(proofSystem, entries, 0, "", "proof");
         bridge.bridgeEther{value: msg.value}(rollupId, destination);
     }
 }
@@ -147,7 +148,7 @@ contract Execute is Script, BridgeActions {
         address destination = msg.sender;
 
         batcher.execute{value: 1 ether}(
-            Rollups(rollupsAddr), _l1Entries(destination, bridgeAddr), Bridge(bridgeAddr), 1, destination
+            Rollups(rollupsAddr), vm.envAddress("PROOF_SYSTEM"), _l1Entries(destination, bridgeAddr), Bridge(bridgeAddr), 1, destination
         );
 
         console.log("done");

@@ -52,8 +52,9 @@ contract IntegrationTestBridge is IntegrationTestBase {
     function setUp() public {
         // ── L1 infrastructure ──
         verifier = new MockZKVerifier();
-        rollups = new Rollups(address(verifier), 1);
-        rollups.createRollup(keccak256("l2-initial-state"), DEFAULT_VK, address(this));
+        rollups = new Rollups(1);
+        _registerDefaultProofSystem();
+        rollups.createRollup(keccak256("l2-initial-state"), address(verifier), DEFAULT_VK, address(this));
 
         // ── L2 infrastructure ──
         managerL2 = new CrossChainManagerL2(L2_ROLLUP_ID, SYSTEM_ADDRESS);
@@ -145,7 +146,7 @@ contract IntegrationTestBridge is IntegrationTestBase {
             entries[0].actionHash = keccak256(abi.encode(callAction));
             entries[0].nextAction = resultAction;
 
-            rollups.postBatch(entries, 0, "", "proof");
+            rollups.postBatch(address(verifier), entries, 0, "", "proof");
         }
 
         // Alice triggers the bridge
@@ -279,7 +280,7 @@ contract IntegrationTestBridge is IntegrationTestBase {
             entries[0].actionHash = keccak256(abi.encode(callAction));
             entries[0].nextAction = resultAction;
 
-            rollups.postBatch(entries, 0, "", "proof");
+            rollups.postBatch(address(verifier), entries, 0, "", "proof");
         }
 
         // Alice approves and bridges tokens
@@ -408,7 +409,7 @@ contract IntegrationTestBridge is IntegrationTestBase {
             entries[0].actionHash = keccak256(abi.encode(fwdCall));
             entries[0].nextAction = fwdResult;
 
-            rollups.postBatch(entries, 0, "", "proof");
+            rollups.postBatch(address(verifier), entries, 0, "", "proof");
         }
 
         vm.prank(alice);
@@ -565,7 +566,7 @@ contract IntegrationTestBridge is IntegrationTestBase {
             entries[1].actionHash = keccak256(abi.encode(retResult));
             entries[1].nextAction = retResult;
 
-            rollups.postBatch(entries, 0, "", "proof");
+            rollups.postBatch(address(verifier), entries, 0, "", "proof");
         }
 
         rollups.executeL2TX(L2_ROLLUP_ID, rlpData);

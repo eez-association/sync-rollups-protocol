@@ -201,8 +201,8 @@ abstract contract NestedCallRevertActions {
 /// @notice Batcher: postBatch + proxy call in one tx (local mode only)
 /// @dev Alice's proxy call succeeds — RESULT(failed) maps to RESULT(ok) on L1.
 contract Batcher {
-    function execute(Rollups rollups, ExecutionEntry[] calldata entries, address proxy, bytes calldata data) external {
-        rollups.postBatch(entries, 0, "", "proof");
+    function execute(Rollups rollups, address proofSystem, ExecutionEntry[] calldata entries, address proxy, bytes calldata data) external {
+        rollups.postBatch(proofSystem, entries, 0, "", "proof");
         (bool success, bytes memory ret) = proxy.call(data);
         if (!success) {
             assembly {
@@ -324,7 +324,7 @@ contract Execute is Script, NestedCallRevertActions {
 
         Batcher batcher = new Batcher();
         batcher.execute(
-            Rollups(rollupsAddr),
+            Rollups(rollupsAddr), vm.envAddress("PROOF_SYSTEM"),
             _l1Entries(revertCounterL1Addr, counterAndProxyL2Addr, batcherAddr),
             proxyL1Addr,
             abi.encodeWithSelector(SafeCounterAndProxy.incrementProxy.selector)

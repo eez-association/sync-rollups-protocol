@@ -3,11 +3,11 @@ pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {Rollups} from "../../src/Rollups.sol";
-import {IZKVerifier} from "../../src/IZKVerifier.sol";
+import {IProofSystem} from "../../src/IProofSystem.sol";
 
-/// @notice Mock ZK verifier — defaults to accepting all proofs.
+/// @notice Mock validator — defaults to accepting all proofs.
 ///         Call setVerifyResult(false) to test rejection.
-contract MockZKVerifier is IZKVerifier {
+contract MockZKVerifier is IProofSystem {
     bool public shouldVerify = true;
 
     function setVerifyResult(bool _shouldVerify) external {
@@ -33,5 +33,10 @@ abstract contract IntegrationTestBase is Test {
     function _getRollupState(uint256 rollupId) internal view returns (bytes32) {
         (,, bytes32 stateRoot,) = rollups.rollups(rollupId);
         return stateRoot;
+    }
+
+    /// @notice Registers `verifier` as a validator on `rollups`.
+    function _registerDefaultProofSystem() internal {
+        rollups.registerProofSystem(IProofSystem(address(verifier)));
     }
 }

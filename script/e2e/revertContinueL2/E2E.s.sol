@@ -250,7 +250,7 @@ contract Execute is Script, RevertContinueL2Actions {
 
         vm.startBroadcast();
         L2TXBatcher batcher = new L2TXBatcher();
-        batcher.execute(Rollups(rollupsAddr), _l1Entries(counterL1Addr, scaAddr, rlpTx), L2_ROLLUP_ID, rlpTx);
+        batcher.execute(Rollups(rollupsAddr), vm.envAddress("PROOF_SYSTEM"), _l1Entries(counterL1Addr, scaAddr, rlpTx), L2_ROLLUP_ID, rlpTx);
 
         console.log("done");
         console.log("counterL1=%s", Counter(counterL1Addr).counter());

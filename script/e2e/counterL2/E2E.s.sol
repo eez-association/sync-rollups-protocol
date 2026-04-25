@@ -213,7 +213,7 @@ contract Execute is Script, CounterL2Actions {
 
         L2TXBatcher batcher = new L2TXBatcher();
         batcher.execute(
-            Rollups(rollupsAddr), _l1Entries(counterL1Addr, counterAndProxyL2Addr, rlpTx), L2_ROLLUP_ID, rlpTx
+            Rollups(rollupsAddr), vm.envAddress("PROOF_SYSTEM"), _l1Entries(counterL1Addr, counterAndProxyL2Addr, rlpTx), L2_ROLLUP_ID, rlpTx
         );
 
         console.log("done");

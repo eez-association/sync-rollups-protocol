@@ -56,10 +56,11 @@ contract IntegrationTest is IntegrationTestBase {
     function setUp() public {
         // ── L1 infrastructure ──
         verifier = new MockZKVerifier();
-        rollups = new Rollups(address(verifier), 1);
+        rollups = new Rollups(1);
+        _registerDefaultProofSystem();
 
         // Create L2 rollup (rollupId = 1 = L2_ROLLUP_ID)
-        rollups.createRollup(keccak256("l2-initial-state"), DEFAULT_VK, address(this));
+        rollups.createRollup(keccak256("l2-initial-state"), address(verifier), DEFAULT_VK, address(this));
 
         // ── L2 infrastructure ──
         managerL2 = new CrossChainManagerL2(L2_ROLLUP_ID, SYSTEM_ADDRESS);
@@ -200,7 +201,7 @@ contract IntegrationTest is IntegrationTestBase {
             entries[0].actionHash = keccak256(abi.encode(callAction));
             entries[0].nextAction = resultAction;
 
-            rollups.postBatch(entries, 0, "", "proof");
+            rollups.postBatch(address(verifier), entries, 0, "", "proof");
         }
 
         // Alice triggers the resolution
@@ -332,7 +333,7 @@ contract IntegrationTest is IntegrationTestBase {
             entries[1].actionHash = keccak256(abi.encode(resultAction));
             entries[1].nextAction = resultAction;
 
-            rollups.postBatch(entries, 0, "", "proof");
+            rollups.postBatch(address(verifier), entries, 0, "", "proof");
         }
 
         // Trigger: executeL2TX -> L2TX matched -> CALL -> scope nav -> C.increment()
@@ -526,7 +527,7 @@ contract IntegrationTest is IntegrationTestBase {
             entries[2].actionHash = keccak256(abi.encode(resultFromA));
             entries[2].nextAction = resultFromA;
 
-            rollups.postBatch(entries, 0, "", "proof");
+            rollups.postBatch(address(verifier), entries, 0, "", "proof");
         }
 
         // Trigger: executeL2TX -> L2TX -> CALL to A -> A runs -> A calls B' ->
@@ -735,7 +736,7 @@ contract IntegrationTest is IntegrationTestBase {
             entries[1].actionHash = keccak256(abi.encode(resultFromC));
             entries[1].nextAction = resultFromC;
 
-            rollups.postBatch(entries, 0, "", "proof");
+            rollups.postBatch(address(verifier), entries, 0, "", "proof");
         }
 
         // Alice calls D' on L1 (low-level call — D' is a proxy)
@@ -960,7 +961,7 @@ contract IntegrationTest is IntegrationTestBase {
             entries[2].actionHash = keccak256(abi.encode(revertContinue));
             entries[2].nextAction = terminalResult;
 
-            rollups.postBatch(entries, 0, "", "proof");
+            rollups.postBatch(address(verifier), entries, 0, "", "proof");
         }
 
         // Trigger: executeL2TX -> CALL(RC) -> reverts -> REVERT -> REVERT_CONTINUE -> ok

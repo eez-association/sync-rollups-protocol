@@ -69,8 +69,9 @@ contract IntegrationTestFlashLoan is IntegrationTestBase {
     function setUp() public {
         // ── L1 infrastructure ──
         verifier = new MockZKVerifier();
-        rollups = new Rollups(address(verifier), 1);
-        rollups.createRollup(keccak256("l2-initial-state"), DEFAULT_VK, address(this));
+        rollups = new Rollups(1);
+        _registerDefaultProofSystem();
+        rollups.createRollup(keccak256("l2-initial-state"), address(verifier), DEFAULT_VK, address(this));
 
         // ── L2 infrastructure ──
         managerL2 = new CrossChainManagerL2(L2_ROLLUP_ID, SYSTEM_ADDRESS);
@@ -372,7 +373,7 @@ contract IntegrationTestFlashLoan is IntegrationTestBase {
             entries[2].actionHash = keccak256(abi.encode(result_MAINNET_void));
             entries[2].nextAction = result_L2_void;
 
-            rollups.postBatch(entries, 0, "", "proof");
+            rollups.postBatch(address(verifier), entries, 0, "", "proof");
         }
 
         // Alice triggers the flash loan → full cross-chain flow

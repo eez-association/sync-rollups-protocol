@@ -18,10 +18,14 @@ function getOrCreateProxy(ICrossChainManager manager, address originalAddress, u
 /// @notice Batcher for L2TX scenarios: postBatch + executeL2TX in one tx (local mode only).
 ///         Ensures both calls happen in the same block (same-block requirement).
 contract L2TXBatcher {
-    function execute(Rollups rollups, ExecutionEntry[] calldata entries, uint256 rollupId, bytes calldata rlpTx)
-        external
-    {
-        rollups.postBatch(entries, 0, "", "proof");
+    function execute(
+        Rollups rollups,
+        address proofSystem,
+        ExecutionEntry[] calldata entries,
+        uint256 rollupId,
+        bytes calldata rlpTx
+    ) external {
+        rollups.postBatch(proofSystem, entries, 0, "", "proof");
         rollups.executeL2TX(rollupId, rlpTx);
     }
 }
@@ -60,5 +64,4 @@ abstract contract L2TXActionsBase {
             scope: new uint256[](0)
         });
     }
-
 }

@@ -431,7 +431,7 @@ contract Execute is Script, MultiCallNestedL2Actions {
 
         L2TXBatcher batcher = new L2TXBatcher();
         batcher.execute(
-            Rollups(rollupsAddr),
+            Rollups(rollupsAddr), vm.envAddress("PROOF_SYSTEM"),
             _l1Entries(counterL2Addr, counterAndProxyAddr, counterL1Addr, callTwiceNestedAddr, rlpTx),
             L2_ROLLUP_ID,
             rlpTx

@@ -407,8 +407,8 @@ contract ExecuteL2 is Script, FlashLoanActions {
 
 /// @title Batcher — postBatch + executor.execute() in single tx
 contract Batcher {
-    function execute(Rollups rollups, ExecutionEntry[] calldata entries, FlashLoanBridgeExecutor executor) external {
-        rollups.postBatch(entries, 0, "", "proof");
+    function execute(Rollups rollups, address proofSystem, ExecutionEntry[] calldata entries, FlashLoanBridgeExecutor executor) external {
+        rollups.postBatch(proofSystem, entries, 0, "", "proof");
         executor.execute(msg.sender);
     }
 }
@@ -448,7 +448,7 @@ contract Execute is Script, FlashLoanActions {
 
         Batcher batcher = new Batcher();
         batcher.execute(
-            Rollups(rollupsAddr),
+            Rollups(rollupsAddr), vm.envAddress("PROOF_SYSTEM"),
             _l1Entries(bridgeL2, bridgeL1, fwdReceiveTokensCalldata, executorL2, executorL1, claimAndBridgeBackCalldata, retReceiveTokensCalldata),
             FlashLoanBridgeExecutor(executorL1)
         );

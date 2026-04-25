@@ -219,10 +219,10 @@ abstract contract ReentrantCrossChainActions {
 
 /// @notice Batcher: postBatch + call ReentrantCounterL1.deepCall(5) in one tx (local mode only)
 contract Batcher {
-    function execute(Rollups rollups, ExecutionEntry[] calldata entries, address target, bytes calldata data)
+    function execute(Rollups rollups, address proofSystem, ExecutionEntry[] calldata entries, address target, bytes calldata data)
         external
     {
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(proofSystem, entries, 0, "", "proof");
         (bool success, bytes memory ret) = target.call(data);
         if (!success) {
             assembly {
@@ -343,7 +343,7 @@ contract Execute is Script, ReentrantCrossChainActions {
 
         Batcher batcher = new Batcher();
         batcher.execute(
-            Rollups(rollupsAddr),
+            Rollups(rollupsAddr), vm.envAddress("PROOF_SYSTEM"),
             _l1Entries(dcL1Addr, dcL2Addr),
             dcL1Addr,
             abi.encodeWithSelector(ReentrantCounter.deepCall.selector, 5)

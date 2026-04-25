@@ -1,16 +1,36 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {IZKVerifier} from "./IZKVerifier.sol";
+import {IProofSystem} from "./IProofSystem.sol";
+import {ProofSystemRegistry} from "./ProofSystemRegistry.sol";
 import {CrossChainProxy} from "./CrossChainProxy.sol";
 import {ICrossChainManager, ActionType, Action, StateDelta, ExecutionEntry, ProxyInfo} from "./ICrossChainManager.sol";
 
 /// @notice Rollup configuration
 struct RollupConfig {
     address owner;
-    bytes32 verificationKey;
+    uint256 threshold;
     bytes32 stateRoot;
     uint256 etherBalance;
+}
+
+/// @notice A single proof system's contribution to a batch
+struct ProofSystemBatch {
+    address[] proofSystem;
+    ExecutionEntry[] entries;
+    uint256 blobCount;
+    bytes callData;
+    bytes[] proof;
+    bytes32 hashedInteraction;
+}
+
+/// @notice A state transition applied in the current block, auto-invalidated when the block advances
+/// @dev Readers must check `blockNumber == block.number` — otherwise the entry is stale.
+struct BatchUpdate {
+    uint256 blockNumber;
+    bytes32 previousState;
+    bytes32 newState;
+    int256 etherDelta;
 }
 
 /// @title Rollups
@@ -21,18 +41,27 @@ struct RollupConfig {
 ///      CALL action, hashes it, looks up a matching execution (whose state deltas match on-chain state),
 ///      applies the deltas, and returns the pre-computed next action. Nested calls are resolved via
 ///      recursive `newScope()` calls with try/catch for revert handling.
-contract Rollups is ICrossChainManager {
+contract Rollups is ICrossChainManager, ProofSystemRegistry {
     /// @notice The rollup ID representing L1 mainnet
     uint256 public constant MAINNET_ROLLUP_ID = 0;
-
-    /// @notice The ZK verifier contract
-    IZKVerifier public immutable ZK_VERIFIER;
 
     /// @notice Counter for generating rollup IDs
     uint256 public rollupCounter;
 
     /// @notice Mapping from rollup ID to rollup configuration
     mapping(uint256 rollupId => RollupConfig config) public rollups;
+
+    /// @notice Per-rollup verification key for a given proofSystem
+    /// @dev `bytes32(0)` means "this proofSystem is not allowed for this rollup".
+    mapping(uint256 rollupId => mapping(address proofSystem => bytes32 vkey)) public verificationKeys;
+
+    /// @notice Enumeration of allowed proof systems per rollup (for threshold checks + views)
+    mapping(uint256 rollupId => address[]) private _rollupProofSystems;
+
+    /// @notice Block-scoped record of the last `postBatch` transition per rollup
+    /// @dev Entries are only valid when `blockNumber == block.number`; older entries are treated
+    ///      as empty. This gives us a lazy "reset on new block" without any explicit cleanup pass.
+    mapping(uint256 rollupId => BatchUpdate update) public batchUpdates;
 
     /// @notice Array of pre-computed executions
     ExecutionEntry[] public executions;
@@ -50,13 +79,22 @@ contract Rollups is ICrossChainManager {
     int256 private transient _etherDelta;
 
     /// @notice Emitted when a new rollup is created
-    event RollupCreated(uint256 indexed rollupId, address indexed owner, bytes32 verificationKey, bytes32 initialState);
+    event RollupCreated(uint256 indexed rollupId, address indexed owner, address[] proofSystems, bytes32[] vkeys, uint256 threshold, bytes32 initialState);
 
     /// @notice Emitted when a rollup state is updated
     event StateUpdated(uint256 indexed rollupId, bytes32 newStateRoot);
 
-    /// @notice Emitted when a rollup verification key is updated
-    event VerificationKeyUpdated(uint256 indexed rollupId, bytes32 newVerificationKey);
+    /// @notice Emitted when a rollup's verification key is updated
+    event VerificationKeyUpdated(uint256 indexed rollupId, address indexed proofSystem, bytes32 newVerificationKey);
+
+    /// @notice Emitted when a proof system is added to a rollup
+    event ProofSystemAdded(uint256 indexed rollupId, address indexed proofSystem, bytes32 verificationKey);
+
+    /// @notice Emitted when a proof system is removed from a rollup
+    event ProofSystemRemoved(uint256 indexed rollupId, address indexed proofSystem);
+
+    /// @notice Emitted when a rollup's threshold is changed
+    event ThresholdChanged(uint256 indexed rollupId, uint256 newThreshold);
 
     /// @notice Emitted when a rollup owner is transferred
     event OwnershipTransferred(uint256 indexed rollupId, address indexed previousOwner, address indexed newOwner);
@@ -77,7 +115,7 @@ contract Rollups is ICrossChainManager {
     event L2TXExecuted(bytes32 indexed actionHash, uint256 indexed rollupId, bytes rlpEncodedTx);
 
     /// @notice Emitted when a batch is posted via postBatch
-    event BatchPosted(ExecutionEntry[] entries, bytes32 publicInputsHash);
+    event BatchPosted(uint256 indexed proofSystemCount);
 
     /// @notice Error when proof verification fails
     error InvalidProof();
@@ -112,16 +150,35 @@ contract Rollups is ICrossChainManager {
     /// @notice Error when execution is attempted in a different block than the last state update
     error ExecutionNotInCurrentBlock();
 
+    /// @notice Error when a proof system is not allowed for a rollup touched by the batch
+    error ProofSystemNotAllowedForRollup(uint256 rollupId, address proofSystem);
+
+    /// @notice Error when createRollup / proof-system management inputs are malformed
+    error InvalidProofSystemConfig();
+
+    /// @notice Error when a proof system is already allowed for a rollup
+    error ProofSystemAlreadyAllowed(uint256 rollupId, address proofSystem);
+
+    /// @notice Error when fewer than threshold proof systems submitted valid proofs for a rollup
+    error ThresholdNotMet(uint256 rollupId, uint256 submittedCount, uint256 threshold);
+
+    /// @notice Error when duplicate proof systems are submitted in a single postBatch call
+    error DuplicateProofSystem(address proofSystem);
+
+    /// @notice Error when a submitted proof system is not allowed for any touched rollup
+    error UnrelatedProofSystem(address proofSystem);
+
+    /// @notice Error when a state delta references mainnet (rollupId=0), which is not a modifiable rollup
+    error MainnetNotModifiable();
+
     /// @notice Error when a scope reverts, carrying the next action to continue with
     /// @param nextAction The ABI-encoded next action to continue with
     /// @param stateRoot The state root to restore when catching the revert
     /// @param rollupId The rollup ID whose state to restore
     error ScopeReverted(bytes nextAction, bytes32 stateRoot, uint256 rollupId);
 
-    /// @param _zkVerifier The ZK verifier contract address
     /// @param startingRollupId The starting ID for rollup numbering
-    constructor(address _zkVerifier, uint256 startingRollupId) {
-        ZK_VERIFIER = IZKVerifier(_zkVerifier);
+    constructor(uint256 startingRollupId) {
         rollupCounter = startingRollupId;
     }
 
@@ -140,111 +197,211 @@ contract Rollups is ICrossChainManager {
     //  Rollup creation
     // ──────────────────────────────────────────────
 
-    /// @notice Creates a new rollup
+    /// @notice Creates a new rollup with M-of-N proof system verification
     /// @param initialState The initial state root for the rollup
-    /// @param verificationKey The verification key for state transition proofs
-    /// @param owner The owner who can update the verification key and state
+    /// @param proofSystems The proof system addresses allowed to verify this rollup
+    /// @param vkeys The per-proof-system verification keys (parallel array with proofSystems)
+    /// @param threshold Minimum number of proof systems that must verify each batch (1 ≤ threshold ≤ proofSystems.length)
+    /// @param owner The owner who can manage proof systems, keys, threshold, and state
     /// @return rollupId The ID of the newly created rollup
     function createRollup(
         bytes32 initialState,
-        bytes32 verificationKey,
+        address[] calldata proofSystems,
+        bytes32[] calldata vkeys,
+        uint256 threshold,
         address owner
     ) external returns (uint256 rollupId) {
+        if (proofSystems.length == 0) revert InvalidProofSystemConfig();
+        if (proofSystems.length != vkeys.length) revert InvalidProofSystemConfig();
+        if (threshold == 0 || threshold > proofSystems.length) revert InvalidProofSystemConfig();
+
         rollupId = rollupCounter++;
         rollups[rollupId] = RollupConfig({
             owner: owner,
-            verificationKey: verificationKey,
+            threshold: threshold,
             stateRoot: initialState,
             etherBalance: 0
         });
-        emit RollupCreated(rollupId, owner, verificationKey, initialState);
+
+        for (uint256 i = 0; i < proofSystems.length; i++) {
+            if (!isProofSystem[proofSystems[i]]) revert ProofSystemNotRegistered(proofSystems[i]);
+            if (vkeys[i] == bytes32(0)) revert InvalidProofSystemConfig();
+            if (verificationKeys[rollupId][proofSystems[i]] != bytes32(0)) revert DuplicateProofSystem(proofSystems[i]);
+            verificationKeys[rollupId][proofSystems[i]] = vkeys[i];
+            _rollupProofSystems[rollupId].push(proofSystems[i]);
+        }
+
+        emit RollupCreated(rollupId, owner, proofSystems, vkeys, threshold, initialState);
     }
 
     // ──────────────────────────────────────────────
     //  Batch posting & execution table (ZK-proven)
     // ──────────────────────────────────────────────
 
-    /// @notice Posts a batch of execution entries with a single ZK proof
-    /// @dev Entries with actionHash == bytes32(0) are applied immediately (state commitments)
-    /// @dev Entries with actionHash != bytes32(0) are stored in the execution table for later consumption
-    /// @param entries The execution entries to process
-    /// @param blobCount Number of blobs containing shared data
-    /// @param callData Shared data passed via calldata
-    /// @param proof The ZK proof covering all entries
-    function postBatch(
-        ExecutionEntry[] calldata entries,
-        uint256 blobCount,
-        bytes calldata callData,
-        bytes calldata proof
-    ) external {
+    /// @notice Posts a batch composed of one or more sub-batches, each proven by N proof systems
+    /// @dev Each `ProofSystemBatch` groups proof systems that share the same entries, callData,
+    ///      blobs, and `hashedInteraction`. Every proof system in the group independently verifies
+    ///      the shared entries (each with its own vkeys). ALL proofs must verify.
+    ///      For each rollup touched across all sub-batches, the total number of submitted proof
+    ///      systems allowed for that rollup (across all groups) must be ≥ rollup.threshold.
+    ///      Every submitted proof system must be relevant to at least one touched rollup.
+    /// @param batches Array of sub-batches (no duplicate proof systems across all batches)
+    function postBatch(ProofSystemBatch[] calldata batches) external {
         if (lastStateUpdateBlock == block.number) {
             revert StateAlreadyUpdatedThisBlock();
         }
+        if (batches.length == 0) revert InvalidProofSystemConfig();
 
-        // --- Build public inputs ---
-        bytes32[] memory entryHashes = new bytes32[](entries.length);
-        for (uint256 i = 0; i < entries.length; i++) {
-            // Gather verification keys for each delta's rollup
-            bytes32[] memory vks = new bytes32[](entries[i].stateDeltas.length);
-            for (uint256 j = 0; j < entries[i].stateDeltas.length; j++) {
-                vks[j] = rollups[entries[i].stateDeltas[j].rollupId].verificationKey;
+        // Validate and verify each sub-batch
+        for (uint256 b = 0; b < batches.length; b++) {
+            ProofSystemBatch calldata batch = batches[b];
+            if (batch.proofSystem.length == 0) revert InvalidProofSystemConfig();
+            if (batch.proofSystem.length != batch.proof.length) revert InvalidProofSystemConfig();
+
+            // Check all proof systems are registered, no duplicates within this batch
+            for (uint256 k = 0; k < batch.proofSystem.length; k++) {
+                if (!isProofSystem[batch.proofSystem[k]]) revert ProofSystemNotRegistered(batch.proofSystem[k]);
+                for (uint256 m = 0; m < k; m++) {
+                    if (batch.proofSystem[k] == batch.proofSystem[m]) revert DuplicateProofSystem(batch.proofSystem[k]);
+                }
+                // No duplicates across batches
+                for (uint256 b2 = 0; b2 < b; b2++) {
+                    for (uint256 m = 0; m < batches[b2].proofSystem.length; m++) {
+                        if (batch.proofSystem[k] == batches[b2].proofSystem[m]) revert DuplicateProofSystem(batch.proofSystem[k]);
+                    }
+                }
             }
 
-            entryHashes[i] = keccak256(
-                abi.encodePacked(
-                    abi.encode(entries[i].stateDeltas),
-                    abi.encode(vks),
-                    entries[i].actionHash,
-                    abi.encode(entries[i].nextAction) // update to flatten actions TODO
-                )
-            );
+            // Verify each proof system against the shared entries
+            _verifySubBatch(batch);
         }
 
-        bytes32[] memory blobHashes = new bytes32[](blobCount);
-        for (uint256 i = 0; i < blobCount; i++) {
-            blobHashes[i] = blobhash(i);
-        }
-
-        bytes32 publicInputsHash = keccak256(
-            abi.encodePacked(
-                blockhash(block.number - 1),
-                block.timestamp,
-                abi.encode(entryHashes),
-                abi.encode(blobHashes),
-                keccak256(callData)
-            )
-        );
-
-        _verifyProof(proof, publicInputsHash);
+        // Enforce per-rollup threshold and per-proof-system relevance
+        _enforceThresholdsAndRelevance(batches);
 
         // Delete previous execution table
         delete executions;
 
-        // --- Process entries ---
-        for (uint256 i = 0; i < entries.length; i++) {
-            if (entries[i].actionHash == bytes32(0)) {
-                // verify state roots match current state, then apply deltas
-                for (uint256 j = 0; j < entries[i].stateDeltas.length; j++) {
-                    StateDelta memory delta = entries[i].stateDeltas[j];
-                    if (rollups[delta.rollupId].stateRoot != delta.currentState) {
-                        revert StateRootMismatch();
+        // Process all entries across all sub-batches
+        for (uint256 b = 0; b < batches.length; b++) {
+            for (uint256 i = 0; i < batches[b].entries.length; i++) {
+                ExecutionEntry calldata entry = batches[b].entries[i];
+                if (entry.actionHash == bytes32(0)) {
+                    for (uint256 j = 0; j < entry.stateDeltas.length; j++) {
+                        if (rollups[entry.stateDeltas[j].rollupId].stateRoot != entry.stateDeltas[j].currentState) {
+                            revert StateRootMismatch();
+                        }
                     }
+                    _applyStateDeltas(entry.stateDeltas);
+                } else {
+                    executions.push(entry);
                 }
-                _applyStateDeltas(entries[i].stateDeltas);
-            } else {
-                // Deferred: store in execution table
-                executions.push(entries[i]);
             }
         }
 
-        emit BatchPosted(entries, publicInputsHash);
+        emit BatchPosted(batches.length);
         lastStateUpdateBlock = block.number;
     }
 
-    /// @notice Verifies a ZK proof against the computed public inputs hash
-    function _verifyProof(bytes calldata proof, bytes32 publicInputsHash) internal view {
-        if (!ZK_VERIFIER.verify(proof, publicInputsHash)) {
-            revert InvalidProof();
+    /// @notice Verifies all proof systems in a sub-batch against the shared entries
+    /// @dev Each proof system gets its own public-inputs hash (using its own vkeys for each delta).
+    ///      The entries, blobs, callData, and hashedInteraction are shared within the group.
+    function _verifySubBatch(ProofSystemBatch calldata batch) internal view {
+        bytes32[] memory blobHashes = new bytes32[](batch.blobCount);
+        for (uint256 i = 0; i < batch.blobCount; i++) {
+            blobHashes[i] = blobhash(i);
+        }
+
+        for (uint256 k = 0; k < batch.proofSystem.length; k++) {
+            bytes32[] memory entryHashes = new bytes32[](batch.entries.length);
+
+            for (uint256 i = 0; i < batch.entries.length; i++) {
+                bytes32[] memory vks = new bytes32[](batch.entries[i].stateDeltas.length);
+                for (uint256 j = 0; j < batch.entries[i].stateDeltas.length; j++) {
+                    uint256 deltaRollupId = batch.entries[i].stateDeltas[j].rollupId;
+                    if (deltaRollupId == MAINNET_ROLLUP_ID) revert MainnetNotModifiable();
+                    vks[j] = verificationKeys[deltaRollupId][batch.proofSystem[k]];
+                }
+
+                entryHashes[i] = keccak256(
+                    abi.encodePacked(
+                        abi.encode(batch.entries[i].stateDeltas),
+                        abi.encode(vks),
+                        batch.entries[i].actionHash,
+                        abi.encode(batch.entries[i].nextAction)
+                    )
+                );
+            }
+
+            bytes32 publicInputsHash = keccak256(
+                abi.encodePacked(
+                    blockhash(block.number - 1),
+                    block.timestamp,
+                    abi.encode(entryHashes),
+                    abi.encode(blobHashes),
+                    keccak256(batch.callData),
+                    batch.hashedInteraction
+                )
+            );
+
+            if (!IProofSystem(batch.proofSystem[k]).verify(batch.proof[k], publicInputsHash)) {
+                revert InvalidProof();
+            }
+        }
+    }
+
+    /// @notice Enforces per-rollup threshold and per-proof-system relevance across all sub-batches
+    function _enforceThresholdsAndRelevance(ProofSystemBatch[] calldata batches) internal view {
+        // Collect unique rollup IDs touched across all sub-batches
+        uint256[] memory touchedRollups = new uint256[](0);
+        for (uint256 b = 0; b < batches.length; b++) {
+            for (uint256 i = 0; i < batches[b].entries.length; i++) {
+                for (uint256 j = 0; j < batches[b].entries[i].stateDeltas.length; j++) {
+                    uint256 rid = batches[b].entries[i].stateDeltas[j].rollupId;
+                    bool found = false;
+                    for (uint256 t = 0; t < touchedRollups.length; t++) {
+                        if (touchedRollups[t] == rid) { found = true; break; }
+                    }
+                    if (!found) {
+                        uint256[] memory newArr = new uint256[](touchedRollups.length + 1);
+                        for (uint256 t = 0; t < touchedRollups.length; t++) {
+                            newArr[t] = touchedRollups[t];
+                        }
+                        newArr[touchedRollups.length] = rid;
+                        touchedRollups = newArr;
+                    }
+                }
+            }
+        }
+
+        // For each touched rollup, count how many submitted proof systems (across all groups) are allowed
+        for (uint256 t = 0; t < touchedRollups.length; t++) {
+            uint256 rid = touchedRollups[t];
+            uint256 count = 0;
+            for (uint256 b = 0; b < batches.length; b++) {
+                for (uint256 k = 0; k < batches[b].proofSystem.length; k++) {
+                    if (verificationKeys[rid][batches[b].proofSystem[k]] != bytes32(0)) {
+                        count++;
+                    }
+                }
+            }
+            if (count < rollups[rid].threshold) {
+                revert ThresholdNotMet(rid, count, rollups[rid].threshold);
+            }
+        }
+
+        // Every submitted proof system must be relevant to at least one touched rollup
+        for (uint256 b = 0; b < batches.length; b++) {
+            for (uint256 k = 0; k < batches[b].proofSystem.length; k++) {
+                bool relevant = false;
+                for (uint256 t = 0; t < touchedRollups.length; t++) {
+                    if (verificationKeys[touchedRollups[t]][batches[b].proofSystem[k]] != bytes32(0)) {
+                        relevant = true;
+                        break;
+                    }
+                }
+                if (!relevant) revert UnrelatedProofSystem(batches[b].proofSystem[k]);
+            }
         }
     }
 
@@ -505,6 +662,15 @@ contract Rollups is ICrossChainManager {
                 config.etherBalance += uint256(delta.etherDelta);
             }
 
+            // Record the transition for this rollup in the block-scoped batchUpdates map.
+            // Stale entries from prior blocks are overwritten; readers guard on blockNumber.
+            batchUpdates[delta.rollupId] = BatchUpdate({
+                blockNumber: block.number,
+                previousState: delta.currentState,
+                newState: delta.newState,
+                etherDelta: delta.etherDelta
+            });
+
             emit L2ExecutionPerformed(delta.rollupId, delta.currentState, delta.newState);
         }
 
@@ -650,10 +816,51 @@ contract Rollups is ICrossChainManager {
         emit StateUpdated(rollupId, newStateRoot);
     }
 
-    /// @notice Updates the verification key for a rollup (owner only)
-    function setVerificationKey(uint256 rollupId, bytes32 newVerificationKey) external onlyRollupOwner(rollupId) {
-        rollups[rollupId].verificationKey = newVerificationKey;
-        emit VerificationKeyUpdated(rollupId, newVerificationKey);
+    /// @notice Rotates the verification key for a specific proof system on this rollup (owner only)
+    function setVerificationKey(uint256 rollupId, address proofSystem, bytes32 newVkey) external onlyRollupOwner(rollupId) {
+        if (newVkey == bytes32(0)) revert InvalidProofSystemConfig();
+        if (verificationKeys[rollupId][proofSystem] == bytes32(0)) revert ProofSystemNotAllowedForRollup(rollupId, proofSystem);
+        verificationKeys[rollupId][proofSystem] = newVkey;
+        emit VerificationKeyUpdated(rollupId, proofSystem, newVkey);
+    }
+
+    /// @notice Adds a proof system to a rollup's allowed set (owner only)
+    function addProofSystem(uint256 rollupId, address proofSystem, bytes32 vkey) external onlyRollupOwner(rollupId) {
+        if (!isProofSystem[proofSystem]) revert ProofSystemNotRegistered(proofSystem);
+        if (vkey == bytes32(0)) revert InvalidProofSystemConfig();
+        if (verificationKeys[rollupId][proofSystem] != bytes32(0)) revert ProofSystemAlreadyAllowed(rollupId, proofSystem);
+
+        verificationKeys[rollupId][proofSystem] = vkey;
+        _rollupProofSystems[rollupId].push(proofSystem);
+        emit ProofSystemAdded(rollupId, proofSystem, vkey);
+    }
+
+    /// @notice Removes a proof system from a rollup's allowed set (owner only)
+    /// @dev Remaining count must stay ≥ threshold
+    function removeProofSystem(uint256 rollupId, address proofSystem) external onlyRollupOwner(rollupId) {
+        if (verificationKeys[rollupId][proofSystem] == bytes32(0)) revert ProofSystemNotAllowedForRollup(rollupId, proofSystem);
+
+        address[] storage psList = _rollupProofSystems[rollupId];
+        if (psList.length - 1 < rollups[rollupId].threshold) revert InvalidProofSystemConfig();
+
+        // Swap-and-pop from the enumeration array
+        for (uint256 i = 0; i < psList.length; i++) {
+            if (psList[i] == proofSystem) {
+                psList[i] = psList[psList.length - 1];
+                psList.pop();
+                break;
+            }
+        }
+        delete verificationKeys[rollupId][proofSystem];
+        emit ProofSystemRemoved(rollupId, proofSystem);
+    }
+
+    /// @notice Sets the threshold for a rollup (owner only)
+    /// @dev 1 ≤ newThreshold ≤ number of allowed proof systems
+    function setThreshold(uint256 rollupId, uint256 newThreshold) external onlyRollupOwner(rollupId) {
+        if (newThreshold == 0 || newThreshold > _rollupProofSystems[rollupId].length) revert InvalidProofSystemConfig();
+        rollups[rollupId].threshold = newThreshold;
+        emit ThresholdChanged(rollupId, newThreshold);
     }
 
     /// @notice Transfers ownership of a rollup to a new owner
@@ -666,6 +873,20 @@ contract Rollups is ICrossChainManager {
     // ──────────────────────────────────────────────
     //  Views
     // ──────────────────────────────────────────────
+
+    /// @notice Returns the `BatchUpdate` recorded for `rollupId` in the current block, or an empty
+    ///         struct (all zero) if none was recorded this block. Stale entries from previous
+    ///         blocks are reported as empty — no storage cleanup needed.
+    function currentBlockUpdate(uint256 rollupId) external view returns (BatchUpdate memory) {
+        BatchUpdate memory u = batchUpdates[rollupId];
+        if (u.blockNumber != block.number) return BatchUpdate(0, bytes32(0), bytes32(0), 0);
+        return u;
+    }
+
+    /// @notice Returns the list of allowed proof systems for a rollup
+    function getRollupProofSystems(uint256 rollupId) external view returns (address[] memory) {
+        return _rollupProofSystems[rollupId];
+    }
 
     /// @notice Computes the deterministic CREATE2 address for a CrossChainProxy
     /// @param originalAddress The original address this proxy represents

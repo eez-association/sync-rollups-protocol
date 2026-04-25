@@ -101,8 +101,8 @@ abstract contract RevertCounterActions {
 /// @dev The proxy call is expected to revert (RevertCounter always reverts).
 ///      We use a low-level call so postBatch effects are preserved.
 contract Batcher {
-    function execute(Rollups rollups, ExecutionEntry[] calldata entries, address proxy, bytes calldata data) external {
-        rollups.postBatch(entries, 0, "", "proof");
+    function execute(Rollups rollups, address proofSystem, ExecutionEntry[] calldata entries, address proxy, bytes calldata data) external {
+        rollups.postBatch(proofSystem, entries, 0, "", "proof");
         (bool success,) = proxy.call(data);
         success; // Expected to revert — suppress unused warning
     }
@@ -169,7 +169,7 @@ contract Execute is Script, RevertCounterActions {
 
         Batcher batcher = new Batcher();
         batcher.execute(
-            Rollups(rollupsAddr),
+            Rollups(rollupsAddr), vm.envAddress("PROOF_SYSTEM"),
             _l1Entries(revertCounterL2Addr, batcherAddr),
             revertCounterProxyAddr,
             abi.encodeWithSelector(RevertCounter.increment.selector)

@@ -109,11 +109,12 @@ abstract contract MultiCallTwiceActions {
 contract Batcher {
     function execute(
         Rollups rollups,
+        address proofSystem,
         ExecutionEntry[] calldata entries,
         CallTwice app,
         address counterProxy
     ) external returns (uint256 first, uint256 second) {
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(proofSystem, entries, 0, "", "proof");
         (first, second) = app.callCounterTwice(counterProxy);
     }
 }
@@ -201,7 +202,7 @@ contract Execute is Script, MultiCallTwiceActions {
 
         Batcher batcher = new Batcher();
         (uint256 first, uint256 second) = batcher.execute(
-            Rollups(rollupsAddr), _l1Entries(counterAAddr, callTwiceAddr), CallTwice(callTwiceAddr), proxyAAddr
+            Rollups(rollupsAddr), vm.envAddress("PROOF_SYSTEM"), _l1Entries(counterAAddr, callTwiceAddr), CallTwice(callTwiceAddr), proxyAAddr
         );
 
         console.log("done");

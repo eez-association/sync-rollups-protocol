@@ -5,10 +5,10 @@ import {Script, console} from "forge-std/Script.sol";
 import {Rollups, RollupConfig} from "src/Rollups.sol";
 import {CrossChainManagerL2} from "src/CrossChainManagerL2.sol";
 import {Action, ActionType, ExecutionEntry, StateDelta} from "src/ICrossChainManager.sol";
-import {IZKVerifier} from "src/IZKVerifier.sol";
+import {IProofSystem} from "src/IProofSystem.sol";
 import {Counter, CounterAndProxy} from "test/mocks/CounterContracts.sol";
 
-contract MockZKVerifier is IZKVerifier {
+contract MockZKVerifier is IProofSystem {
     function verify(bytes calldata, bytes32) external pure override returns (bool) {
         return true;
     }
@@ -45,10 +45,15 @@ contract DeployL1 is Script {
         vm.startBroadcast();
 
         MockZKVerifier verifier = new MockZKVerifier();
-        Rollups rollups = new Rollups(address(verifier), 1);
+        Rollups rollups = new Rollups(1);
+        uint256 validatorId = rollups.registerProofSystem(IProofSystem(address(verifier)));
 
         // Create L2 rollup (rollupId = 1)
-        rollups.createRollup(keccak256("l2-initial-state"), keccak256("verificationKey"), msg.sender);
+        uint256[] memory ids = new uint256[](1);
+        ids[0] = validatorId;
+        bytes32[] memory vks = new bytes32[](1);
+        vks[0] = keccak256("verificationKey");
+        rollups.createRollup(keccak256("l2-initial-state"), ids, vks, msg.sender);
 
         Counter counterL1 = new Counter(); // C
 
@@ -220,7 +225,8 @@ contract Scenario1_L1 is Script {
             entries[0].actionHash = keccak256(abi.encode(callAction));
             entries[0].nextAction = resultAction;
 
-            rollups.postBatch(entries, 0, "", "proof");
+            // Validator id 1 (first validator registered in Stage 2)
+            rollups.postBatch(1, entries, 0, "", "proof");
         }
 
         // Alice (= deployer) calls A.increment()

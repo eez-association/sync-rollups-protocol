@@ -93,11 +93,11 @@ abstract contract HelloWorldActions {
 // ──────────────────────────────────────────────
 
 contract Batcher {
-    function execute(Rollups rollups, ExecutionEntry[] calldata entries, HelloWorldL1 helloWorld)
+    function execute(Rollups rollups, address proofSystem, ExecutionEntry[] calldata entries, HelloWorldL1 helloWorld)
         external
         returns (string memory)
     {
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(proofSystem, entries, 0, "", "proof");
         return helloWorld.helloL2World();
     }
 }
@@ -188,7 +188,7 @@ contract Execute is Script, HelloWorldActions {
 
         Batcher batcher = new Batcher();
         string memory greeting =
-            batcher.execute(Rollups(rollupsAddr), _l1Entries(helloWorldL2Addr, helloWorldL1Addr), HelloWorldL1(helloWorldL1Addr));
+            batcher.execute(Rollups(rollupsAddr), vm.envAddress("PROOF_SYSTEM"), _l1Entries(helloWorldL2Addr, helloWorldL1Addr), HelloWorldL1(helloWorldL1Addr));
 
         console.log("done");
         console.log("greeting=%s", greeting);

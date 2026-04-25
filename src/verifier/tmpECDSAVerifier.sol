@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {IZKVerifier} from "../IZKVerifier.sol";
+import {IProofSystem} from "../IProofSystem.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 /// @title tmpECDSAVerifier
-/// @notice Temporary verifier that uses ECDSA signature recovery instead of ZK proofs.
+/// @notice Temporary validator that uses ECDSA signature recovery instead of ZK proofs.
 /// @dev The `proof` parameter is a 65-byte ECDSA signature encoded as `abi.encodePacked(r, s, v)`:
 ///   - r: bytes32 — the R component of the signature
 ///   - s: bytes32 — the S component of the signature
@@ -15,7 +15,7 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 ///     does NOT normalize these values — callers must ensure v is 27 or 28 before encoding the proof.
 ///
 /// The `publicInputsHash` is signed directly as a raw bytes32 digest (no EIP-191 prefix).
-contract tmpECDSAVerifier is IZKVerifier, Ownable {
+contract tmpECDSAVerifier is IProofSystem, Ownable {
     address public signer;
 
     constructor(address initialOwner, address initialSigner) Ownable(initialOwner) {

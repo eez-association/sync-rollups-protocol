@@ -223,7 +223,7 @@ contract Execute is Script, SiblingScopesActions {
 
         L2TXBatcher batcher = new L2TXBatcher();
         batcher.execute(
-            Rollups(rollupsAddr), _l1Entries(counterAAddr, counterBAddr, scxAddr, rlpTx), L2_ROLLUP_ID, rlpTx
+            Rollups(rollupsAddr), vm.envAddress("PROOF_SYSTEM"), _l1Entries(counterAAddr, counterBAddr, scxAddr, rlpTx), L2_ROLLUP_ID, rlpTx
         );
 
         console.log("done");

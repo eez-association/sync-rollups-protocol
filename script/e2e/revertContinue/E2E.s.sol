@@ -279,10 +279,11 @@ contract ExecuteL2 is Script, RevertContinueActions {
 contract Batcher {
     function execute(
         Rollups rollups,
+        address proofSystem,
         ExecutionEntry[] calldata entries,
         DualCallerWithRevert dualCaller
     ) external {
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(proofSystem, entries, 0, "", "proof");
         dualCaller.execute();
     }
 }
@@ -299,7 +300,7 @@ contract Execute is Script, RevertContinueActions {
         vm.startBroadcast();
         Batcher batcher = new Batcher();
         batcher.execute(
-            Rollups(rollupsAddr),
+            Rollups(rollupsAddr), vm.envAddress("PROOF_SYSTEM"),
             _l1Entries(joinAAddr, joinBAddr, dualCallerAddr),
             DualCallerWithRevert(dualCallerAddr)
         );

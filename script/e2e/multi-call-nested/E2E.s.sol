@@ -257,12 +257,13 @@ abstract contract MultiCallNestedActions {
 contract Batcher {
     function execute(
         Rollups rollups,
+        address proofSystem,
         ExecutionEntry[] calldata entries,
         CallTwiceNestedAndOnce app,
         address nestedProxy,
         address simpleProxy
     ) external returns (uint256) {
-        rollups.postBatch(entries, 0, "", "proof");
+        rollups.postBatch(proofSystem, entries, 0, "", "proof");
         return app.execute(nestedProxy, simpleProxy);
     }
 }
@@ -407,7 +408,7 @@ contract Execute is Script, MultiCallNestedActions {
 
         // sourceAddr = CallTwiceNestedAndOnce (it calls the proxies, so msg.sender in proxy = app)
         uint256 result = batcher.execute(
-            Rollups(rollupsAddr),
+            Rollups(rollupsAddr), vm.envAddress("PROOF_SYSTEM"),
             _l1Entries(counterL1Addr, counterAndProxyL2Addr, counterL2Addr, callTwiceNestedAddr),
             CallTwiceNestedAndOnce(callTwiceNestedAddr),
             cap2ProxyL1Addr,

@@ -278,7 +278,7 @@ contract Execute is Script, RevertCounterL2Actions {
         bytes memory rlpTx = vm.envBytes("RLP_ENCODED_TX");
 
         L2TXBatcher batcher = new L2TXBatcher();
-        batcher.execute(Rollups(rollupsAddr), _l1Entries(revertCounterL1Addr, alice, rlpTx), L2_ROLLUP_ID, rlpTx);
+        batcher.execute(Rollups(rollupsAddr), vm.envAddress("PROOF_SYSTEM"), _l1Entries(revertCounterL1Addr, alice, rlpTx), L2_ROLLUP_ID, rlpTx);
 
         console.log("done");
         // RevertCounter.counter should still be 0 — increment() reverted inside scope

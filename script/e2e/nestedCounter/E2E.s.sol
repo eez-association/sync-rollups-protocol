@@ -152,8 +152,8 @@ abstract contract NestedCounterActions {
 /// @dev The Batcher's address becomes the "alice" (source) for the outer CALL on L1,
 ///      because msg.sender inside D'.fallback = Batcher.
 contract Batcher {
-    function execute(Rollups rollups, ExecutionEntry[] calldata entries, address target, bytes calldata data) external {
-        rollups.postBatch(entries, 0, "", "proof");
+    function execute(Rollups rollups, address proofSystem, ExecutionEntry[] calldata entries, address target, bytes calldata data) external {
+        rollups.postBatch(proofSystem, entries, 0, "", "proof");
         (bool success, bytes memory ret) = target.call(data);
         if (!success) {
             assembly {
@@ -294,7 +294,7 @@ contract Execute is Script, NestedCounterActions {
 
         Batcher batcher = new Batcher();
         batcher.execute(
-            Rollups(rollupsAddr),
+            Rollups(rollupsAddr), vm.envAddress("PROOF_SYSTEM"),
             _l1Entries(counterL1Addr, counterAndProxyL2Addr, batcherAddr),
             counterAndProxyL2ProxyL1Addr,
             incrementProxyCallData

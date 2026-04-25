@@ -5,6 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {tmpECDSAVerifier} from "../src/verifier/tmpECDSAVerifier.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Rollups} from "../src/Rollups.sol";
+import {IProofSystem} from "../src/IProofSystem.sol";
 import {ExecutionEntry, StateDelta, Action, ActionType} from "../src/ICrossChainManager.sol";
 
 contract tmpECDSAVerifierTest is Test {
@@ -52,14 +53,15 @@ contract tmpECDSAVerifierTest is Test {
     }
 
     function test_postBatch_withECDSAVerifier() public {
-        // Deploy Rollups with the ECDSA verifier
-        Rollups rollups = new Rollups(address(verifier), 1);
+        // Deploy Rollups and register the ECDSA verifier as a validator
+        Rollups rollups = new Rollups(1);
+        rollups.registerProofSystem(IProofSystem(address(verifier)));
 
-        // Create a rollup
+        // Create a rollup bound to that validator
         bytes32 initialState = keccak256("initial");
         bytes32 newState = keccak256("new");
         bytes32 vk = keccak256("vk");
-        uint256 rollupId = rollups.createRollup(initialState, vk, address(this));
+        uint256 rollupId = rollups.createRollup(initialState, address(verifier), vk, address(this));
 
         // Build an immediate entry (actionHash = 0) with a single state delta
         StateDelta[] memory deltas = new StateDelta[](1);
@@ -112,10 +114,10 @@ contract tmpECDSAVerifierTest is Test {
         bytes memory proof = _sign(SIGNER_PK, publicInputsHash);
 
         // postBatch should succeed
-        rollups.postBatch(entries, 0, "", proof);
+        rollups.postBatch(address(verifier), entries, 0, "", proof);
 
         // Verify state was updated
-        (, , bytes32 stateRoot,) = rollups.rollups(rollupId);
+        (,, bytes32 stateRoot,) = rollups.rollups(rollupId);
         assertEq(stateRoot, newState);
     }
 }
