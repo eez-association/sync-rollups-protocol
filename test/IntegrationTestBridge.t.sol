@@ -33,7 +33,7 @@ contract TestToken is ERC20 {
 ///   - Rolling hash computed with tagged events: CALL_BEGIN(1), CALL_END(2), NESTED_BEGIN(3), NESTED_END(4)
 ///   - No executeIncomingCrossChainCall on L2 -- all entries consumed via proxy calls
 ///   - executeL2TX() takes no args on L1
-///   - postBatch takes (entries, staticCalls, blobCount, callData, proof)
+///   - postBatch takes (entries, staticCalls, transientCount, transientStaticCallCount, blobCount, callData, proof)
 ///   - loadExecutionTable takes (entries, staticCalls)
 ///
 /// ┌────┬───────────────────────────────────────┬──────────┬──────────────────┐
@@ -182,7 +182,7 @@ contract IntegrationTestBridge is Test {
             // calls[] empty, nestedActions[] empty, callCount=0, returnData="", rollingHash=0, failed=false
             // (all default zero values)
 
-            rollups.postBatch(entries, _noStaticCalls(), 0, "", "proof");
+            rollups.postBatch(entries, _noStaticCalls(), 0, 0, 0, "", "proof");
         }
 
         // Alice triggers the bridge
@@ -311,7 +311,7 @@ contract IntegrationTestBridge is Test {
             entries[0].stateDeltas = stateDeltas;
             entries[0].actionHash = l1ActionHash;
 
-            rollups.postBatch(entries, _noStaticCalls(), 0, "", "proof");
+            rollups.postBatch(entries, _noStaticCalls(), 0, 0, 0, "", "proof");
         }
 
         // Alice approves and bridges tokens
@@ -432,7 +432,7 @@ contract IntegrationTestBridge is Test {
             entries[0].stateDeltas = stateDeltas;
             entries[0].actionHash = fwdActionHash;
 
-            rollups.postBatch(entries, _noStaticCalls(), 0, "", "proof");
+            rollups.postBatch(entries, _noStaticCalls(), 0, 0, 0, "", "proof");
         }
 
         vm.prank(alice);
@@ -581,7 +581,7 @@ contract IntegrationTestBridge is Test {
             entries[0].returnData = "";
             entries[0].rollingHash = retRollingHash;
 
-            rollups.postBatch(entries, _noStaticCalls(), 0, "", "proof");
+            rollups.postBatch(entries, _noStaticCalls(), 1, 0, 0, "", "proof");
         }
 
         // The immediate entry (actionHash==0) was already executed during postBatch.
