@@ -144,7 +144,7 @@ NESTED_BEGIN (3)   keccak256(prev, 0x03, nestedNumber)
 NESTED_END   (4)   keccak256(prev, 0x04, nestedNumber)
 ```
 
-A single mismatch anywhere — wrong return data, wrong success/failure flag, missing or extra calls, incorrect nesting structure — produces a different final hash and is caught with one comparison. See `src/rollinghash.md` for the full specification.
+A single mismatch anywhere — wrong return data, wrong success/failure flag, missing or extra calls, incorrect nesting structure — produces a different final hash and is caught with one comparison. See `docs/SYNC_ROLLUPS_PROTOCOL_SPEC.md` §E for the full specification (formulas, worked example, multi-phase static-call disambiguation).
 
 ### `revertSpan` (replaces REVERT / REVERT_CONTINUE)
 
@@ -175,11 +175,9 @@ proxyAddress  = address(uint160(uint256(keccak256(0xff || manager || salt || byt
 
 ## Documentation
 
-- `docs/SYNC_ROLLUPS_PROTOCOL_SPEC.md` — formal protocol specification.
+- `docs/SYNC_ROLLUPS_PROTOCOL_SPEC.md` — formal protocol specification (data model, function specs, rolling-hash details with worked example, invariants, security).
 - `docs/EXECUTION_TABLE_SPEC.md` — how to build execution entries (entry structure, action hash, flow patterns).
 - `docs/CAVEATS.md` — edge cases and gotchas.
-- `src/spec.md` — contract specification (struct definitions, execution model, transient variables).
-- `src/rollinghash.md` — rolling hash specification with worked example.
 
 ## Testing
 

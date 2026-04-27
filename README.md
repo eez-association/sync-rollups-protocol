@@ -309,11 +309,9 @@ The transient table must be fully drained for the deferred remainder to be publi
 
 ## Documentation
 
-- [`docs/SYNC_ROLLUPS_PROTOCOL_SPEC.md`](docs/SYNC_ROLLUPS_PROTOCOL_SPEC.md) — formal protocol specification (data model, function specs, invariants, security).
+- [`docs/SYNC_ROLLUPS_PROTOCOL_SPEC.md`](docs/SYNC_ROLLUPS_PROTOCOL_SPEC.md) — formal protocol specification (data model, function specs, rolling-hash details with worked example, invariants, security).
 - [`docs/EXECUTION_TABLE_SPEC.md`](docs/EXECUTION_TABLE_SPEC.md) — how to build execution entries (entry structure, action hash, flow patterns for L1↔L2 simple/nested, revert via `revertSpan`, etc.).
 - [`docs/CAVEATS.md`](docs/CAVEATS.md) — edge cases and gotchas.
-- [`src/spec.md`](src/spec.md) — contract specification with struct definitions and execution model.
-- [`src/rollinghash.md`](src/rollinghash.md) — rolling hash specification with worked example.
 
 ## Security Considerations
 

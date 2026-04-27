@@ -237,7 +237,7 @@ require(_lastNestedActionConsumed == entry.nestedActions.length);  // Unconsumed
 
 A single mismatch anywhere in the execution tree changes the final hash — this catches wrong return data, wrong success/failure flags, missing or extra calls, and incorrect nesting structure with one comparison.
 
-For the full hash chain semantics (with worked example), see `src/rollinghash.md`.
+For the full hash chain semantics (with worked example and multi-phase static-call disambiguation), see `SYNC_ROLLUPS_PROTOCOL_SPEC.md` §E.
 
 ---
 

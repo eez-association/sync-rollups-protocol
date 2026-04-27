@@ -730,11 +730,155 @@ A single mismatch anywhere in the execution tree changes the final hash — this
 - Incorrect nesting structure (nested action declared at the wrong depth)
 - Reordered operations
 
-For the full hash chain semantics (with worked example), see `src/rollinghash.md`.
-
 ### E.1 Rolling Hash and `revertSpan`
 
 Inside a `revertSpan`, the inner self-call updates `_rollingHash` exactly as if the calls were normal (CALL_BEGIN/CALL_END for each, including failed ones). The `ContextResult` revert payload carries the post-span hash value back out, so the outer flow's rolling hash reflects that the span happened — even though the EVM rolled back the state changes the calls produced. This is essential: the proof's `rollingHash` must commit to the calls regardless of whether their state effects survived.
+
+The mechanism relies on EIP-1153 `tload` / `tstore` semantics:
+
+- `tload` is **read-only**, so it works inside a STATICCALL context **and** inside a self-call that is about to revert. The inner self-call therefore observes the outer `_rollingHash`, `_currentCallNumber`, and `_lastNestedActionConsumed` values when it starts.
+- `tstore` writes are part of the EVM journal and are **rolled back** when the call frame reverts. So when `executeInContext` reverts with `ContextResult`, every transient write performed inside the span (including the rolling-hash updates and counter increments) is undone — except for the three values that escape via the revert payload, which the caller manually re-applies after decoding.
+
+### E.2 Worked Hash Chain Example
+
+Setup:
+
+```
+entry.calls          = [c0, c1, c2, c3, c4]
+entry.callCount      = 3
+entry.nestedActions  = [ { actionHash = H_nested, callCount = 2, returnData = 0xaa } ]
+entry.rollingHash    = <expected final hash>
+```
+
+The entry has 5 calls in the flat array. Entry-level processes 3 iterations: c0, c3, c4. While c0 is executing, the destination contract calls back into a proxy, which consumes `nestedActions[0]`; that nested action processes c1 and c2.
+
+Step-by-step:
+
+```
+Initial transient state:
+  _rollingHash               = 0x0
+  _currentCallNumber         = 0
+  _lastNestedActionConsumed  = 0
+
+─── Entry-level _processNCalls(3), iteration 0 ─────────────
+
+  Read entry.calls[0] = c0
+  _currentCallNumber++ → 1
+  hash CALL_BEGIN(callNum=1):
+    _rollingHash = keccak256(0x0, uint8(1), uint256(1))                                    → H1
+
+  Execute c0 via the source proxy. During c0, the destination contract calls back
+  into a proxy on this chain → executeCrossChainCall → _insideExecution() == true
+  → _consumeNestedAction(H_nested):
+
+      idx = _lastNestedActionConsumed++ → idx=0, counter becomes 1
+      require(nestedActions[0].actionHash == H_nested)
+      nestedNumber = idx + 1 = 1
+
+      hash NESTED_BEGIN(nestedNum=1):
+        _rollingHash = keccak256(H1, uint8(3), uint256(1))                                 → H2
+
+      _processNCalls(2):  // nested action's callCount
+
+        Read entry.calls[1] = c1
+        _currentCallNumber++ → 2
+        hash CALL_BEGIN(callNum=2):
+          _rollingHash = keccak256(H2, uint8(1), uint256(2))                               → H3
+        Execute c1 via the source proxy. Succeeds with retData_1.
+        hash CALL_END(callNum=2, success=true, retData_1):
+          _rollingHash = keccak256(H3, uint8(2), uint256(2), true, retData_1)              → H4
+
+        Read entry.calls[2] = c2
+        _currentCallNumber++ → 3
+        hash CALL_BEGIN(callNum=3):
+          _rollingHash = keccak256(H4, uint8(1), uint256(3))                               → H5
+        Execute c2 via the source proxy. Succeeds with retData_2.
+        hash CALL_END(callNum=3, success=true, retData_2):
+          _rollingHash = keccak256(H5, uint8(2), uint256(3), true, retData_2)              → H6
+
+      hash NESTED_END(nestedNum=1):
+        _rollingHash = keccak256(H6, uint8(4), uint256(1))                                 → H7
+
+      return nestedActions[0].returnData (0xaa) to the destination contract
+
+  c0's proxy call returns. Proxy reports success and retData_0.
+  hash CALL_END(callNum=1, success=true, retData_0):
+    _rollingHash = keccak256(H7, uint8(2), uint256(1), true, retData_0)                    → H8
+
+─── Entry-level _processNCalls(3), iteration 1 ─────────────
+
+  Read entry.calls[3] = c3
+  _currentCallNumber++ → 4
+  hash CALL_BEGIN(callNum=4):
+    _rollingHash = keccak256(H8, uint8(1), uint256(4))                                     → H9
+  Execute c3. Succeeds with retData_3.
+  hash CALL_END(callNum=4, success=true, retData_3):
+    _rollingHash = keccak256(H9, uint8(2), uint256(4), true, retData_3)                    → H10
+
+─── Entry-level _processNCalls(3), iteration 2 ─────────────
+
+  Read entry.calls[4] = c4
+  _currentCallNumber++ → 5
+  hash CALL_BEGIN(callNum=5):
+    _rollingHash = keccak256(H10, uint8(1), uint256(5))                                    → H11
+  Execute c4. Succeeds with retData_4.
+  hash CALL_END(callNum=5, success=true, retData_4):
+    _rollingHash = keccak256(H11, uint8(2), uint256(5), true, retData_4)                   → H12
+
+─── Verification ─────────────
+
+  _rollingHash (H12)              == entry.rollingHash             → RollingHashMismatch?       no
+  _currentCallNumber (5)          == entry.calls.length (5)        → UnconsumedCalls?           no
+  _lastNestedActionConsumed (1)   == entry.nestedActions.length(1) → UnconsumedNestedActions?   no
+  _currentCallNumber = 0    // reset so _insideExecution() returns false
+```
+
+Hash chain summary:
+
+```
+H0  = 0x0
+H1  = hash(H0,  CALL_BEGIN,   callNum=1)
+H2  = hash(H1,  NESTED_BEGIN, nestedNum=1)
+H3  = hash(H2,  CALL_BEGIN,   callNum=2)
+H4  = hash(H3,  CALL_END,     callNum=2, true, retData_1)
+H5  = hash(H4,  CALL_BEGIN,   callNum=3)
+H6  = hash(H5,  CALL_END,     callNum=3, true, retData_2)
+H7  = hash(H6,  NESTED_END,   nestedNum=1)
+H8  = hash(H7,  CALL_END,     callNum=1, true, retData_0)
+H9  = hash(H8,  CALL_BEGIN,   callNum=4)
+H10 = hash(H9,  CALL_END,     callNum=4, true, retData_3)
+H11 = hash(H10, CALL_BEGIN,   callNum=5)
+H12 = hash(H11, CALL_END,     callNum=5, true, retData_4)
+
+require(H12 == entry.rollingHash)
+```
+
+### E.3 Multiple Phases Within One Call (Static Call Disambiguation)
+
+A single call iteration can issue several STATICCALLs at distinct points of its execution, possibly with the same `actionHash`. The `(callNumber, lastNestedActionConsumed)` pair forms a coordinate that advances monotonically and never repeats — it is what `staticCalls[]` is keyed on (see §F.1).
+
+Example: while `entry.calls[0]` (call #1 at the entry level) executes, the destination contract:
+
+```
+Call #1 begins:
+  _currentCallNumber = 1
+  _lastNestedActionConsumed = 0
+
+  STATICCALL to proxy → staticCallLookup
+    → matched by (actionHash, callNumber=1, lastNestedActionConsumed=0)
+
+  Trigger nested action #1 (a successful reentrant call)
+    → _consumeNestedAction post-increments _lastNestedActionConsumed to 1
+    → NESTED_BEGIN/END are hashed; nested calls (if any) advance _currentCallNumber
+
+  STATICCALL to proxy → staticCallLookup
+    → matched by (actionHash, callNumber=K, lastNestedActionConsumed=1)
+       where K is _currentCallNumber after any nested calls
+```
+
+Both STATICCALLs may carry the **same** `actionHash` — the builder differentiates them by recording the live values of `_currentCallNumber` and `_lastNestedActionConsumed` at the exact point of each STATICCALL during simulation, and stamping them into the corresponding `StaticCall` entries.
+
+If `_currentCallNumber` advanced inside the nested action (the nested action consumed some of `entry.calls[]`), the second STATICCALL's `callNumber` will be larger than the first's. If the nested action was empty (`callCount == 0`), `_currentCallNumber` stays at 1 and the two STATICCALLs differ only in `lastNestedActionConsumed` (0 vs 1).
 
 ---
 
