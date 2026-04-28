@@ -34,23 +34,23 @@ abstract contract MultiCallNestedActions {
 
     function _innerActionHash(address counterL2, address cap) internal pure returns (bytes32) {
         return actionHash(Action({
-            rollupId: L2_ROLLUP_ID,
-            destination: counterL2,
+            targetRollupId: L2_ROLLUP_ID,
+            targetAddress: counterL2,
             value: 0,
             data: abi.encodeWithSelector(Counter.increment.selector),
             sourceAddress: cap,
-            sourceRollup: MAINNET_ROLLUP_ID
+            sourceRollupId: MAINNET_ROLLUP_ID
         }));
     }
 
     function _outerActionHash(address cap, address alice) internal pure returns (bytes32) {
         return actionHash(Action({
-            rollupId: L2_ROLLUP_ID,
-            destination: cap,
+            targetRollupId: L2_ROLLUP_ID,
+            targetAddress: cap,
             value: 0,
             data: abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),
             sourceAddress: alice,
-            sourceRollup: MAINNET_ROLLUP_ID
+            sourceRollupId: MAINNET_ROLLUP_ID
         }));
     }
 
@@ -82,19 +82,19 @@ abstract contract MultiCallNestedActions {
 
         CrossChainCall[] memory calls = new CrossChainCall[](2);
         calls[0] = CrossChainCall({
-            destination: cap,
+            targetAddress: cap,
             value: 0,
             data: abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),
             sourceAddress: alice,
-            sourceRollup: L2_ROLLUP_ID,
+            sourceRollupId: L2_ROLLUP_ID,
             revertSpan: 0
         });
         calls[1] = CrossChainCall({
-            destination: cap,
+            targetAddress: cap,
             value: 0,
             data: abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),
             sourceAddress: alice,
-            sourceRollup: L2_ROLLUP_ID,
+            sourceRollupId: L2_ROLLUP_ID,
             revertSpan: 0
         });
 

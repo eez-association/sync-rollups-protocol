@@ -295,13 +295,13 @@ contract CrossChainManagerL2 is ICrossChainManager {
 
                 _rollingHash = keccak256(abi.encodePacked(_rollingHash, CALL_BEGIN, _currentCallNumber));
 
-                address sourceProxy = computeCrossChainProxyAddress(cc.sourceAddress, cc.sourceRollup);
+                address sourceProxy = computeCrossChainProxyAddress(cc.sourceAddress, cc.sourceRollupId);
                 if (authorizedProxies[sourceProxy].originalAddress == address(0)) {
-                    _createProxyInternal(cc.sourceAddress, cc.sourceRollup);
+                    _createProxyInternal(cc.sourceAddress, cc.sourceRollupId);
                 }
 
                 (bool success, bytes memory retData) = sourceProxy.call{value: cc.value}(
-                    abi.encodeCall(CrossChainProxy.executeOnBehalf, (cc.destination, cc.data))
+                    abi.encodeCall(CrossChainProxy.executeOnBehalf, (cc.targetAddress, cc.data))
                 );
 
                 _rollingHash = keccak256(abi.encodePacked(_rollingHash, CALL_END, _currentCallNumber, success, retData));
@@ -391,9 +391,9 @@ contract CrossChainManagerL2 is ICrossChainManager {
     function _processNStaticCalls(CrossChainCall[] memory calls) internal view returns (bytes32 computedHash) {
         for (uint256 i = 0; i < calls.length; i++) {
             CrossChainCall memory cc = calls[i];
-            address sourceProxy = computeCrossChainProxyAddress(cc.sourceAddress, cc.sourceRollup);
+            address sourceProxy = computeCrossChainProxyAddress(cc.sourceAddress, cc.sourceRollupId);
             (bool success, bytes memory retData) = sourceProxy.staticcall(
-                abi.encodeCall(CrossChainProxy.executeOnBehalf, (cc.destination, cc.data))
+                abi.encodeCall(CrossChainProxy.executeOnBehalf, (cc.targetAddress, cc.data))
             );
             computedHash = keccak256(abi.encodePacked(computedHash, success, retData));
         }

@@ -92,8 +92,8 @@ abstract contract VerifyHelpers is Script {
                 string.concat(
                     "      call[",
                     vm.toString(c),
-                    "]: dest=",
-                    vm.toString(cc.destination),
+                    "]: target=",
+                    vm.toString(cc.targetAddress),
                     "  value=",
                     vm.toString(cc.value),
                     "  revertSpan=",
@@ -105,7 +105,7 @@ abstract contract VerifyHelpers is Script {
                     "               from=",
                     vm.toString(cc.sourceAddress),
                     " @ rollup ",
-                    vm.toString(cc.sourceRollup),
+                    vm.toString(cc.sourceRollupId),
                     "  data=",
                     _shortBytes(cc.data)
                 )

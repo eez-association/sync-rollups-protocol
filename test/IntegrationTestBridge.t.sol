@@ -219,11 +219,11 @@ contract IntegrationTestBridge is Test {
 
         CrossChainCall[] memory l2Calls = new CrossChainCall[](1);
         l2Calls[0] = CrossChainCall({
-            destination: alice,
+            targetAddress: alice,
             value: 1 ether,
             data: "",
             sourceAddress: address(bridgeL1),
-            sourceRollup: MAINNET_ROLLUP_ID,
+            sourceRollupId: MAINNET_ROLLUP_ID,
             revertSpan: 0
         });
 
@@ -347,11 +347,11 @@ contract IntegrationTestBridge is Test {
         // Entry's calls: route receiveTokens to bridgeL2 via proxy(bridgeL1, MAINNET)
         CrossChainCall[] memory l2Calls = new CrossChainCall[](1);
         l2Calls[0] = CrossChainCall({
-            destination: address(bridgeL2),
+            targetAddress: address(bridgeL2),
             value: 0,
             data: receiveTokensCalldata,
             sourceAddress: address(bridgeL1),
-            sourceRollup: MAINNET_ROLLUP_ID,
+            sourceRollupId: MAINNET_ROLLUP_ID,
             revertSpan: 0
         });
 
@@ -463,11 +463,11 @@ contract IntegrationTestBridge is Test {
 
         CrossChainCall[] memory fwdL2Calls = new CrossChainCall[](1);
         fwdL2Calls[0] = CrossChainCall({
-            destination: address(bridgeL2),
+            targetAddress: address(bridgeL2),
             value: 0,
             data: fwdCalldata,
             sourceAddress: address(bridgeL1),
-            sourceRollup: MAINNET_ROLLUP_ID,
+            sourceRollupId: MAINNET_ROLLUP_ID,
             revertSpan: 0
         });
 
@@ -553,11 +553,11 @@ contract IntegrationTestBridge is Test {
         // The call inside the entry: proxy(bridgeL2, L2).executeOnBehalf(bridgeL1, retCalldata)
         CrossChainCall[] memory retL1Calls = new CrossChainCall[](1);
         retL1Calls[0] = CrossChainCall({
-            destination: address(bridgeL1),
+            targetAddress: address(bridgeL1),
             value: 0,
             data: retCalldata,
             sourceAddress: address(bridgeL2),
-            sourceRollup: L2_ROLLUP_ID,
+            sourceRollupId: L2_ROLLUP_ID,
             revertSpan: 0
         });
 

@@ -31,16 +31,16 @@ Used by tooling / the prover to compute `actionHash`. Not stored on-chain — th
 
 ```solidity
 struct Action {
-    uint256 rollupId;        // target rollup (where this call executes)
-    address destination;     // contract being called on the target rollup
+    uint256 targetRollupId;  // target rollup (where this call executes)
+    address targetAddress;   // contract being called on the target rollup
     uint256 value;           // ETH sent with the call
     bytes   data;            // calldata
     address sourceAddress;   // caller identity on the source rollup
-    uint256 sourceRollup;    // source rollup ID
+    uint256 sourceRollupId;  // source rollup ID
 }
 ```
 
-There is no `ActionType` enum. There is no `scope` field. There is no `failed` field.
+There is no `ActionType` enum. There is no `scope` field. There is no `failed` field. Field declaration order matches the `abi.encode` preimage — do not reorder.
 
 #### StateDelta
 
@@ -60,11 +60,11 @@ A single call in the entry's flat `calls[]` array.
 
 ```solidity
 struct CrossChainCall {
-    address destination;
+    address targetAddress;
     uint256 value;
     bytes   data;
     address sourceAddress;
-    uint256 sourceRollup;
+    uint256 sourceRollupId;
     uint256 revertSpan;   // 0 = normal call; N>0 = open isolated revert context for next N calls (this one inclusive)
 }
 ```
@@ -284,12 +284,12 @@ function executeCrossChainCall(address sourceAddress, bytes calldata callData)
 ```solidity
 ProxyInfo storage proxyInfo = authorizedProxies[msg.sender];
 bytes32 actionHash = _computeActionInputHash(
-    proxyInfo.originalRollupId,   // rollupId
-    proxyInfo.originalAddress,    // destination
+    proxyInfo.originalRollupId,   // targetRollupId
+    proxyInfo.originalAddress,    // targetAddress
     msg.value,                    // value
     callData,                     // data
     sourceAddress,                // sourceAddress
-    MAINNET_ROLLUP_ID             // sourceRollup (L1 = 0)
+    MAINNET_ROLLUP_ID             // sourceRollupId (L1 = 0)
 );
 emit CrossChainCallExecuted(actionHash, msg.sender, sourceAddress, callData, msg.value);
 
@@ -492,8 +492,8 @@ For each delta:
 ```
 hash = bytes32(0)
 for cc in calls:
-    sourceProxy = computeCrossChainProxyAddress(cc.sourceAddress, cc.sourceRollup)
-    (success, retData) = sourceProxy.staticcall(abi.encodeCall(CrossChainProxy.executeOnBehalf, (cc.destination, cc.data)))
+    sourceProxy = computeCrossChainProxyAddress(cc.sourceAddress, cc.sourceRollupId)
+    (success, retData) = sourceProxy.staticcall(abi.encodeCall(CrossChainProxy.executeOnBehalf, (cc.targetAddress, cc.data)))
     hash = keccak256(abi.encodePacked(hash, success, retData))
 return hash
 ```
@@ -503,7 +503,7 @@ No `revertSpan` handling — every call executes as-is. Static context cannot de
 ##### `_computeActionInputHash`
 
 ```solidity
-keccak256(abi.encode(rollupId, destination, value, data, sourceAddress, sourceRollup))
+keccak256(abi.encode(targetRollupId, targetAddress, value, data, sourceAddress, sourceRollupId))
 ```
 
 ##### `_computeEntryHashes(ExecutionEntry[] calldata entries)`
@@ -613,7 +613,7 @@ The `abi.decode(result, (bytes))` unwrap is required because `executeCrossChainC
 Every action hash is:
 
 ```solidity
-actionHash = keccak256(abi.encode(rollupId, destination, value, data, sourceAddress, sourceRollup))
+actionHash = keccak256(abi.encode(targetRollupId, targetAddress, value, data, sourceAddress, sourceRollupId))
 ```
 
 There is exactly one formula for all entry points and all reentrant calls. The off-chain `Action` struct in `ICrossChainManager.sol` exists purely so tooling can construct the same ABI-encoded preimage as `_computeActionInputHash`.

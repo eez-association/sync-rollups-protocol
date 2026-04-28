@@ -173,11 +173,11 @@ contract CrossChainManagerL2Test is Test {
         );
 
         CrossChainCall memory cc = CrossChainCall({
-            destination: address(target),
+            targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (42)),
             sourceAddress: address(this),
-            sourceRollup: TEST_ROLLUP_ID,
+            sourceRollupId: TEST_ROLLUP_ID,
             revertSpan: 0
         });
 
@@ -201,11 +201,11 @@ contract CrossChainManagerL2Test is Test {
         );
 
         CrossChainCall memory cc = CrossChainCall({
-            destination: address(target),
+            targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (42)),
             sourceAddress: address(this),
-            sourceRollup: TEST_ROLLUP_ID,
+            sourceRollupId: TEST_ROLLUP_ID,
             revertSpan: 0
         });
 
@@ -308,11 +308,11 @@ contract CrossChainManagerL2Test is Test {
         );
 
         CrossChainCall memory cc = CrossChainCall({
-            destination: address(target),
+            targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (42)),
             sourceAddress: address(this),
-            sourceRollup: TEST_ROLLUP_ID,
+            sourceRollupId: TEST_ROLLUP_ID,
             revertSpan: 0
         });
 
@@ -336,11 +336,11 @@ contract CrossChainManagerL2Test is Test {
         );
 
         CrossChainCall memory cc = CrossChainCall({
-            destination: address(target),
+            targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.getValue, ()),
             sourceAddress: address(this),
-            sourceRollup: TEST_ROLLUP_ID,
+            sourceRollupId: TEST_ROLLUP_ID,
             revertSpan: 0
         });
 
@@ -383,11 +383,11 @@ contract CrossChainManagerL2Test is Test {
         );
 
         CrossChainCall memory cc = CrossChainCall({
-            destination: address(target),
+            targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.getValue, ()),
             sourceAddress: address(this),
-            sourceRollup: TEST_ROLLUP_ID,
+            sourceRollupId: TEST_ROLLUP_ID,
             revertSpan: 0
         });
 
@@ -433,11 +433,11 @@ contract CrossChainManagerL2Test is Test {
         );
 
         CrossChainCall memory cc = CrossChainCall({
-            destination: address(target),
+            targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (42)),
             sourceAddress: address(this),
-            sourceRollup: TEST_ROLLUP_ID,
+            sourceRollupId: TEST_ROLLUP_ID,
             revertSpan: 0
         });
 
@@ -461,19 +461,19 @@ contract CrossChainManagerL2Test is Test {
 
         CrossChainCall[] memory calls = new CrossChainCall[](2);
         calls[0] = CrossChainCall({
-            destination: address(target),
+            targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (42)),
             sourceAddress: address(this),
-            sourceRollup: TEST_ROLLUP_ID,
+            sourceRollupId: TEST_ROLLUP_ID,
             revertSpan: 0
         });
         calls[1] = CrossChainCall({
-            destination: address(target),
+            targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (99)),
             sourceAddress: address(this),
-            sourceRollup: TEST_ROLLUP_ID,
+            sourceRollupId: TEST_ROLLUP_ID,
             revertSpan: 0
         });
 
@@ -509,19 +509,19 @@ contract CrossChainManagerL2Test is Test {
 
         CrossChainCall[] memory calls = new CrossChainCall[](2);
         calls[0] = CrossChainCall({
-            destination: address(target),
+            targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (10)),
             sourceAddress: address(this),
-            sourceRollup: TEST_ROLLUP_ID,
+            sourceRollupId: TEST_ROLLUP_ID,
             revertSpan: 0
         });
         calls[1] = CrossChainCall({
-            destination: address(target),
+            targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (20)),
             sourceAddress: address(this),
-            sourceRollup: TEST_ROLLUP_ID,
+            sourceRollupId: TEST_ROLLUP_ID,
             revertSpan: 0
         });
 
@@ -570,11 +570,11 @@ contract CrossChainManagerL2Test is Test {
 
         CrossChainCall[] memory calls = new CrossChainCall[](1);
         calls[0] = CrossChainCall({
-            destination: address(revTarget),
+            targetAddress: address(revTarget),
             value: 0,
             data: hex"deadbeef",
             sourceAddress: address(this),
-            sourceRollup: TEST_ROLLUP_ID,
+            sourceRollupId: TEST_ROLLUP_ID,
             revertSpan: 1
         });
 
@@ -657,11 +657,11 @@ contract CrossChainManagerL2Test is Test {
         );
 
         CrossChainCall memory cc = CrossChainCall({
-            destination: address(target),
+            targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (42)),
             sourceAddress: address(this),
-            sourceRollup: TEST_ROLLUP_ID,
+            sourceRollupId: TEST_ROLLUP_ID,
             revertSpan: 0
         });
 
@@ -697,11 +697,11 @@ contract CrossChainManagerL2Test is Test {
         );
 
         CrossChainCall memory cc = CrossChainCall({
-            destination: address(target),
+            targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (42)),
             sourceAddress: address(this),
-            sourceRollup: TEST_ROLLUP_ID,
+            sourceRollupId: TEST_ROLLUP_ID,
             revertSpan: 0
         });
 
@@ -744,11 +744,11 @@ contract CrossChainManagerL2Test is Test {
         );
 
         CrossChainCall memory cc = CrossChainCall({
-            destination: address(target),
+            targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (42)),
             sourceAddress: address(this),
-            sourceRollup: TEST_ROLLUP_ID,
+            sourceRollupId: TEST_ROLLUP_ID,
             revertSpan: 0
         });
 

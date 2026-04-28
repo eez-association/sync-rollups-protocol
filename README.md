@@ -40,13 +40,14 @@ The protocol uses a **flat sequential execution model**. There is no `ActionType
 ```solidity
 // Off-chain only — used to compute actionHash. The contracts reconstruct
 // the hash from individual fields rather than storing the struct.
+// Field declaration order matches the abi.encode preimage; do not reorder.
 struct Action {
-    uint256 rollupId;
-    address destination;
+    uint256 targetRollupId;
+    address targetAddress;
     uint256 value;
     bytes   data;
     address sourceAddress;
-    uint256 sourceRollup;
+    uint256 sourceRollupId;
 }
 
 struct StateDelta {
@@ -56,11 +57,11 @@ struct StateDelta {
 }
 
 struct CrossChainCall {
-    address destination;
+    address targetAddress;
     uint256 value;
     bytes   data;
     address sourceAddress;
-    uint256 sourceRollup;
+    uint256 sourceRollupId;
     uint256 revertSpan;     // 0 = normal call; N>0 = isolated revert context spanning next N calls
 }
 
@@ -108,7 +109,7 @@ struct RollupConfig {
 Action hash formula (single, used everywhere):
 
 ```solidity
-keccak256(abi.encode(rollupId, destination, value, data, sourceAddress, sourceRollup))
+keccak256(abi.encode(targetRollupId, targetAddress, value, data, sourceAddress, sourceRollupId))
 ```
 
 ### Execution Flow

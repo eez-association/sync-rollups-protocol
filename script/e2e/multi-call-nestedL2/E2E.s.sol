@@ -37,24 +37,24 @@ abstract contract MultiCallNestedL2Actions {
     /// @dev Inner action hash: CAP calls counterProxy (Counter@MAINNET) on L2.
     function _innerActionHash(address counterL1, address cap) internal pure returns (bytes32) {
         return actionHash(Action({
-            rollupId: MAINNET_ROLLUP_ID,
-            destination: counterL1,
+            targetRollupId: MAINNET_ROLLUP_ID,
+            targetAddress: counterL1,
             value: 0,
             data: abi.encodeWithSelector(Counter.increment.selector),
             sourceAddress: cap,
-            sourceRollup: L2_ROLLUP_ID
+            sourceRollupId: L2_ROLLUP_ID
         }));
     }
 
     /// @dev Outer action hash: alice calls capL1Proxy (CAP@MAINNET) on L2.
     function _outerActionHash(address cap, address alice) internal pure returns (bytes32) {
         return actionHash(Action({
-            rollupId: MAINNET_ROLLUP_ID,
-            destination: cap,
+            targetRollupId: MAINNET_ROLLUP_ID,
+            targetAddress: cap,
             value: 0,
             data: abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),
             sourceAddress: alice,
-            sourceRollup: L2_ROLLUP_ID
+            sourceRollupId: L2_ROLLUP_ID
         }));
     }
 
@@ -80,19 +80,19 @@ abstract contract MultiCallNestedL2Actions {
     {
         CrossChainCall[] memory calls = new CrossChainCall[](2);
         calls[0] = CrossChainCall({
-            destination: cap,
+            targetAddress: cap,
             value: 0,
             data: abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),
             sourceAddress: alice,
-            sourceRollup: MAINNET_ROLLUP_ID,
+            sourceRollupId: MAINNET_ROLLUP_ID,
             revertSpan: 0
         });
         calls[1] = CrossChainCall({
-            destination: cap,
+            targetAddress: cap,
             value: 0,
             data: abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),
             sourceAddress: alice,
-            sourceRollup: MAINNET_ROLLUP_ID,
+            sourceRollupId: MAINNET_ROLLUP_ID,
             revertSpan: 0
         });
 

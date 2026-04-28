@@ -37,24 +37,24 @@ abstract contract NestedActions {
     /// @dev Inner action hash: CounterAndProxy calls the counter proxy reentrantly.
     function _innerActionHash(address counterL2, address cap) internal pure returns (bytes32) {
         return actionHash(Action({
-            rollupId: L2_ROLLUP_ID,
-            destination: counterL2,
+            targetRollupId: L2_ROLLUP_ID,
+            targetAddress: counterL2,
             value: 0,
             data: abi.encodeWithSelector(Counter.increment.selector),
             sourceAddress: cap,
-            sourceRollup: MAINNET_ROLLUP_ID
+            sourceRollupId: MAINNET_ROLLUP_ID
         }));
     }
 
     /// @dev Outer action hash: alice triggers CAP via its L2-side proxy.
     function _outerActionHash(address cap, address alice) internal pure returns (bytes32) {
         return actionHash(Action({
-            rollupId: L2_ROLLUP_ID,
-            destination: cap,
+            targetRollupId: L2_ROLLUP_ID,
+            targetAddress: cap,
             value: 0,
             data: abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),
             sourceAddress: alice,
-            sourceRollup: MAINNET_ROLLUP_ID
+            sourceRollupId: MAINNET_ROLLUP_ID
         }));
     }
 
@@ -82,11 +82,11 @@ abstract contract NestedActions {
 
         CrossChainCall[] memory calls = new CrossChainCall[](1);
         calls[0] = CrossChainCall({
-            destination: cap,
+            targetAddress: cap,
             value: 0,
             data: abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),
             sourceAddress: alice,
-            sourceRollup: L2_ROLLUP_ID, // proxy for (alice, L2) — will be auto-created
+            sourceRollupId: L2_ROLLUP_ID, // proxy for (alice, L2) — will be auto-created
             revertSpan: 0
         });
 

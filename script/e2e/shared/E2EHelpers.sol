@@ -36,7 +36,7 @@ function getOrCreateProxy(ICrossChainManager manager, address originalAddress, u
 
 /// @notice Action hash builder matching Rollups._computeActionInputHash.
 function actionHash(Action memory a) pure returns (bytes32) {
-    return keccak256(abi.encode(a.rollupId, a.destination, a.value, a.data, a.sourceAddress, a.sourceRollup));
+    return keccak256(abi.encode(a.targetRollupId, a.targetAddress, a.value, a.data, a.sourceAddress, a.sourceRollupId));
 }
 
 // ══════════════════════════════════════════════════════════════════════

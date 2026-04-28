@@ -264,11 +264,11 @@ library TableTransformer {
         returns (CrossChainCall memory)
     {
         return CrossChainCall({
-            destination: a.destination,
+            targetAddress: a.destination,
             value: a.value,
             data: a.data,
             sourceAddress: a.sourceAddress,
-            sourceRollup: a.sourceRollup,
+            sourceRollupId: a.sourceRollup,
             revertSpan: a.actionType == LegacyActionType.REVERT ? 1 : 0
         });
     }

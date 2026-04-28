@@ -312,7 +312,7 @@ contract DecodeExecutions is Script {
                         console.log(
                             string.concat(
                                 "    |     call[", vm.toString(i), "]: ",
-                                _shortAddr(cc.destination), ".", _selectorName(cc.data),
+                                _shortAddr(cc.targetAddress), ".", _selectorName(cc.data),
                                 " from=", _shortAddr(cc.sourceAddress),
                                 " revertSpan=", vm.toString(cc.revertSpan)
                             )
@@ -458,9 +458,9 @@ contract DecodeExecutions is Script {
             console.log(
                 string.concat(
                     "        call[", vm.toString(i), "]: ",
-                    _shortAddr(cc.destination), ".", _selectorName(cc.data),
+                    _shortAddr(cc.targetAddress), ".", _selectorName(cc.data),
                     " from=", _shortAddr(cc.sourceAddress),
-                    " srcRollup=", vm.toString(cc.sourceRollup),
+                    " srcRollup=", vm.toString(cc.sourceRollupId),
                     " val=", vm.toString(cc.value),
                     " revertSpan=", vm.toString(cc.revertSpan)
                 )

@@ -350,11 +350,11 @@ contract IntegrationTest is Test {
 
             CrossChainCall[] memory calls = new CrossChainCall[](1);
             calls[0] = CrossChainCall({
-                destination: address(counterAndProxy),        // A
+                targetAddress: address(counterAndProxy),        // A
                 value: 0,
                 data: incrementProxyCallData,
                 sourceAddress: address(counterAndProxy),      // proxy identity = A'
-                sourceRollup: MAINNET_ROLLUP_ID,
+                sourceRollupId: MAINNET_ROLLUP_ID,
                 revertSpan: 0
             });
 
@@ -481,11 +481,11 @@ contract IntegrationTest is Test {
 
             CrossChainCall[] memory calls = new CrossChainCall[](1);
             calls[0] = CrossChainCall({
-                destination: address(counterAndProxyL2),       // D
+                targetAddress: address(counterAndProxyL2),       // D
                 value: 0,
                 data: incrementProxyCallData,
                 sourceAddress: alice,                          // proxy identity: (alice, L2)
-                sourceRollup: L2_ROLLUP_ID,
+                sourceRollupId: L2_ROLLUP_ID,
                 revertSpan: 0
             });
 

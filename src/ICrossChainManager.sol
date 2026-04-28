@@ -3,14 +3,16 @@ pragma solidity ^0.8.28;
 
 /// @notice Represents an action used to build the entrypoint hash
 /// @dev Off-chain only. Not used by any on-chain function. Exists for tooling to compute
-///      actionHash = keccak256(abi.encode(rollupId, destination, value, data, sourceAddress, sourceRollup))
+///      actionHash = keccak256(abi.encode(targetRollupId, targetAddress, value, data, sourceAddress, sourceRollupId))
+/// @dev Field declaration order matches the abi.encode preimage; do not reorder without
+///      updating _computeActionInputHash in Rollups / CrossChainManagerL2.
 struct Action {
-    uint256 rollupId;
-    address destination;
+    uint256 targetRollupId;
+    address targetAddress;
     uint256 value;
     bytes data;
     address sourceAddress;
-    uint256 sourceRollup;
+    uint256 sourceRollupId;
 }
 
 /// @notice Represents a state delta
@@ -23,11 +25,11 @@ struct StateDelta {
 /// @notice Represents a cross-chain call within an execution entry
 /// @dev revertSpan > 0 opens an isolated revert context spanning the next revertSpan calls (including this one)
 struct CrossChainCall {
-    address destination;
+    address targetAddress;
     uint256 value;
     bytes data;
     address sourceAddress;
-    uint256 sourceRollup;
+    uint256 sourceRollupId;
     uint256 revertSpan;
 }
 

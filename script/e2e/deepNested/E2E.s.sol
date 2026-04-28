@@ -48,36 +48,36 @@ abstract contract DeepNestedActions {
     /// @dev innermost: CAP calls counterProxy -> increment()
     function _counterActionHash(address counterL2, address cap) internal pure returns (bytes32) {
         return actionHash(Action({
-            rollupId: L2_ROLLUP_ID,
-            destination: counterL2,
+            targetRollupId: L2_ROLLUP_ID,
+            targetAddress: counterL2,
             value: 0,
             data: abi.encodeWithSelector(Counter.increment.selector),
             sourceAddress: cap,
-            sourceRollup: MAINNET_ROLLUP_ID
+            sourceRollupId: MAINNET_ROLLUP_ID
         }));
     }
 
     /// @dev middle: NestedCaller calls capProxy -> incrementProxy()
     function _capActionHash(address cap, address nestedCaller) internal pure returns (bytes32) {
         return actionHash(Action({
-            rollupId: L2_ROLLUP_ID,
-            destination: cap,
+            targetRollupId: L2_ROLLUP_ID,
+            targetAddress: cap,
             value: 0,
             data: abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),
             sourceAddress: nestedCaller,
-            sourceRollup: MAINNET_ROLLUP_ID
+            sourceRollupId: MAINNET_ROLLUP_ID
         }));
     }
 
     /// @dev outer trigger: alice calls nestedCallerProxy -> callNested()
     function _outerActionHash(address nestedCaller, address alice) internal pure returns (bytes32) {
         return actionHash(Action({
-            rollupId: L2_ROLLUP_ID,
-            destination: nestedCaller,
+            targetRollupId: L2_ROLLUP_ID,
+            targetAddress: nestedCaller,
             value: 0,
             data: abi.encodeWithSelector(NestedCaller.callNested.selector),
             sourceAddress: alice,
-            sourceRollup: MAINNET_ROLLUP_ID
+            sourceRollupId: MAINNET_ROLLUP_ID
         }));
     }
 
@@ -113,19 +113,19 @@ abstract contract DeepNestedActions {
         //           CAP calls counterProxy → triggers _consumeNestedAction(nestedActions[1]).
         CrossChainCall[] memory calls = new CrossChainCall[](2);
         calls[0] = CrossChainCall({
-            destination: nestedCaller,
+            targetAddress: nestedCaller,
             value: 0,
             data: abi.encodeWithSelector(NestedCaller.callNested.selector),
             sourceAddress: alice,
-            sourceRollup: L2_ROLLUP_ID,
+            sourceRollupId: L2_ROLLUP_ID,
             revertSpan: 0
         });
         calls[1] = CrossChainCall({
-            destination: cap,
+            targetAddress: cap,
             value: 0,
             data: abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),
             sourceAddress: nestedCaller,
-            sourceRollup: L2_ROLLUP_ID,
+            sourceRollupId: L2_ROLLUP_ID,
             revertSpan: 0
         });
 

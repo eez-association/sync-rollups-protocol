@@ -33,12 +33,12 @@ abstract contract HelloActions {
 
     function _callAction(address helloL2, address helloL1) internal pure returns (Action memory) {
         return Action({
-            rollupId: L2_ROLLUP_ID,
-            destination: helloL2,
+            targetRollupId: L2_ROLLUP_ID,
+            targetAddress: helloL2,
             value: 0,
             data: _getWordCallData(),
             sourceAddress: helloL1,
-            sourceRollup: MAINNET_ROLLUP_ID
+            sourceRollupId: MAINNET_ROLLUP_ID
         });
     }
 
