@@ -43,12 +43,12 @@ contract BridgeSender {
 abstract contract BridgeActions {
     function _callAction(address l2Destination, address sender) internal pure returns (Action memory) {
         return Action({
-            rollupId: L2_ROLLUP_ID,
-            destination: l2Destination,
+            targetRollupId: L2_ROLLUP_ID,
+            targetAddress: l2Destination,
             value: 1 ether,
             data: "", // plain ETH transfer
             sourceAddress: sender,
-            sourceRollup: MAINNET_ROLLUP_ID
+            sourceRollupId: MAINNET_ROLLUP_ID
         });
     }
 

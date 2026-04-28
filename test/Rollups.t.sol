@@ -270,9 +270,9 @@ contract RollupsTest is Test {
         bytes32 actionHash = _computeActionHash(rollupId, address(target), 0, callData, address(this), 0);
         CrossChainCall[] memory calls = new CrossChainCall[](1);
         calls[0] = CrossChainCall({
-            destination: address(target), value: 0,
+            targetAddress: address(target), value: 0,
             data: abi.encodeCall(TestTarget.setValue, (42)),
-            sourceAddress: address(this), sourceRollup: 0, revertSpan: 0
+            sourceAddress: address(this), sourceRollupId: 0, revertSpan: 0
         });
         bytes32 rollingHash = _rollingHashSingleCall("");
         ExecutionEntry[] memory entries = new ExecutionEntry[](2);
@@ -488,9 +488,9 @@ contract RollupsTest is Test {
         bytes32 actionHash = _computeActionHash(rollupId, address(target), 0, callData, address(this), 0);
         CrossChainCall[] memory calls = new CrossChainCall[](1);
         calls[0] = CrossChainCall({
-            destination: address(target), value: 0,
+            targetAddress: address(target), value: 0,
             data: abi.encodeCall(TestTarget.setValue, (42)),
-            sourceAddress: address(this), sourceRollup: 0, revertSpan: 0
+            sourceAddress: address(this), sourceRollupId: 0, revertSpan: 0
         });
         bytes32 rollingHash = _rollingHashSingleCall("");
         StateDelta[] memory deltas = new StateDelta[](1);
@@ -533,9 +533,9 @@ contract RollupsTest is Test {
         bytes32 actionHash = _computeActionHash(rollupId, address(target), 1 ether, callData, address(this), 0);
         CrossChainCall[] memory calls = new CrossChainCall[](1);
         calls[0] = CrossChainCall({
-            destination: address(target), value: 0,
+            targetAddress: address(target), value: 0,
             data: abi.encodeCall(TestTarget.setValue, (55)),
-            sourceAddress: address(this), sourceRollup: 0, revertSpan: 0
+            sourceAddress: address(this), sourceRollupId: 0, revertSpan: 0
         });
         bytes32 rollingHash = _rollingHashSingleCall("");
         StateDelta[] memory deltas = new StateDelta[](1);
@@ -560,9 +560,9 @@ contract RollupsTest is Test {
         bytes32 actionHash = _computeActionHash(rollupId, address(target), 0, callData, address(this), 0);
         CrossChainCall[] memory calls = new CrossChainCall[](1);
         calls[0] = CrossChainCall({
-            destination: address(target), value: 0,
+            targetAddress: address(target), value: 0,
             data: abi.encodeCall(TestTarget.setValue, (66)),
-            sourceAddress: address(this), sourceRollup: 0, revertSpan: 0
+            sourceAddress: address(this), sourceRollupId: 0, revertSpan: 0
         });
         bytes32 rollingHash = _rollingHashSingleCall("");
         StateDelta[] memory deltas = new StateDelta[](1);
@@ -587,14 +587,14 @@ contract RollupsTest is Test {
         bytes32 actionHash = _computeActionHash(rollupId, address(target), 0, callData, address(this), 0);
         CrossChainCall[] memory calls = new CrossChainCall[](2);
         calls[0] = CrossChainCall({
-            destination: address(target), value: 0,
+            targetAddress: address(target), value: 0,
             data: abi.encodeCall(TestTarget.setValue, (10)),
-            sourceAddress: address(this), sourceRollup: 0, revertSpan: 0
+            sourceAddress: address(this), sourceRollupId: 0, revertSpan: 0
         });
         calls[1] = CrossChainCall({
-            destination: address(target), value: 0,
+            targetAddress: address(target), value: 0,
             data: abi.encodeCall(TestTarget.setValue, (20)),
-            sourceAddress: address(this), sourceRollup: 0, revertSpan: 0
+            sourceAddress: address(this), sourceRollupId: 0, revertSpan: 0
         });
         bytes32 hash = bytes32(0);
         hash = keccak256(abi.encodePacked(hash, CALL_BEGIN, uint256(1)));
@@ -643,9 +643,9 @@ contract RollupsTest is Test {
         bytes32 actionHash = _computeActionHash(rollupId, address(target), 0, callData, address(this), 0);
         CrossChainCall[] memory calls = new CrossChainCall[](1);
         calls[0] = CrossChainCall({
-            destination: address(target), value: 0,
+            targetAddress: address(target), value: 0,
             data: abi.encodeCall(TestTarget.getValue, ()),
-            sourceAddress: address(this), sourceRollup: 0, revertSpan: 0
+            sourceAddress: address(this), sourceRollupId: 0, revertSpan: 0
         });
         bytes32 rollingHash = _rollingHashSingleCall(abi.encode(uint256(0)));
         StateDelta[] memory deltas = new StateDelta[](1);
@@ -672,8 +672,8 @@ contract RollupsTest is Test {
         bytes32 actionHash = _computeActionHash(rollupId, address(target), 0, callData, address(this), 0);
         CrossChainCall[] memory calls = new CrossChainCall[](1);
         calls[0] = CrossChainCall({
-            destination: address(revTarget), value: 0, data: hex"deadbeef",
-            sourceAddress: address(this), sourceRollup: 0, revertSpan: 1
+            targetAddress: address(revTarget), value: 0, data: hex"deadbeef",
+            sourceAddress: address(this), sourceRollupId: 0, revertSpan: 1
         });
         bytes memory revertData = abi.encodeWithSelector(RevertingTarget.TargetReverted.selector);
         bytes32 hash = bytes32(0);
@@ -700,9 +700,9 @@ contract RollupsTest is Test {
         bytes32 actionHash = _computeActionHash(rollupId, address(target), 0, callData, address(this), 0);
         CrossChainCall[] memory calls = new CrossChainCall[](1);
         calls[0] = CrossChainCall({
-            destination: address(target), value: 0,
+            targetAddress: address(target), value: 0,
             data: abi.encodeCall(TestTarget.setValue, (42)),
-            sourceAddress: address(this), sourceRollup: 0, revertSpan: 0
+            sourceAddress: address(this), sourceRollupId: 0, revertSpan: 0
         });
         StateDelta[] memory deltas = new StateDelta[](1);
         deltas[0] = StateDelta({rollupId: rollupId, newState: keccak256("state1"), etherDelta: 0});
@@ -726,14 +726,14 @@ contract RollupsTest is Test {
         bytes32 actionHash = _computeActionHash(rollupId, address(target), 0, callData, address(this), 0);
         CrossChainCall[] memory calls = new CrossChainCall[](2);
         calls[0] = CrossChainCall({
-            destination: address(target), value: 0,
+            targetAddress: address(target), value: 0,
             data: abi.encodeCall(TestTarget.setValue, (42)),
-            sourceAddress: address(this), sourceRollup: 0, revertSpan: 0
+            sourceAddress: address(this), sourceRollupId: 0, revertSpan: 0
         });
         calls[1] = CrossChainCall({
-            destination: address(target), value: 0,
+            targetAddress: address(target), value: 0,
             data: abi.encodeCall(TestTarget.setValue, (99)),
-            sourceAddress: address(this), sourceRollup: 0, revertSpan: 0
+            sourceAddress: address(this), sourceRollupId: 0, revertSpan: 0
         });
         bytes32 rollingHash = _rollingHashSingleCall("");
         StateDelta[] memory deltas = new StateDelta[](1);
@@ -759,9 +759,9 @@ contract RollupsTest is Test {
         bytes32 actionHash = _computeActionHash(rollupId, address(target), 0, callData, address(this), 0);
         CrossChainCall[] memory calls = new CrossChainCall[](1);
         calls[0] = CrossChainCall({
-            destination: address(target), value: 0,
+            targetAddress: address(target), value: 0,
             data: abi.encodeCall(TestTarget.setValue, (77)),
-            sourceAddress: alice, sourceRollup: 0, revertSpan: 0
+            sourceAddress: alice, sourceRollupId: 0, revertSpan: 0
         });
         bytes32 rollingHash = _rollingHashSingleCall("");
         StateDelta[] memory deltas = new StateDelta[](1);
@@ -894,9 +894,9 @@ contract RollupsTest is Test {
         bytes32 actionHash = _computeActionHash(rollupId, address(target), 0, callData, address(this), 0);
         CrossChainCall[] memory calls = new CrossChainCall[](1);
         calls[0] = CrossChainCall({
-            destination: address(target), value: 0,
+            targetAddress: address(target), value: 0,
             data: abi.encodeCall(TestTarget.setValue, (42)),
-            sourceAddress: address(this), sourceRollup: 0, revertSpan: 0
+            sourceAddress: address(this), sourceRollupId: 0, revertSpan: 0
         });
         bytes32 rollingHash = _rollingHashSingleCall("");
         StateDelta[] memory deltas = new StateDelta[](1);
@@ -928,9 +928,9 @@ contract RollupsTest is Test {
         bytes32 actionHash = _computeActionHash(rollupId, address(target), 0, callData, address(this), 0);
         CrossChainCall[] memory calls = new CrossChainCall[](1);
         calls[0] = CrossChainCall({
-            destination: address(target), value: 0,
+            targetAddress: address(target), value: 0,
             data: abi.encodeCall(TestTarget.setValue, (42)),
-            sourceAddress: address(this), sourceRollup: 0, revertSpan: 0
+            sourceAddress: address(this), sourceRollupId: 0, revertSpan: 0
         });
         bytes32 rollingHash = _rollingHashSingleCall("");
         StateDelta[] memory deltas = new StateDelta[](1);

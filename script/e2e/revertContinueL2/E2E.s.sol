@@ -46,24 +46,24 @@ abstract contract RevertContinueL2Actions {
     /// @dev Outer action hash: alice calls selfCallerProxy (SelfCallerWithRevert@MAINNET) on L2.
     function _outerActionHash(address selfCaller, address alice) internal pure returns (bytes32) {
         return actionHash(Action({
-            rollupId: MAINNET_ROLLUP_ID,
-            destination: selfCaller,
+            targetRollupId: MAINNET_ROLLUP_ID,
+            targetAddress: selfCaller,
             value: 0,
             data: abi.encodeWithSelector(SelfCallerWithRevert.execute.selector),
             sourceAddress: alice,
-            sourceRollup: L2_ROLLUP_ID
+            sourceRollupId: L2_ROLLUP_ID
         }));
     }
 
     /// @dev Inner action hash: SelfCallerWithRevert calls counterProxy (Counter@L1) on L2.
     function _innerActionHash(address counterL1, address selfCaller) internal pure returns (bytes32) {
         return actionHash(Action({
-            rollupId: MAINNET_ROLLUP_ID,
-            destination: counterL1,
+            targetRollupId: MAINNET_ROLLUP_ID,
+            targetAddress: counterL1,
             value: 0,
             data: abi.encodeWithSelector(Counter.increment.selector),
             sourceAddress: selfCaller,
-            sourceRollup: L2_ROLLUP_ID
+            sourceRollupId: L2_ROLLUP_ID
         }));
     }
 
@@ -85,11 +85,11 @@ abstract contract RevertContinueL2Actions {
     {
         CrossChainCall[] memory calls = new CrossChainCall[](1);
         calls[0] = CrossChainCall({
-            destination: selfCaller,
+            targetAddress: selfCaller,
             value: 0,
             data: abi.encodeWithSelector(SelfCallerWithRevert.execute.selector),
             sourceAddress: alice,
-            sourceRollup: MAINNET_ROLLUP_ID,
+            sourceRollupId: MAINNET_ROLLUP_ID,
             revertSpan: 0
         });
 

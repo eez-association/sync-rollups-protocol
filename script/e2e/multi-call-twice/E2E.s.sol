@@ -30,12 +30,12 @@ uint256 constant MAINNET_ROLLUP_ID = 0;
 abstract contract MultiCallActions {
     function _callAction(address counterL2, address caller) internal pure returns (Action memory) {
         return Action({
-            rollupId: L2_ROLLUP_ID,
-            destination: counterL2,
+            targetRollupId: L2_ROLLUP_ID,
+            targetAddress: counterL2,
             value: 0,
             data: abi.encodeWithSelector(Counter.increment.selector),
             sourceAddress: caller,
-            sourceRollup: MAINNET_ROLLUP_ID
+            sourceRollupId: MAINNET_ROLLUP_ID
         });
     }
 

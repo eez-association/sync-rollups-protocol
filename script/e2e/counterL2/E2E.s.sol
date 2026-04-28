@@ -39,12 +39,12 @@ abstract contract CounterL2Actions {
 
     function _callAction(address counterL1, address counterAndProxyL2) internal pure returns (Action memory) {
         return Action({
-            rollupId: MAINNET_ROLLUP_ID,
-            destination: counterL1,
+            targetRollupId: MAINNET_ROLLUP_ID,
+            targetAddress: counterL1,
             value: 0,
             data: _incrementCallData(),
             sourceAddress: counterAndProxyL2,
-            sourceRollup: L2_ROLLUP_ID
+            sourceRollupId: L2_ROLLUP_ID
         });
     }
 

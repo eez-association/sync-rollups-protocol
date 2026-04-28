@@ -39,12 +39,12 @@ abstract contract RevertL2Actions {
     /// @dev Outer action hash: alice calls counterProxy (Counter@L1) on L2.
     function _outerActionHash(address counterL1, address alice) internal pure returns (bytes32) {
         return actionHash(Action({
-            rollupId: MAINNET_ROLLUP_ID,
-            destination: counterL1,
+            targetRollupId: MAINNET_ROLLUP_ID,
+            targetAddress: counterL1,
             value: 0,
             data: abi.encodeWithSelector(Counter.increment.selector),
             sourceAddress: alice,
-            sourceRollup: L2_ROLLUP_ID
+            sourceRollupId: L2_ROLLUP_ID
         }));
     }
 
@@ -62,11 +62,11 @@ abstract contract RevertL2Actions {
     {
         CrossChainCall[] memory calls = new CrossChainCall[](1);
         calls[0] = CrossChainCall({
-            destination: revertCounterL2,
+            targetAddress: revertCounterL2,
             value: 0,
             data: abi.encodeWithSelector(RevertCounter.increment.selector),
             sourceAddress: alice,
-            sourceRollup: MAINNET_ROLLUP_ID,
+            sourceRollupId: MAINNET_ROLLUP_ID,
             revertSpan: 1
         });
 

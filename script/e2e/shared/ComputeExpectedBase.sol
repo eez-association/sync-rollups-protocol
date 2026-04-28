@@ -52,13 +52,13 @@ abstract contract ComputeExpectedBase is Script {
         string memory valStr = a.value > 0 ? string.concat("  value=", _fmtEther(a.value)) : "";
         return string.concat(
             "Action ",
-            _name(a.destination),
+            _name(a.targetAddress),
             func,
             valStr,
             "  from=",
             _name(a.sourceAddress),
             " @ rollup ",
-            vm.toString(a.sourceRollup)
+            vm.toString(a.sourceRollupId)
         );
     }
 
@@ -70,14 +70,14 @@ abstract contract ComputeExpectedBase is Script {
             c.revertSpan > 0 ? string.concat("  revertSpan=", vm.toString(c.revertSpan)) : "";
         return string.concat(
             "CALL ",
-            _name(c.destination),
+            _name(c.targetAddress),
             func,
             valStr,
             revertStr,
             "\n          from ",
             _name(c.sourceAddress),
             " @ rollup ",
-            vm.toString(c.sourceRollup)
+            vm.toString(c.sourceRollupId)
         );
     }
 

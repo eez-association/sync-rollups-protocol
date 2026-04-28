@@ -45,12 +45,12 @@ abstract contract NestedCallRevertActions {
 
     function _outerActionHash(address scap, address alice) internal pure returns (bytes32) {
         return actionHash(Action({
-            rollupId: L2_ROLLUP_ID,
-            destination: scap,
+            targetRollupId: L2_ROLLUP_ID,
+            targetAddress: scap,
             value: 0,
             data: abi.encodeWithSelector(SafeCounterAndProxy.incrementProxy.selector),
             sourceAddress: alice,
-            sourceRollup: MAINNET_ROLLUP_ID
+            sourceRollupId: MAINNET_ROLLUP_ID
         }));
     }
 
@@ -76,11 +76,11 @@ abstract contract NestedCallRevertActions {
 
         CrossChainCall[] memory calls = new CrossChainCall[](1);
         calls[0] = CrossChainCall({
-            destination: scap,
+            targetAddress: scap,
             value: 0,
             data: abi.encodeWithSelector(SafeCounterAndProxy.incrementProxy.selector),
             sourceAddress: alice,
-            sourceRollup: L2_ROLLUP_ID,
+            sourceRollupId: L2_ROLLUP_ID,
             revertSpan: 0
         });
 

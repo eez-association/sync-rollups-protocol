@@ -38,24 +38,24 @@ abstract contract RevertContinueActions {
     /// @dev Outer action hash: batcher calls selfCallerProxy.execute() on L1.
     function _outerActionHash(address selfCaller, address batcher) internal pure returns (bytes32) {
         return actionHash(Action({
-            rollupId: L2_ROLLUP_ID,
-            destination: selfCaller,
+            targetRollupId: L2_ROLLUP_ID,
+            targetAddress: selfCaller,
             value: 0,
             data: abi.encodeWithSelector(SelfCallerWithRevert.execute.selector),
             sourceAddress: batcher,
-            sourceRollup: MAINNET_ROLLUP_ID
+            sourceRollupId: MAINNET_ROLLUP_ID
         }));
     }
 
     /// @dev Inner action hash: SelfCallerWithRevert calls counterProxy.increment().
     function _innerActionHash(address counterL2, address selfCaller) internal pure returns (bytes32) {
         return actionHash(Action({
-            rollupId: L2_ROLLUP_ID,
-            destination: counterL2,
+            targetRollupId: L2_ROLLUP_ID,
+            targetAddress: counterL2,
             value: 0,
             data: abi.encodeWithSelector(Counter.increment.selector),
             sourceAddress: selfCaller,
-            sourceRollup: MAINNET_ROLLUP_ID
+            sourceRollupId: MAINNET_ROLLUP_ID
         }));
     }
 
@@ -84,11 +84,11 @@ abstract contract RevertContinueActions {
 
         CrossChainCall[] memory calls = new CrossChainCall[](1);
         calls[0] = CrossChainCall({
-            destination: selfCaller,
+            targetAddress: selfCaller,
             value: 0,
             data: abi.encodeWithSelector(SelfCallerWithRevert.execute.selector),
             sourceAddress: batcher,
-            sourceRollup: L2_ROLLUP_ID,
+            sourceRollupId: L2_ROLLUP_ID,
             revertSpan: 0
         });
 

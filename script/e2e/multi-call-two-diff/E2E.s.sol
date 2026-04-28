@@ -30,12 +30,12 @@ uint256 constant MAINNET_ROLLUP_ID = 0;
 abstract contract TwoDiffActions {
     function _callAction(address target, address caller) internal pure returns (Action memory) {
         return Action({
-            rollupId: L2_ROLLUP_ID,
-            destination: target,
+            targetRollupId: L2_ROLLUP_ID,
+            targetAddress: target,
             value: 0,
             data: abi.encodeWithSelector(Counter.increment.selector),
             sourceAddress: caller,
-            sourceRollup: MAINNET_ROLLUP_ID
+            sourceRollupId: MAINNET_ROLLUP_ID
         });
     }
 
