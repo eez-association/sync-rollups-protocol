@@ -116,7 +116,7 @@ publicInputsHash = H(sharedHash, rollupVks)   // per-PS
 ```
 
 - `entryHashes[i] = keccak256(abi.encode(batch.entries[i]))` — binds the FULL `ExecutionEntry`
-  struct (stateDeltas, actionHash, destinationRollupId, calls, nestedActions, callCount,
+  struct (stateDeltas, crossChainCallHash, destinationRollupId, calls, nestedActions, callCount,
   returnData, failed, rollingHash). Prevents an orchestrator from swapping inputs at execution
   time without invalidating the proof.
 - `lookupCallHashes[i] = keccak256(abi.encode(batch.lookupCalls[i]))` — same rationale.
@@ -201,7 +201,7 @@ consumers — they just fail their own state-root check if they depended on it.
    `executeL2TX` (which require `lastVerifiedBlock(rid) == block.number`).
 4. **Load transient stream**: concatenate each sub-batch's leading prefix.
 5. **Drain leading immediate entries inline**: any leading run of transient entries with
-   `actionHash == 0` runs inline (each gets its own `_applyAndExecute` cycle).
+   `crossChainCallHash == 0` runs inline (each gets its own `_applyAndExecute` cycle).
 6. **Meta hook**: if `msg.sender` is a contract, fire `executeMetaCrossChainTransactions()`
    so the caller can drive remaining transient entries via cross-chain proxy calls.
 7. **Cleanup transient tables** (whether the hook drained them or not).
@@ -335,11 +335,11 @@ function setStateRoot(uint256 rollupId, bytes32 newStateRoot) external;
   CALL_BEGIN/CALL_END tags). Pre-existing simplification; document or align.
 - **Possible "join" of `Action` and `CrossChainCall`**: the two structs have overlapping
   shape (target, value, data, sourceAddress, sourceRollupId, plus a few extras each). The
-  `Action` struct is off-chain-only (used by tooling to compute `actionHash`) while
+  `Action` struct is off-chain-only (used by tooling to compute `crossChainCallHash`) while
   `CrossChainCall` is the on-chain in-entry call type. Worth investigating whether they
   can be unified into a single struct with optional fields, or whether `CrossChainCall`
   can subsume `Action` entirely. Trade-off: simpler mental model + one less struct vs. risk
-  of conflating "the inputs that hash to actionHash" with "what executes during a call."
+  of conflating "the inputs that hash to crossChainCallHash" with "what executes during a call."
 - **Per-(destination rollup) call ID counter**: introduce a monotonic `callId` per
   destination rollup (or maybe globally per postBatch / per cross-PS-interaction set) baked
   into each `CrossChainCall` / `Action`. Useful for: deterministic cross-PS message

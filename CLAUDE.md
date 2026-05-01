@@ -28,7 +28,7 @@ forge fmt            # Format code
 The protocol uses a **flat sequential execution model**: every entry contains a flat list of `CrossChainCall`s processed sequentially, with reentrant calls resolved via a parallel `NestedAction[]` table and integrity verified by a single `rollingHash` per entry.
 
 ```solidity
-// Off-chain only — used by tooling to compute actionHash.
+// Off-chain only — used by tooling to compute crossChainCallHash.
 // Not stored on-chain; the contracts reconstruct the hash from individual fields.
 // Field declaration order matches the abi.encode preimage; do not reorder.
 struct Action {
@@ -56,14 +56,14 @@ struct CrossChainCall {
 }
 
 struct NestedAction {
-    bytes32 actionHash;     // hash of the reentrant call
+    bytes32 crossChainCallHash;     // hash of the reentrant call
     uint256 callCount;      // entries from calls[] consumed inside this nested action
     bytes   returnData;     // pre-computed return value (must succeed)
 }
 
 struct ExecutionEntry {
     StateDelta[]     stateDeltas;
-    bytes32          actionHash;     // bytes32(0) = immediate (L2TX or state commitment)
+    bytes32          crossChainCallHash;     // bytes32(0) = immediate (L2TX or state commitment)
     CrossChainCall[] calls;          // flat array of ALL calls in execution order
     NestedAction[]   nestedActions;  // sequentially consumed by reentrant calls
     uint256          callCount;      // entry-level iterations
@@ -73,7 +73,7 @@ struct ExecutionEntry {
 }
 
 struct StaticCall {
-    bytes32          actionHash;
+    bytes32          crossChainCallHash;
     bytes            returnData;
     bool             failed;
     bytes32          stateRoot;
@@ -108,12 +108,12 @@ keccak256(abi.encode(targetRollupId, targetAddress, value, data, sourceAddress, 
 2. **createCrossChainProxy(originalAddress, originalRollupId)** — deploys a `CrossChainProxy` via CREATE2.
 3. **postBatch(entries, _staticCalls, transientCount, transientStaticCallCount, blobCount, callData, proof)** — posts a batch with ZK proof.
    - The first `transientCount` entries go to `_transientExecutions` (cleared at end of `postBatch`); the remainder is published to persistent `executions` only if the transient table is fully drained.
-   - If `transientCount >= 1` and `entries[0].actionHash == 0`, that first entry is executed immediately (state deltas + flat call processing + rolling hash verification).
+   - If `transientCount >= 1` and `entries[0].crossChainCallHash == 0`, that first entry is executed immediately (state deltas + flat call processing + rolling hash verification).
    - After the immediate entry, if `msg.sender` has code, `IMetaCrossChainReceiver(msg.sender).executeMetaCrossChainTransactions()` is called so the sender can consume the rest of the transient entries via proxy calls.
    - `transientCount == 0` means no immediate execution and no meta-hook consumption — all entries go straight to persistent storage. The static-call split via `transientStaticCallCount` works the same way.
 4. **executeCrossChainCall(sourceAddress, callData)** — entry point for proxies. Top-level call → `_consumeAndExecute` (consumes next entry via `executionIndex++`); reentrant call (`_insideExecution() == true`) → `_consumeNestedAction` (consumes next `NestedAction` via `_lastNestedActionConsumed++`).
-5. **executeL2TX()** — permissionless. Consumes the next entry, which must have `actionHash == bytes32(0)`. Cannot run while `_insideExecution()` is true.
-6. **staticCallLookup(sourceAddress, callData)** — view function. Looks up a `StaticCall` by `(actionHash, callNumber, lastNestedActionConsumed)`, scanning `_transientStaticCalls` first then persistent `staticCalls`. Replays cached sub-calls in static context, then either returns `returnData` or reverts with it (when `failed`).
+5. **executeL2TX()** — permissionless. Consumes the next entry, which must have `crossChainCallHash == bytes32(0)`. Cannot run while `_insideExecution()` is true.
+6. **staticCallLookup(sourceAddress, callData)** — view function. Looks up a `StaticCall` by `(crossChainCallHash, callNumber, lastNestedActionConsumed)`, scanning `_transientStaticCalls` first then persistent `staticCalls`. Replays cached sub-calls in static context, then either returns `returnData` or reverts with it (when `failed`).
 7. **setStateByOwner / setVerificationKey / transferRollupOwnership** — owner-only escape hatches (no proof, do not bump `lastStateUpdateBlock`).
 8. **computeCrossChainProxyAddress(originalAddress, originalRollupId)** — computes the deterministic CREATE2 address. (Two parameters — no `domain` / `block.chainid`.)
 
@@ -127,11 +127,11 @@ keccak256(abi.encode(targetRollupId, targetAddress, value, data, sourceAddress, 
 ### Execution Flow
 
 1. **Load** — `postBatch` (L1) or `loadExecutionTable` (L2) wipes existing tables, populates new entries / static calls, sets `lastStateUpdateBlock` / `lastLoadBlock`. On L1 the leading prefixes go to `_transientExecutions` / `_transientStaticCalls`. `lastStateUpdateBlock` is written **before** any external call so cross-chain calls work during the meta hook and re-entrant `postBatch` is blocked.
-2. **Immediate entry (L1 only)** — if `entries[0].actionHash == 0` and `transientCount >= 1`, run it inline: apply state deltas, process its flat `calls[]`, verify rolling hash, ether accounting. `_transientExecutionIndex` advances to 1.
+2. **Immediate entry (L1 only)** — if `entries[0].crossChainCallHash == 0` and `transientCount >= 1`, run it inline: apply state deltas, process its flat `calls[]`, verify rolling hash, ether accounting. `_transientExecutionIndex` advances to 1.
 3. **Meta hook (L1 only)** — if `msg.sender` has code, `IMetaCrossChainReceiver.executeMetaCrossChainTransactions()` is called. The hook consumes remaining transient entries via cross-chain proxy calls.
 4. **Deferred publish (L1)** — if `_transientExecutionIndex == _transientExecutions.length` (transient drained cleanly), `entries[transientCount..]` and `_staticCalls[transientStaticCallCount..]` are pushed to persistent storage. Otherwise the remainder is dropped.
 5. **Cleanup (L1)** — wipe `_transientExecutions` / `_transientStaticCalls`, reset `_transientExecutionIndex`.
-6. **Deferred consumption** — users / system call proxies, which forward to `executeCrossChainCall`. Sequential `executionIndex++`. The next entry's `actionHash` must equal the computed hash; mismatch reverts `ExecutionNotFound`.
+6. **Deferred consumption** — users / system call proxies, which forward to `executeCrossChainCall`. Sequential `executionIndex++`. The next entry's `crossChainCallHash` must equal the computed hash; mismatch reverts `ExecutionNotFound`.
 7. **Per-entry checks** — at the end of every entry execution, the contract verifies `_rollingHash == entry.rollingHash`, `_currentCallNumber == entry.calls.length`, `_lastNestedActionConsumed == entry.nestedActions.length`, and (L1 only) `totalEtherDelta == etherIn - etherOut`.
 
 ### Rolling Hash
@@ -168,9 +168,9 @@ A single mismatch anywhere — wrong return data, wrong success/failure flag, mi
 | Top-level call that naturally reverts | `entry.failed = true` (immediate entry only); for non-immediate entries put it in `calls[]` with `revertSpan = 0` and let `CALL_END(false, retData)` capture it |
 | Successful call(s) whose state must be force-reverted | `revertSpan > 0` on the first call of the span |
 
-Reverting reentrant calls cannot be `NestedAction` — the failed call's revert rolls back the consumption index `tstore`, making consumption silent. `StaticCall` is content-addressed by `(actionHash, callNumber, lastNestedActionConsumed)` and replays the cached revert deterministically.
+Reverting reentrant calls cannot be `NestedAction` — the failed call's revert rolls back the consumption index `tstore`, making consumption silent. `StaticCall` is content-addressed by `(crossChainCallHash, callNumber, lastNestedActionConsumed)` and replays the cached revert deterministically.
 
-`_consumeNestedAction` implements the routing: NestedAction at the cursor wins; on miss, it falls back to a `failed=true` `StaticCall` at the same `(actionHash, callNumber, lastNestedActionConsumed)` and reverts with the cached `returnData`. The fallback bumps no cursor, so the EVM revert has nothing to roll back. `staticCallLookup` (real STATICCALL frames) handles both `failed=true` and `failed=false` entries.
+`_consumeNestedAction` implements the routing: NestedAction at the cursor wins; on miss, it falls back to a `failed=true` `StaticCall` at the same `(crossChainCallHash, callNumber, lastNestedActionConsumed)` and reverts with the cached `returnData`. The fallback bumps no cursor, so the EVM revert has nothing to roll back. `staticCallLookup` (real STATICCALL frames) handles both `failed=true` and `failed=false` entries.
 
 ### CREATE2 Address Derivation
 
