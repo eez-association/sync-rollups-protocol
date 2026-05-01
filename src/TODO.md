@@ -30,7 +30,7 @@ Splitting along this seam:
   rolling-hash `CALL_END` payload. The entry's outer `executeCrossChainCall` still
   returns `entry.returnData` as success.
 - **`LookupCall`** with `failed: true` = revert replay. Content-addressed by
-  `(actionHash, callNumber, lastNestedActionConsumed)`, replays cached sub-calls if any,
+  `(crossChainCallHash, callNumber, lastNestedActionConsumed)`, replays cached sub-calls if any,
   and reverts with the cached payload. Survives EVM revert rollback because it's a
   read-side lookup, not a queue advance.
 
@@ -60,11 +60,11 @@ revert-from-`_consumeAndExecute` path, so the cursor++ always commits.
 
 ### Problem
 
-`staticCallLookup` iterates the destination rollup's `lookupQueue` (and the transient `_transientLookupCalls`) to find an entry matching `(actionHash, callNumber, lastNestedActionConsumed)`. Same shape in `_consumeNestedAction`'s failed-reentry fallback. For sub-batches with many lookup calls this is O(n) per lookup; nested-call-heavy entries can hit it many times.
+`staticCallLookup` iterates the destination rollup's `lookupQueue` (and the transient `_transientLookupCalls`) to find an entry matching `(crossChainCallHash, callNumber, lastNestedActionConsumed)`. Same shape in `_consumeNestedAction`'s failed-reentry fallback. For sub-batches with many lookup calls this is O(n) per lookup; nested-call-heavy entries can hit it many times.
 
 ### Possible optimizations
 
-- **Sort by lookup-key hash.** Have the orchestrator sort `lookupCalls[]` by `keccak256(actionHash, callNumber, lastNestedActionConsumed)` (cast to `uint256`). On-chain, replace the linear scan with a binary search → O(log n). The proof would enforce sort order via a single `keys[i+1] > keys[i]` check, and `lookupCallHashes` already binds the array contents into the publicInputsHash so the prover can't reorder maliciously.
+- **Sort by lookup-key hash.** Have the orchestrator sort `lookupCalls[]` by `keccak256(crossChainCallHash, callNumber, lastNestedActionConsumed)` (cast to `uint256`). On-chain, replace the linear scan with a binary search → O(log n). The proof would enforce sort order via a single `keys[i+1] > keys[i]` check, and `lookupCallHashes` already binds the array contents into the publicInputsHash so the prover can't reorder maliciously.
 - **Mapping from lookup-key hash to index.** O(1) but adds storage cost per entry (extra SSTORE on publish).
 - **Require strict execution-order ordering**, so sequential cursor lookup works (no key match needed).
 

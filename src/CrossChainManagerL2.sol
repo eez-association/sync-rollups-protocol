@@ -92,6 +92,12 @@ contract CrossChainManagerL2 is ICrossChainManager {
     /// @notice Error when not all calls were consumed after execution
     error UnconsumedCalls();
 
+    /// @notice Error when executeIncomingCrossChainCall is called with no entries
+    error EmptyEntries();
+
+    /// @notice Error when msg.value attached to executeIncomingCrossChainCall doesn't match `value`
+    error ValueMismatch();
+
     /// @notice Emitted when a new CrossChainProxy is deployed and registered
     event CrossChainProxyCreated(
         address indexed proxy, address indexed originalAddress, uint256 indexed originalRollupId
@@ -101,16 +107,16 @@ contract CrossChainManagerL2 is ICrossChainManager {
     event ExecutionTableLoaded(ExecutionEntry[] entries);
 
     /// @notice Emitted when an execution entry is consumed
-    event ExecutionConsumed(bytes32 indexed actionHash, uint256 indexed entryIndex);
+    event ExecutionConsumed(bytes32 indexed crossChainCallHash, uint256 indexed entryIndex);
 
     /// @notice Emitted when a cross-chain call is executed via proxy
     event CrossChainCallExecuted(
-        bytes32 indexed actionHash, address indexed proxy, address sourceAddress, bytes callData, uint256 value
+        bytes32 indexed crossChainCallHash, address indexed proxy, address sourceAddress, bytes callData, uint256 value
     );
 
     /// @notice Emitted when the system address initiates an incoming cross-chain call from another rollup
     event IncomingCrossChainCallExecuted(
-        bytes32 indexed actionHash,
+        bytes32 indexed crossChainCallHash,
         address destination,
         uint256 value,
         bytes data,
@@ -124,7 +130,7 @@ contract CrossChainManagerL2 is ICrossChainManager {
 
     /// @notice Emitted when a nested action is consumed during reentrant execution
     event NestedActionConsumed(
-        uint256 indexed entryIndex, uint256 indexed nestedNumber, bytes32 actionHash, uint256 callCount
+        uint256 indexed entryIndex, uint256 indexed nestedNumber, bytes32 crossChainCallHash, uint256 callCount
     );
 
     /// @notice Emitted after an entry's execution completes and all verifications pass
@@ -209,17 +215,17 @@ contract CrossChainManagerL2 is ICrossChainManager {
             if (!success) revert EtherTransferFailed();
         }
 
-        bytes32 actionHash = _computeActionInputHash(
+        bytes32 crossChainCallHash = computeCrossChainCallHash(
             proxyInfo.originalRollupId, proxyInfo.originalAddress, msg.value, callData, sourceAddress, ROLLUP_ID
         );
-        emit CrossChainCallExecuted(actionHash, msg.sender, sourceAddress, callData, msg.value);
+        emit CrossChainCallExecuted(crossChainCallHash, msg.sender, sourceAddress, callData, msg.value);
 
         if (_insideExecution()) {
             // Inside a cross-chain call: consume the next nested action
-            return _consumeNestedAction(actionHash);
+            return _consumeNestedAction(crossChainCallHash);
         }
 
-        return _consumeAndExecute(actionHash);
+        return _consumeAndExecute(crossChainCallHash);
     }
 
     /// @notice System-initiated execution of an incoming cross-chain call from another rollup
@@ -248,33 +254,27 @@ contract CrossChainManagerL2 is ICrossChainManager {
         ExecutionEntry[] calldata entries,
         LookupCall[] calldata _lookupCalls
     ) external payable onlySystemAddress returns (bytes memory result) {
+        if (entries.length == 0) revert EmptyEntries();
+        // ETH model: the system mints `value` on L2 by attaching it to msg.value. That ETH
+        // lives in the manager balance and is drawn down by `_processNCalls` when it forwards
+        // through the source proxy (`sourceProxy.call{value: cc.value}(...)`). Strict equality
+        // — not >= — so any drift between the system's intent and the prover-bound `value`
+        // surfaces here instead of as a rolling-hash mismatch deep inside `_processNCalls`.
+        if (msg.value != value) revert ValueMismatch();
+
         // 1. Replace the execution table (same logic as loadExecutionTable)
         _loadExecutionTable(entries, _lookupCalls);
 
         // 2. Compute and emit the action hash binding this top-level call
-        bytes32 actionHash =
-            _computeActionInputHash(ROLLUP_ID, destination, value, data, sourceAddress, sourceRollup);
-        emit IncomingCrossChainCallExecuted(actionHash, destination, value, data, sourceAddress, sourceRollup);
+        bytes32 crossChainCallHash =
+            computeCrossChainCallHash(ROLLUP_ID, destination, value, data, sourceAddress, sourceRollup);
+        emit IncomingCrossChainCallExecuted(crossChainCallHash, destination, value, data, sourceAddress, sourceRollup);
 
-        // 3. Entry context preamble — the four transient counters
-        //    (`_currentEntryIndex`, `_rollingHash`, `_currentCallNumber`,
-        //    `_lastNestedActionConsumed`) all need to be 0 before `_processNCalls` runs.
-        //    They already are: this function is invoked directly by SYSTEM_ADDRESS as a
-        //    top-level call, and Solidity transient storage defaults to zero at the start
-        //    of every transaction. The would-be assignments are kept here as documentation
-        //    of the contract `_processNCalls` expects:
-        //
-        //        _currentEntryIndex       = 0;          // points _processNCalls at executions[0]
-        //        _rollingHash             = bytes32(0); // fresh accumulator
-        //        _currentCallNumber       = 0;          // _processNCalls reads calls[0] first, then bumps
-        //        _lastNestedActionConsumed= 0;          // first reentrant pulls nestedActions[0]
-        //
-        //    Caveat: if this function is ever called more than once per transaction (e.g.,
-        //    a batched system invocation), the second call would inherit non-zero
-        //    `_rollingHash` / `_lastNestedActionConsumed` / `_currentEntryIndex` left over
-        //    from the first call's execution. Step 6 only resets `_currentCallNumber`. If
-        //    multi-invocation-per-tx becomes a use case, uncomment the assignments above
-        //    (or extend step 6 to zero the rest).
+        // 3. No entry-context preamble needed: `_currentEntryIndex`, `_rollingHash`,
+        //    `_currentCallNumber`, `_lastNestedActionConsumed` are all `transient` and
+        //    default to zero at the start of every tx. SYSTEM_ADDRESS invokes this as a
+        //    top-level call, once per tx — so they're already what `_processNCalls`
+        //    expects (entry index 0, fresh rolling hash, call cursor at 0, nested cursor at 0).
         ExecutionEntry storage entry = executions[0];
 
         // 4. Drive the flat call processor — `entry.calls[0]` is the inbound call,
@@ -320,16 +320,16 @@ contract CrossChainManagerL2 is ICrossChainManager {
     ///         lookup call when no NestedAction matches.
     /// @dev See L1 Rollups._consumeNestedAction for the full routing rules. L2 has no
     ///      transient lookup-call table, so the fallback only scans persistent `lookupCalls`.
-    function _consumeNestedAction(bytes32 actionHash) internal returns (bytes memory) {
+    function _consumeNestedAction(bytes32 crossChainCallHash) internal returns (bytes memory) {
         ExecutionEntry storage entry = executions[_currentEntryIndex];
         uint256 idx = _lastNestedActionConsumed++;
 
         // 1. NestedAction priority. The `++` above is the commit; if we fall through, every
         //    fallback path reverts and the EVM rolls the bump back.
-        if (idx < entry.nestedActions.length && entry.nestedActions[idx].actionHash == actionHash) {
+        if (idx < entry.nestedActions.length && entry.nestedActions[idx].crossChainCallHash == crossChainCallHash) {
             NestedAction storage nested = entry.nestedActions[idx];
             uint256 nestedNumber = idx + 1; // 1-indexed
-            emit NestedActionConsumed(_currentEntryIndex, nestedNumber, actionHash, nested.callCount);
+            emit NestedActionConsumed(_currentEntryIndex, nestedNumber, crossChainCallHash, nested.callCount);
             _rollingHash = keccak256(abi.encodePacked(_rollingHash, NESTED_BEGIN, nestedNumber));
             _processNCalls(nested.callCount);
             _rollingHash = keccak256(abi.encodePacked(_rollingHash, NESTED_END, nestedNumber));
@@ -342,7 +342,7 @@ contract CrossChainManagerL2 is ICrossChainManager {
         for (uint256 i = 0; i < lookupCalls.length; i++) {
             LookupCall storage sc = lookupCalls[i];
             if (
-                sc.failed && sc.actionHash == actionHash && sc.callNumber == callNum
+                sc.failed && sc.crossChainCallHash == crossChainCallHash && sc.callNumber == callNum
                     && sc.lastNestedActionConsumed == lastNA
             ) {
                 _resolveLookupCall(sc); // always reverts (sc.failed == true)
@@ -370,16 +370,16 @@ contract CrossChainManagerL2 is ICrossChainManager {
     }
 
     /// @notice Consumes the next execution entry, executes calls, and verifies rolling hash
-    /// @param actionHash The expected action input hash for the next entry
+    /// @param crossChainCallHash The expected action input hash for the next entry
     /// @return result The pre-computed return data from the action
-    function _consumeAndExecute(bytes32 actionHash) internal returns (bytes memory result) {
+    function _consumeAndExecute(bytes32 crossChainCallHash) internal returns (bytes memory result) {
         uint256 idx = executionIndex++;
         if (idx >= executions.length) revert ExecutionNotFound();
 
         ExecutionEntry storage entry = executions[idx];
-        if (entry.actionHash != actionHash) revert ExecutionNotFound();
+        if (entry.crossChainCallHash != crossChainCallHash) revert ExecutionNotFound();
 
-        emit ExecutionConsumed(actionHash, idx);
+        emit ExecutionConsumed(crossChainCallHash, idx);
 
         _currentEntryIndex = idx;
         _rollingHash = bytes32(0);
@@ -468,7 +468,7 @@ contract CrossChainManagerL2 is ICrossChainManager {
     // ──────────────────────────────────────────────
 
     /// @notice Looks up a pre-computed lookup call result from the lookupCalls table
-    /// @dev Matches by actionHash + current call number + last nested action consumed.
+    /// @dev Matches by crossChainCallHash + current call number + last nested action consumed.
     ///      tload works in static context, so transient tracking variables are readable.
     /// @param sourceAddress The original caller address (msg.sender as seen by the proxy)
     /// @param callData The original calldata sent to the proxy
@@ -477,7 +477,7 @@ contract CrossChainManagerL2 is ICrossChainManager {
         ProxyInfo storage proxyInfo = authorizedProxies[msg.sender];
         if (proxyInfo.originalAddress == address(0)) revert UnauthorizedProxy();
 
-        bytes32 actionHash = _computeActionInputHash(
+        bytes32 crossChainCallHash = computeCrossChainCallHash(
             proxyInfo.originalRollupId,
             proxyInfo.originalAddress,
             0, // value is always 0 in static context
@@ -491,7 +491,7 @@ contract CrossChainManagerL2 is ICrossChainManager {
 
         for (uint256 i = 0; i < lookupCalls.length; i++) {
             LookupCall storage sc = lookupCalls[i];
-            if (sc.actionHash == actionHash && sc.callNumber == callNum && sc.lastNestedActionConsumed == lastNA) {
+            if (sc.crossChainCallHash == crossChainCallHash && sc.callNumber == callNum && sc.lastNestedActionConsumed == lastNA) {
                 return _resolveLookupCall(sc);
             }
         }
@@ -514,23 +514,22 @@ contract CrossChainManagerL2 is ICrossChainManager {
     }
 
     // ──────────────────────────────────────────────
-    //  Action hash helpers
+    //  Cross-chain call hash helper
     // ──────────────────────────────────────────────
 
-    /// @notice Computes the action input hash from individual fields
-    function _computeActionInputHash(
-        uint256 rollupId,
-        address destination,
+    /// @notice Computes the cross-chain call hash from individual fields. Public so off-chain
+    ///         tooling can derive the hash for a planned cross-chain call. Same formula as
+    ///         the L1 `Rollups.computeCrossChainCallHash` so a tool that calls one can use
+    ///         the result against either chain.
+    function computeCrossChainCallHash(
+        uint256 targetRollupId,
+        address targetAddress,
         uint256 value,
         bytes memory data,
         address sourceAddress,
-        uint256 sourceRollup
-    )
-        internal
-        pure
-        returns (bytes32)
-    {
-        return keccak256(abi.encode(rollupId, destination, value, data, sourceAddress, sourceRollup));
+        uint256 sourceRollupId
+    ) public pure returns (bytes32) {
+        return keccak256(abi.encode(targetRollupId, targetAddress, value, data, sourceAddress, sourceRollupId));
     }
 
     // ──────────────────────────────────────────────

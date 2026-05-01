@@ -11,7 +11,7 @@ Migration notes from the legacy scope-tree / `ActionType` model to the current *
 The following concepts existed in the previous protocol version and are gone:
 
 ### `ActionType` enum
-There is no longer an `ActionType` enum on `Action` or any other struct. All cross-chain work is expressed as `CrossChainCall`s; entry classification (immediate vs. deferred) is derived from `actionHash == bytes32(0)` alone.
+There is no longer an `ActionType` enum on `Action` or any other struct. All cross-chain work is expressed as `CrossChainCall`s; entry classification (immediate vs. deferred) is derived from `crossChainCallHash == bytes32(0)` alone.
 
 ### `RESULT` / `REVERT` / `REVERT_CONTINUE` action types
 These three action types are removed. Their roles are absorbed as follows:
@@ -55,7 +55,7 @@ No continuations to look up. No per-rollup state-root restoration. No scope tree
 
 **New**:
 - Reentrant call that **succeeds** → consume one entry from `entry.nestedActions[]` (sequential cursor).
-- Reentrant call that **reverts** (caller catches with try/catch) → look up a `StaticCall` keyed by `(actionHash, callNumber, lastNestedActionConsumed)` with `failed = true`.
+- Reentrant call that **reverts** (caller catches with try/catch) → look up a `StaticCall` keyed by `(crossChainCallHash, callNumber, lastNestedActionConsumed)` with `failed = true`.
 - Reentrant cross-chain `STATICCALL` (read-only) → same `StaticCall` lookup with `failed = false`.
 
 A reverting reentrant call cannot use `NestedAction` because the revert rolls back the consumption-cursor `tstore`, making consumption silent. `StaticCall` is content-addressed and replays the cached revert deterministically.

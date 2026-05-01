@@ -1,20 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-/// @notice Represents an action used to build the entrypoint hash
-/// @dev Off-chain only. Not used by any on-chain function. Exists for tooling to compute
-///      actionHash = keccak256(abi.encode(targetRollupId, targetAddress, value, data, sourceAddress, sourceRollupId))
-/// @dev Field declaration order matches the abi.encode preimage; do not reorder without
-///      updating _computeActionInputHash in Rollups / CrossChainManagerL2.
-struct Action {
-    uint256 targetRollupId;
-    address targetAddress;
-    uint256 value;
-    bytes data;
-    address sourceAddress;
-    uint256 sourceRollupId;
-}
-
 /// @notice Represents a state delta
 /// @dev `currentState` is the rollup's expected state root immediately before this delta is applied.
 ///      It is checked on-chain against `rollups[rollupId].stateRoot`; mismatch reverts. This makes
@@ -45,7 +31,7 @@ struct CrossChainCall {
 /// @dev Position in the execution tree (crossChainCall index, nested action index, parent context)
 ///      is folded into the entry-level rolling hash rather than stored as explicit fields.
 struct NestedAction {
-    bytes32 actionHash;
+    bytes32 crossChainCallHash;
     /// Iterations the nested frame's `_processNCalls` runs over the parent entry's `calls[]`.
     /// Continues advancing the same global `_currentCallNumber` cursor that the outer frame
     /// was using; outer resumes from `cursor + nested.callCount` after the nested returns.
@@ -96,7 +82,7 @@ struct NestedAction {
 ///        and `_currentCallNumber == 5` at the end (the `UnconsumedCalls` guard checks this).
 struct ExecutionEntry {
     StateDelta[] stateDeltas;
-    bytes32 actionHash;
+    bytes32 crossChainCallHash;
     uint256 destinationRollupId;
     /// All calls executed by this entry, flat, in execution order. Partitioned between
     /// the entry's outermost frame and any reentrant (nested) frames — see the natspec
@@ -117,7 +103,7 @@ struct ExecutionEntry {
 ///      Loaded via postBatch (L1) or loadExecutionTable (L2).
 ///      All proxies referenced by `calls` must be deployed before staticCallLookup is called.
 struct LookupCall {
-    bytes32 actionHash;
+    bytes32 crossChainCallHash;
     /// Rollup whose `lookupQueue` this entry is routed to on L1 (per-rollup queue model).
     /// On L2 there's a single rollup, so the field is unused by the on-chain execution
     /// path — same semantic as `ExecutionEntry.destinationRollupId`.
