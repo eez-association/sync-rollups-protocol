@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import {Rollups} from "../../../src/Rollups.sol";
+import {Rollups, ProofSystemBatch} from "../../../src/Rollups.sol";
 import {
     ICrossChainManager,
-    Action,
     ExecutionEntry,
-    StaticCall,
+    LookupCall,
     CrossChainCall,
     NestedAction
 } from "../../../src/ICrossChainManager.sol";
@@ -34,9 +33,46 @@ function getOrCreateProxy(ICrossChainManager manager, address originalAddress, u
     }
 }
 
-/// @notice Action hash builder matching Rollups._computeActionInputHash.
+/// @notice Cross-chain call hash builder matching `Rollups.computeCrossChainCallHash`.
+/// @dev Same formula on L1 and L2; off-chain tooling and on-chain code share this preimage.
+function crossChainCallHash(
+    uint256 targetRollupId,
+    address targetAddress,
+    uint256 value,
+    bytes memory data,
+    address sourceAddress,
+    uint256 sourceRollupId
+)
+    pure
+    returns (bytes32)
+{
+    return keccak256(abi.encode(targetRollupId, targetAddress, value, data, sourceAddress, sourceRollupId));
+}
+
+/// @notice **Backward-compatibility shim** for legacy E2E scripts.
+/// @dev The `Action` struct was removed from `ICrossChainManager.sol`. E2E flow scripts
+///      pre-refactor used it heavily as an off-chain "tooling-side" record of the inputs
+///      that hash to `crossChainCallHash`. Re-defined here with the same field order so
+///      existing scripts can keep using `Action({...})` literals; computing the hash via
+///      `actionHash(...)` (also shimmed) routes to the canonical formula.
+///      New code should call `crossChainCallHash(...)` directly with individual fields.
+struct Action {
+    uint256 targetRollupId;
+    address targetAddress;
+    uint256 value;
+    bytes data;
+    address sourceAddress;
+    uint256 sourceRollupId;
+}
+
+/// @notice Backward-compat: `actionHash(Action)` → `crossChainCallHash(...)`.
 function actionHash(Action memory a) pure returns (bytes32) {
-    return keccak256(abi.encode(a.targetRollupId, a.targetAddress, a.value, a.data, a.sourceAddress, a.sourceRollupId));
+    return crossChainCallHash(a.targetRollupId, a.targetAddress, a.value, a.data, a.sourceAddress, a.sourceRollupId);
+}
+
+/// @notice Backward-compat alias: `noStaticCalls()` returns an empty `LookupCall[]`.
+function noStaticCalls() pure returns (LookupCall[] memory) {
+    return new LookupCall[](0);
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -73,13 +109,51 @@ library RollingHashBuilder {
 // ══════════════════════════════════════════════════════════════════════
 //  L2TXBatcher — postBatch + executeL2TX in one tx (local mode).
 //  Satisfies the same-block requirement.
+//
+//  POST-REFACTOR: postBatch now takes `ProofSystemBatch[]`. The batcher wraps the
+//  caller's entries into a single sub-batch with the supplied proofSystem + rollupId,
+//  then drains immediate entries (transientCount = leading-zero-actionHash run length)
+//  and finally calls executeL2TX(rollupId).
 // ══════════════════════════════════════════════════════════════════════
 
 contract L2TXBatcher {
-    function execute(Rollups rollups, ExecutionEntry[] calldata entries, StaticCall[] calldata staticCalls) external {
-        uint256 tc = (entries.length > 0 && entries[0].actionHash == bytes32(0)) ? 1 : 0;
-        rollups.postBatch(entries, staticCalls, tc, 0, 0, "", "proof");
-        rollups.executeL2TX();
+    function execute(
+        Rollups rollups,
+        address proofSystem,
+        uint256 rollupId,
+        ExecutionEntry[] calldata entries,
+        LookupCall[] calldata lookupCalls
+    )
+        external
+    {
+        // Compute transientCount as the count of leading entries whose crossChainCallHash == 0
+        // (immediate entries — no source action to match, run inline during postBatch).
+        uint256 tc = 0;
+        while (tc < entries.length && entries[tc].crossChainCallHash == bytes32(0)) {
+            tc++;
+        }
+
+        address[] memory psList = new address[](1);
+        psList[0] = proofSystem;
+        uint256[] memory rids = new uint256[](1);
+        rids[0] = rollupId;
+        bytes[] memory proofs = new bytes[](1);
+        proofs[0] = "proof";
+        ProofSystemBatch[] memory batches = new ProofSystemBatch[](1);
+        batches[0] = ProofSystemBatch({
+            proofSystems: psList,
+            rollupIds: rids,
+            entries: entries,
+            lookupCalls: lookupCalls,
+            transientCount: tc,
+            transientLookupCallCount: 0,
+            blobIndices: new uint256[](0),
+            callData: "",
+            proof: proofs,
+            crossProofSystemInteractions: bytes32(0)
+        });
+        rollups.postBatch(batches);
+        rollups.executeL2TX(rollupId);
     }
 }
 
@@ -87,14 +161,9 @@ contract L2TXBatcher {
 //  Common empty helpers (saves boilerplate in E2E scripts)
 // ══════════════════════════════════════════════════════════════════════
 
-/// @notice Returns an empty StaticCall[] (for tests that don't use static calls).
-function noStaticCalls() pure returns (StaticCall[] memory) {
-    return new StaticCall[](0);
-}
-
-/// @notice Returns an empty StateDelta[] (for L2 entries).
-function noStateDeltas() pure returns (ExecutionEntry memory e) {
-    // kept for symmetry — callers normally build StateDelta[] directly
+/// @notice Returns an empty LookupCall[] (for flows that don't use lookup calls).
+function noLookupCalls() pure returns (LookupCall[] memory) {
+    return new LookupCall[](0);
 }
 
 /// @notice Returns an empty NestedAction[].

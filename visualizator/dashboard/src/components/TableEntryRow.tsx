@@ -76,7 +76,7 @@ export const TableEntryRow: React.FC<Props> = ({ entry, index }) => {
           {index + 1}
         </div>
         <div style={{ flex: 1, lineHeight: 1.4, minWidth: 0 }}>
-          <span style={{ color: COLORS.dim }}>{entry.actionHash}</span>
+          <span style={{ color: COLORS.dim }}>{entry.crossChainCallHash}</span>
           {entry.delta && (
             <span
               style={{
@@ -114,12 +114,12 @@ export const TableEntryRow: React.FC<Props> = ({ entry, index }) => {
             fontSize: "0.55rem",
           }}
         >
-          {/* Action Hash section */}
+          {/* Cross-Chain Call Hash section */}
           {entry.actionDetail && (
             <HashSection
-              title="Action Hash"
+              title="Cross-Chain Call Hash"
               detail={entry.actionDetail}
-              fullHash={entry.fullActionHash}
+              fullHash={entry.fullCrossChainCallHash}
             />
           )}
 
@@ -186,9 +186,9 @@ const HashSection: React.FC<{
 }> = ({ title, detail, fullHash }) => {
   const [showFull, setShowFull] = useState(false);
 
-  // Separate actionHash from the rest
-  const { actionHash, ...fields } = detail;
-  const displayHash = actionHash;
+  // Separate crossChainCallHash from the rest
+  const { crossChainCallHash, ...fields } = detail;
+  const displayHash = crossChainCallHash;
   const hasDecodedFields = Object.keys(fields).length > 0;
 
   return (
@@ -198,7 +198,7 @@ const HashSection: React.FC<{
         {/* Show the hash */}
         {displayHash && (
           <>
-            <span style={{ color: COLORS.dim }}>actionHash</span>
+            <span style={{ color: COLORS.dim }}>crossChainCallHash</span>
             <span style={{ wordBreak: "break-all" }}>
               <span
                 style={{ color: COLORS.add, cursor: "pointer" }}

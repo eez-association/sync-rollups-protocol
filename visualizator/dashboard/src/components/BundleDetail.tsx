@@ -121,7 +121,7 @@ export const BundleDetail: React.FC<Props> = ({ bundle, onClose }) => {
               <StatusDot status={bundle.status} />
             </div>
             <div style={{ fontSize: "0.5rem", color: COLORS.dim, marginTop: 2 }}>
-              {bundle.events.length} events | {bundle.actionHashes.length} action hashes |
+              {bundle.events.length} events | {bundle.crossChainCallHashes.length} cross-chain call hashes |
               blocks {bundle.blockRange.from.toString()}-{bundle.blockRange.to.toString()} |
               arrow keys to navigate
             </div>
@@ -297,12 +297,12 @@ export const BundleDetail: React.FC<Props> = ({ bundle, onClose }) => {
 
 type MiniEntry = {
   stepStatus: string;
-  actionHash: string;
+  crossChainCallHash: string;
   delta: string | null;
   stateDeltas?: string[];
   actionDetail?: Record<string, string>;
   entryMeta?: Record<string, string>;
-  fullActionHash?: string;
+  fullCrossChainCallHash?: string;
 };
 
 const TablePanel: React.FC<{
@@ -354,9 +354,9 @@ const TableEntryMini: React.FC<{
   const borderColor = isJa ? COLORS.add : isJc ? COLORS.rm : COLORS.brd;
   const opacity = isConsumed ? 0.3 : 1;
 
-  // Extract decoded fields (skip actionHash key — shown as the header hash)
+  // Extract decoded fields (skip crossChainCallHash key — shown as the header hash)
   const actionFields = entry.actionDetail
-    ? Object.entries(entry.actionDetail).filter(([k]) => k !== "actionHash")
+    ? Object.entries(entry.actionDetail).filter(([k]) => k !== "crossChainCallHash")
     : [];
   const metaFields = entry.entryMeta
     ? Object.entries(entry.entryMeta)
@@ -389,7 +389,7 @@ const TableEntryMini: React.FC<{
         }}
       >
         <span style={{ color: COLORS.dim, fontWeight: 700 }}>#{index + 1}</span>
-        <span style={{ color: COLORS.add, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{entry.actionHash}</span>
+        <span style={{ color: COLORS.add, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{entry.crossChainCallHash}</span>
         {isJa && (
           <span style={{ fontSize: "0.48rem", color: COLORS.add, fontWeight: 700, flexShrink: 0 }}>+added</span>
         )}

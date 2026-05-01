@@ -2,23 +2,24 @@
 pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
-import {Rollups} from "../../../src/Rollups.sol";
+import {Rollups, ProofSystemBatch} from "../../../src/Rollups.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
 import {ICrossChainManager} from "../../../src/ICrossChainManager.sol";
 import {
-    Action,
     StateDelta,
     CrossChainCall,
     NestedAction,
     ExecutionEntry,
-    StaticCall
+    LookupCall
 } from "../../../src/ICrossChainManager.sol";
 import {Counter, CounterAndProxy} from "../../../test/mocks/CounterContracts.sol";
 import {CallTwiceNestedAndOnce} from "../../../test/mocks/MultiCallContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 import {
+    Action,
     actionHash,
     noStaticCalls,
+    noLookupCalls,
     noNestedActions,
     noCalls,
     getOrCreateProxy,
@@ -65,25 +66,29 @@ abstract contract MCNActions {
     // ── L1 outer action hashes (sourceRollup=MAINNET; the trigger lives on L1) ──
 
     function _l1HashCAP2(address cap2L2, address app) internal pure returns (bytes32) {
-        return actionHash(Action({
-            targetRollupId: L2_ROLLUP_ID,
-            targetAddress: cap2L2,
-            value: 0,
-            data: abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),
-            sourceAddress: app,
-            sourceRollupId: MAINNET_ROLLUP_ID
-        }));
+        return actionHash(
+            Action({
+                targetRollupId: L2_ROLLUP_ID,
+                targetAddress: cap2L2,
+                value: 0,
+                data: abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),
+                sourceAddress: app,
+                sourceRollupId: MAINNET_ROLLUP_ID
+            })
+        );
     }
 
     function _l1HashCounterL2(address counterL2, address app) internal pure returns (bytes32) {
-        return actionHash(Action({
-            targetRollupId: L2_ROLLUP_ID,
-            targetAddress: counterL2,
-            value: 0,
-            data: abi.encodeWithSelector(Counter.increment.selector),
-            sourceAddress: app,
-            sourceRollupId: MAINNET_ROLLUP_ID
-        }));
+        return actionHash(
+            Action({
+                targetRollupId: L2_ROLLUP_ID,
+                targetAddress: counterL2,
+                value: 0,
+                data: abi.encodeWithSelector(Counter.increment.selector),
+                sourceAddress: app,
+                sourceRollupId: MAINNET_ROLLUP_ID
+            })
+        );
     }
 
     // ── L2 outer action hashes (the L2 manager forces sourceRollup=ROLLUP_ID
@@ -91,37 +96,43 @@ abstract contract MCNActions {
     //    originalRollupId=MAINNET so the hash inverts cleanly) ──
 
     function _l2HashCAP2(address cap2L2, address l2App) internal pure returns (bytes32) {
-        return actionHash(Action({
-            targetRollupId: MAINNET_ROLLUP_ID,
-            targetAddress: cap2L2,
-            value: 0,
-            data: abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),
-            sourceAddress: l2App,
-            sourceRollupId: L2_ROLLUP_ID
-        }));
+        return actionHash(
+            Action({
+                targetRollupId: MAINNET_ROLLUP_ID,
+                targetAddress: cap2L2,
+                value: 0,
+                data: abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),
+                sourceAddress: l2App,
+                sourceRollupId: L2_ROLLUP_ID
+            })
+        );
     }
 
     function _l2HashCounterL2(address counterL2, address l2App) internal pure returns (bytes32) {
-        return actionHash(Action({
-            targetRollupId: MAINNET_ROLLUP_ID,
-            targetAddress: counterL2,
-            value: 0,
-            data: abi.encodeWithSelector(Counter.increment.selector),
-            sourceAddress: l2App,
-            sourceRollupId: L2_ROLLUP_ID
-        }));
+        return actionHash(
+            Action({
+                targetRollupId: MAINNET_ROLLUP_ID,
+                targetAddress: counterL2,
+                value: 0,
+                data: abi.encodeWithSelector(Counter.increment.selector),
+                sourceAddress: l2App,
+                sourceRollupId: L2_ROLLUP_ID
+            })
+        );
     }
 
     /// @dev Inner reentrant hash on L2: CAP2 (running on L2) calls CounterL1@L1.
     function _l2InnerHashCounterL1(address counterL1, address cap2L2) internal pure returns (bytes32) {
-        return actionHash(Action({
-            targetRollupId: MAINNET_ROLLUP_ID,
-            targetAddress: counterL1,
-            value: 0,
-            data: abi.encodeWithSelector(Counter.increment.selector),
-            sourceAddress: cap2L2,
-            sourceRollupId: L2_ROLLUP_ID
-        }));
+        return actionHash(
+            Action({
+                targetRollupId: MAINNET_ROLLUP_ID,
+                targetAddress: counterL1,
+                value: 0,
+                data: abi.encodeWithSelector(Counter.increment.selector),
+                sourceAddress: cap2L2,
+                sourceRollupId: L2_ROLLUP_ID
+            })
+        );
     }
 
     // ── Rolling hashes ──
@@ -139,7 +150,7 @@ abstract contract MCNActions {
         h = h.appendCallBegin(1);
         h = h.appendNestedBegin(1);
         h = h.appendNestedEnd(1);
-        h = h.appendCallEnd(1, true, "");           // incrementProxy returns nothing
+        h = h.appendCallEnd(1, true, ""); // incrementProxy returns nothing
     }
 
     /// @dev L2 entry [2]: simple call to CounterL2.
@@ -152,7 +163,8 @@ abstract contract MCNActions {
     // ── L1 entries (3) ──
 
     function _l1Entries(address counterL1, address cap2L2, address counterL2, address app)
-        internal pure
+        internal
+        pure
         returns (ExecutionEntry[] memory entries)
     {
         // Inner call shared by entries [0] and [1]: CAP2 (logically on L2) reentrant-calls
@@ -171,11 +183,26 @@ abstract contract MCNActions {
         calls1[0] = cap2CallsCounterL1;
 
         StateDelta[] memory d0 = new StateDelta[](1);
-        d0[0] = StateDelta({rollupId: L2_ROLLUP_ID, newState: keccak256("l2-mcn-step-1"), etherDelta: 0});
+        d0[0] = StateDelta({
+            rollupId: L2_ROLLUP_ID,
+            currentState: keccak256("l2-initial-state"),
+            newState: keccak256("l2-mcn-step-1"),
+            etherDelta: 0
+        });
         StateDelta[] memory d1 = new StateDelta[](1);
-        d1[0] = StateDelta({rollupId: L2_ROLLUP_ID, newState: keccak256("l2-mcn-step-2"), etherDelta: 0});
+        d1[0] = StateDelta({
+            rollupId: L2_ROLLUP_ID,
+            currentState: keccak256("l2-mcn-step-1"),
+            newState: keccak256("l2-mcn-step-2"),
+            etherDelta: 0
+        });
         StateDelta[] memory d2 = new StateDelta[](1);
-        d2[0] = StateDelta({rollupId: L2_ROLLUP_ID, newState: keccak256("l2-mcn-step-3"), etherDelta: 0});
+        d2[0] = StateDelta({
+            rollupId: L2_ROLLUP_ID,
+            currentState: keccak256("l2-mcn-step-2"),
+            newState: keccak256("l2-mcn-step-3"),
+            etherDelta: 0
+        });
 
         bytes32 outerCAP2 = _l1HashCAP2(cap2L2, app);
         bytes32 outerCounterL2 = _l1HashCounterL2(counterL2, app);
@@ -183,32 +210,32 @@ abstract contract MCNActions {
         entries = new ExecutionEntry[](3);
         entries[0] = ExecutionEntry({
             stateDeltas: d0,
-            actionHash: outerCAP2,
+            crossChainCallHash: outerCAP2,
+            destinationRollupId: L2_ROLLUP_ID,
             calls: calls0,
             nestedActions: noNestedActions(),
             callCount: 1,
-            returnData: "",                              // incrementProxy() returns void
-            failed: false,
+            returnData: "", // incrementProxy() returns void
             rollingHash: _l1NestedHash(1)
         });
         entries[1] = ExecutionEntry({
             stateDeltas: d1,
-            actionHash: outerCAP2,                       // same hash, sequential consumption
+            crossChainCallHash: outerCAP2, // same hash, sequential consumption
+            destinationRollupId: L2_ROLLUP_ID,
             calls: calls1,
             nestedActions: noNestedActions(),
             callCount: 1,
             returnData: "",
-            failed: false,
             rollingHash: _l1NestedHash(2)
         });
         entries[2] = ExecutionEntry({
             stateDeltas: d2,
-            actionHash: outerCounterL2,
-            calls: noCalls(),                            // no L1-side execution; CounterL2 is L2-local
+            crossChainCallHash: outerCounterL2,
+            destinationRollupId: L2_ROLLUP_ID,
+            calls: noCalls(), // no L1-side execution; CounterL2 is L2-local
             nestedActions: noNestedActions(),
             callCount: 0,
-            returnData: abi.encode(uint256(1)),          // app.execute decodes this as `simpleResult`
-            failed: false,
+            returnData: abi.encode(uint256(1)), // app.execute decodes this as `simpleResult`
             rollingHash: bytes32(0)
         });
     }
@@ -216,7 +243,8 @@ abstract contract MCNActions {
     // ── L2 entries (3) ──
 
     function _l2Entries(address counterL1, address cap2L2, address counterL2, address l2App)
-        internal pure
+        internal
+        pure
         returns (ExecutionEntry[] memory entries)
     {
         bytes32 outerCAP2 = _l2HashCAP2(cap2L2, l2App);
@@ -250,47 +278,41 @@ abstract contract MCNActions {
         calls2[0] = counterL2RunCall;
 
         NestedAction[] memory nested0 = new NestedAction[](1);
-        nested0[0] = NestedAction({
-            actionHash: innerCounterL1,
-            callCount: 0,
-            returnData: abi.encode(uint256(1))
-        });
+        nested0[0] =
+            NestedAction({crossChainCallHash: innerCounterL1, callCount: 0, returnData: abi.encode(uint256(1))});
         NestedAction[] memory nested1 = new NestedAction[](1);
-        nested1[0] = NestedAction({
-            actionHash: innerCounterL1,
-            callCount: 0,
-            returnData: abi.encode(uint256(2))
-        });
+        nested1[0] =
+            NestedAction({crossChainCallHash: innerCounterL1, callCount: 0, returnData: abi.encode(uint256(2))});
 
         entries = new ExecutionEntry[](3);
         entries[0] = ExecutionEntry({
             stateDeltas: new StateDelta[](0),
-            actionHash: outerCAP2,
+            crossChainCallHash: outerCAP2,
+            destinationRollupId: L2_ROLLUP_ID,
             calls: calls0,
             nestedActions: nested0,
             callCount: 1,
             returnData: "",
-            failed: false,
             rollingHash: _l2NestedHash()
         });
         entries[1] = ExecutionEntry({
             stateDeltas: new StateDelta[](0),
-            actionHash: outerCAP2,
+            crossChainCallHash: outerCAP2,
+            destinationRollupId: L2_ROLLUP_ID,
             calls: calls1,
             nestedActions: nested1,
             callCount: 1,
             returnData: "",
-            failed: false,
             rollingHash: _l2NestedHash()
         });
         entries[2] = ExecutionEntry({
             stateDeltas: new StateDelta[](0),
-            actionHash: outerCounterL2,
+            crossChainCallHash: outerCounterL2,
+            destinationRollupId: L2_ROLLUP_ID,
             calls: calls2,
             nestedActions: noNestedActions(),
             callCount: 1,
             returnData: abi.encode(uint256(1)),
-            failed: false,
             rollingHash: _l2SimpleHash()
         });
     }
@@ -303,13 +325,36 @@ abstract contract MCNActions {
 contract Batcher {
     function execute(
         Rollups rollups,
+        address proofSystem,
         ExecutionEntry[] calldata entries,
-        StaticCall[] calldata statics,
+        LookupCall[] calldata lookupCalls,
         CallTwiceNestedAndOnce app,
         address nestedProxy,
         address simpleProxy
-    ) external returns (uint256) {
-        rollups.postBatch(entries, statics, 0, 0, 0, "", "proof");
+    )
+        external
+        returns (uint256)
+    {
+        address[] memory psList = new address[](1);
+        psList[0] = proofSystem;
+        uint256[] memory rids = new uint256[](1);
+        rids[0] = L2_ROLLUP_ID;
+        bytes[] memory proofs = new bytes[](1);
+        proofs[0] = "proof";
+        ProofSystemBatch[] memory batches = new ProofSystemBatch[](1);
+        batches[0] = ProofSystemBatch({
+            proofSystems: psList,
+            rollupIds: rids,
+            entries: entries,
+            lookupCalls: lookupCalls,
+            transientCount: 0,
+            transientLookupCallCount: 0,
+            blobIndices: new uint256[](0),
+            callData: "",
+            proof: proofs,
+            crossProofSystemInteractions: bytes32(0)
+        });
+        rollups.postBatch(batches);
         return app.execute(nestedProxy, simpleProxy);
     }
 }
@@ -358,7 +403,8 @@ contract DeployL2 is Script {
         // (rollup=MAINNET, target=<L2 contract addr>, sourceRollup=L2). This gives L2_APP a
         // proxy entry-point that consumes the L2 entries.
         address nestedProxyL2 = getOrCreateProxy(ICrossChainManager(address(manager)), address(cap2), MAINNET_ROLLUP_ID);
-        address simpleProxyL2 = getOrCreateProxy(ICrossChainManager(address(manager)), address(counterL2), MAINNET_ROLLUP_ID);
+        address simpleProxyL2 =
+            getOrCreateProxy(ICrossChainManager(address(manager)), address(counterL2), MAINNET_ROLLUP_ID);
 
         console.log("COUNTER_L1_PROXY_L2=%s", counterL1ProxyL2);
         console.log("COUNTER_AND_PROXY_L2=%s", address(cap2));
@@ -397,6 +443,7 @@ contract Deploy2 is Script {
 contract Execute is Script, MCNActions {
     function run() external {
         address rollupsAddr = vm.envAddress("ROLLUPS");
+        address proofSystemAddr = vm.envAddress("PROOF_SYSTEM");
         address counterL1 = vm.envAddress("COUNTER_L1");
         address cap2 = vm.envAddress("COUNTER_AND_PROXY_L2");
         address counterL2 = vm.envAddress("COUNTER_L2");
@@ -408,11 +455,12 @@ contract Execute is Script, MCNActions {
         Batcher batcher = new Batcher();
 
         // sourceAddress = the app contract: Batcher → app → proxy, so msg.sender at the
-        // proxy is `app`. That's what the L1 entries' actionHashes commit to.
+        // proxy is `app`. That's what the L1 entries' crossChainCallHashes commit to.
         uint256 simpleResult = batcher.execute(
             Rollups(rollupsAddr),
+            proofSystemAddr,
             _l1Entries(counterL1, cap2, counterL2, app),
-            noStaticCalls(),
+            noLookupCalls(),
             CallTwiceNestedAndOnce(app),
             cap2ProxyL1,
             counterL2ProxyL1
@@ -438,10 +486,8 @@ contract ExecuteL2 is Script, MCNActions {
         address simpleProxyL2 = vm.envAddress("SIMPLE_PROXY_L2");
 
         vm.startBroadcast();
-        CrossChainManagerL2(managerAddr).loadExecutionTable(
-            _l2Entries(counterL1, cap2, counterL2, l2App),
-            noStaticCalls()
-        );
+        CrossChainManagerL2(managerAddr)
+            .loadExecutionTable(_l2Entries(counterL1, cap2, counterL2, l2App), noStaticCalls());
 
         uint256 simpleResult = CallTwiceNestedAndOnce(l2App).execute(nestedProxyL2, simpleProxyL2);
 
@@ -509,14 +555,12 @@ contract ComputeExpected is ComputeExpectedBase, MCNActions {
 
         console.log(
             string.concat(
-                "EXPECTED_L1_HASHES=[",
-                vm.toString(l1h0), ",", vm.toString(l1h1), ",", vm.toString(l1h2), "]"
+                "EXPECTED_L1_HASHES=[", vm.toString(l1h0), ",", vm.toString(l1h1), ",", vm.toString(l1h2), "]"
             )
         );
         console.log(
             string.concat(
-                "EXPECTED_L2_HASHES=[",
-                vm.toString(l2h0), ",", vm.toString(l2h1), ",", vm.toString(l2h2), "]"
+                "EXPECTED_L2_HASHES=[", vm.toString(l2h0), ",", vm.toString(l2h1), ",", vm.toString(l2h2), "]"
             )
         );
 

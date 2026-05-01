@@ -3,15 +3,13 @@ import type { ExecutionEntry } from "./chain";
 
 export type EventName =
   | "RollupCreated"
-  | "StateUpdated"
-  | "VerificationKeyUpdated"
-  | "OwnershipTransferred"
+  | "RollupContractChanged"
   | "CrossChainProxyCreated"
-  | "L2ExecutionPerformed"
   | "ExecutionConsumed"
   | "CrossChainCallExecuted"
   | "L2TXExecuted"
   | "BatchPosted"
+  | "ImmediateEntrySkipped"
   | "ExecutionTableLoaded"
   | "CallResult"
   | "NestedActionConsumed"
@@ -46,9 +44,12 @@ export type TxMetadata = {
 };
 
 // Parsed event payloads for typed access
+
+// Post-refactor: BatchPosted is just a count. Entries no longer ride the event;
+// they must be decoded from the postBatch tx input or reconstructed from
+// EntryExecuted / ExecutionConsumed / CallResult / NestedActionConsumed.
 export type BatchPostedArgs = {
-  entries: ExecutionEntry[];
-  publicInputsHash: `0x${string}`;
+  subBatchCount: bigint;
 };
 
 export type ExecutionTableLoadedArgs = {
@@ -56,8 +57,9 @@ export type ExecutionTableLoadedArgs = {
 };
 
 export type ExecutionConsumedArgs = {
-  actionHash: `0x${string}`;
-  entryIndex: bigint;
+  crossChainCallHash: `0x${string}`;
+  rollupId: bigint;
+  cursor: bigint;
 };
 
 export type CrossChainProxyCreatedArgs = {
@@ -67,7 +69,7 @@ export type CrossChainProxyCreatedArgs = {
 };
 
 export type CrossChainCallExecutedArgs = {
-  actionHash: `0x${string}`;
+  crossChainCallHash: `0x${string}`;
   proxy: `0x${string}`;
   sourceAddress: `0x${string}`;
   callData: `0x${string}`;
@@ -84,7 +86,7 @@ export type CallResultArgs = {
 export type NestedActionConsumedArgs = {
   entryIndex: bigint;
   nestedNumber: bigint;
-  actionHash: `0x${string}`;
+  crossChainCallHash: `0x${string}`;
   callCount: bigint;
 };
 
@@ -97,21 +99,22 @@ export type EntryExecutedArgs = {
 
 export type RollupCreatedArgs = {
   rollupId: bigint;
-  owner: `0x${string}`;
-  verificationKey: `0x${string}`;
+  rollupContract: `0x${string}`;
   initialState: `0x${string}`;
 };
 
-export type StateUpdatedArgs = {
+export type RollupContractChangedArgs = {
   rollupId: bigint;
-  newStateRoot: `0x${string}`;
+  previousContract: `0x${string}`;
+  newContract: `0x${string}`;
 };
 
-export type L2ExecutionPerformedArgs = {
-  rollupId: bigint;
-  newState: `0x${string}`;
+export type ImmediateEntrySkippedArgs = {
+  transientIdx: bigint;
+  revertData: `0x${string}`;
 };
 
 export type L2TXExecutedArgs = {
-  entryIndex: bigint;
+  rollupId: bigint;
+  cursor: bigint;
 };

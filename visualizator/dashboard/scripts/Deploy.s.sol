@@ -2,13 +2,14 @@
 pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
-import {Rollups, RollupConfig} from "src/Rollups.sol";
+import {Rollups, ProofSystemBatch, RollupConfig} from "src/Rollups.sol";
+import {Rollup} from "src/rollupContract/Rollup.sol";
+import {IProofSystem} from "src/IProofSystem.sol";
 import {CrossChainManagerL2} from "src/CrossChainManagerL2.sol";
-import {ExecutionEntry, StateDelta, CrossChainCall, NestedAction, StaticCall} from "src/ICrossChainManager.sol";
-import {IZKVerifier} from "src/IZKVerifier.sol";
+import {ExecutionEntry, StateDelta, CrossChainCall, NestedAction, LookupCall} from "src/ICrossChainManager.sol";
 import {Counter, CounterAndProxy} from "test/mocks/CounterContracts.sol";
 
-contract MockZKVerifier is IZKVerifier {
+contract MockProofSystem is IProofSystem {
     function verify(bytes calldata, bytes32) external pure override returns (bool) {
         return true;
     }
@@ -16,7 +17,6 @@ contract MockZKVerifier is IZKVerifier {
 
 // ═══════════════════════════════════════════════════════════════
 // Stage 1: Deploy L2 base infrastructure (ManagerL2 + Counter B)
-// Run on L2 chain with deployer key
 // ═══════════════════════════════════════════════════════════════
 contract DeployL2Base is Script {
     function run() external {
@@ -35,20 +35,31 @@ contract DeployL2Base is Script {
 
 // ═══════════════════════════════════════════════════════════════
 // Stage 2: Deploy L1 infrastructure
-// Needs COUNTER_L2 env var (from stage 1)
-// Run on L1 chain with deployer key
+// Burns rollupId 0 (MAINNET) so the L2 rollup gets id 1.
 // ═══════════════════════════════════════════════════════════════
 contract DeployL1 is Script {
+    bytes32 constant DEFAULT_VK = keccak256("verificationKey");
+
     function run() external {
         address counterL2Addr = vm.envAddress("COUNTER_L2");
 
         vm.startBroadcast();
 
-        MockZKVerifier verifier = new MockZKVerifier();
-        Rollups rollups = new Rollups(address(verifier), 1);
+        MockProofSystem ps = new MockProofSystem();
+        Rollups rollups = new Rollups();
 
-        // Create L2 rollup (rollupId = 1)
-        rollups.createRollup(keccak256("l2-initial-state"), keccak256("verificationKey"), msg.sender);
+        address[] memory psList = new address[](1);
+        psList[0] = address(ps);
+        bytes32[] memory vks = new bytes32[](1);
+        vks[0] = DEFAULT_VK;
+
+        // Burn rollupId 0 (MAINNET).
+        Rollup burn = new Rollup(address(rollups), msg.sender, 1, psList, vks);
+        rollups.createRollup(address(burn), bytes32(0));
+
+        Rollup l2Manager = new Rollup(address(rollups), msg.sender, 1, psList, vks);
+        uint256 rid = rollups.createRollup(address(l2Manager), keccak256("l2-initial-state"));
+        require(rid == 1, "expected L2 rollupId = 1");
 
         Counter counterL1 = new Counter(); // C
 
@@ -60,7 +71,9 @@ contract DeployL1 is Script {
 
         vm.stopBroadcast();
 
+        console.log("PROOF_SYSTEM=%s", address(ps));
         console.log("ROLLUPS=%s", address(rollups));
+        console.log("L2_MANAGER=%s", address(l2Manager));
         console.log("COUNTER_L1=%s", address(counterL1));
         console.log("COUNTER_PROXY=%s", counterProxy);
         console.log("COUNTER_AND_PROXY=%s", address(counterAndProxy));
@@ -69,8 +82,6 @@ contract DeployL1 is Script {
 
 // ═══════════════════════════════════════════════════════════════
 // Stage 3: Deploy L2 application contracts
-// Needs COUNTER_L1 env var (from stage 2)
-// Run on L2 chain with deployer key
 // ═══════════════════════════════════════════════════════════════
 contract DeployL2Apps is Script {
     function run() external {
@@ -98,28 +109,24 @@ contract DeployL2Apps is Script {
 // Helpers
 // ═══════════════════════════════════════════════════════════════
 
-/// @dev Computes the action hash the same way executeCrossChainCall does
-function _actionHash(
-    uint256 rollupId,
-    address destination,
+/// @dev Computes the cross-chain call hash the same way executeCrossChainCall does.
+function _crossChainCallHash(
+    uint256 targetRollupId,
+    address targetAddress,
     uint256 value,
     bytes memory data,
     address sourceAddress,
-    uint256 sourceRollup
+    uint256 sourceRollupId
 ) pure returns (bytes32) {
-    return keccak256(abi.encode(rollupId, destination, value, data, sourceAddress, sourceRollup));
+    return keccak256(abi.encode(targetRollupId, targetAddress, value, data, sourceAddress, sourceRollupId));
 }
 
-/// @dev Creates an empty StaticCall array
-function _noStaticCalls() pure returns (StaticCall[] memory) {
-    return new StaticCall[](0);
+function _noLookupCalls() pure returns (LookupCall[] memory) {
+    return new LookupCall[](0);
 }
 
 // ═══════════════════════════════════════════════════════════════
 // Stage 4: Scenario 1 — L2 Phase (SYSTEM operations)
-// Loads execution table with one deferred entry, then Alice triggers D.incrementProxy()
-// Run on L2 chain as SYSTEM (--sender SYSTEM --unlocked)
-// Needs: MANAGER_L2, COUNTER_L1, COUNTER_AND_PROXY_L2
 // ═══════════════════════════════════════════════════════════════
 contract Scenario1_L2 is Script {
     function run() external {
@@ -130,16 +137,14 @@ contract Scenario1_L2 is Script {
         CrossChainManagerL2 managerL2 = CrossChainManagerL2(payable(managerL2Addr));
         bytes memory incrementCallData = abi.encodeWithSelector(Counter.increment.selector);
 
-        // actionHash: what executeCrossChainCall builds when D calls C'
-        // C' proxy: originalAddress=counterL1, originalRollupId=MAINNET(0)
-        // sourceAddress=counterAndProxyL2 (D, msg.sender to C'), sourceRollup=L2(1)
-        bytes32 actionHash = _actionHash(
-            0,                          // rollupId (MAINNET, where C lives)
-            counterL1Addr,              // destination (C)
-            0,                          // value
-            incrementCallData,          // data
-            counterAndProxyL2Addr,      // sourceAddress (D)
-            1                           // sourceRollup (L2)
+        // D calls C' (proxy: originalAddress=counterL1, originalRollupId=0). msg.sender at C' is D.
+        bytes32 callHash = _crossChainCallHash(
+            0, // targetRollupId (MAINNET, where C lives)
+            counterL1Addr, // targetAddress
+            0, // value
+            incrementCallData, // data
+            counterAndProxyL2Addr, // sourceAddress (D)
+            1 // sourceRollupId (L2)
         );
 
         vm.startBroadcast();
@@ -153,16 +158,16 @@ contract Scenario1_L2 is Script {
             ExecutionEntry[] memory entries = new ExecutionEntry[](1);
             entries[0] = ExecutionEntry({
                 stateDeltas: emptyDeltas,
-                actionHash: actionHash,
+                crossChainCallHash: callHash,
+                destinationRollupId: 1,
                 calls: calls,
                 nestedActions: nestedActions,
                 callCount: 0,
                 returnData: abi.encode(uint256(1)),
-                failed: false,
                 rollingHash: bytes32(0)
             });
 
-            managerL2.loadExecutionTable(entries, _noStaticCalls());
+            managerL2.loadExecutionTable(entries, _noLookupCalls());
         }
 
         vm.stopBroadcast();
@@ -173,29 +178,25 @@ contract Scenario1_L2 is Script {
 
 // ═══════════════════════════════════════════════════════════════
 // Stage 5: Scenario 1 — L1 Phase (deployer operations)
-// Posts batch with deferred entry + Alice calls A.incrementProxy()
-// Run on L1 chain with deployer key
-// Needs: ROLLUPS, COUNTER_L2, COUNTER_AND_PROXY
 // ═══════════════════════════════════════════════════════════════
 contract Scenario1_L1 is Script {
     function run() external {
         address rollupsAddr = vm.envAddress("ROLLUPS");
+        address proofSystemAddr = vm.envAddress("PROOF_SYSTEM");
         address counterL2Addr = vm.envAddress("COUNTER_L2");
         address counterAndProxyAddr = vm.envAddress("COUNTER_AND_PROXY");
 
         Rollups rollups = Rollups(payable(rollupsAddr));
         bytes memory incrementCallData = abi.encodeWithSelector(Counter.increment.selector);
 
-        // actionHash: what executeCrossChainCall builds when A calls B'
-        // B' proxy: originalAddress=counterL2, originalRollupId=L2(1)
-        // sourceAddress=counterAndProxy (A, msg.sender to B'), sourceRollup=MAINNET(0)
-        bytes32 actionHash = _actionHash(
-            1,                          // rollupId (L2, where B lives)
-            counterL2Addr,              // destination (B)
-            0,                          // value
-            incrementCallData,          // data
-            counterAndProxyAddr,        // sourceAddress (A)
-            0                           // sourceRollup (MAINNET)
+        // A calls B' (proxy: originalAddress=counterL2, originalRollupId=1).
+        bytes32 callHash = _crossChainCallHash(
+            1, // targetRollupId (L2)
+            counterL2Addr, // targetAddress (B)
+            0, // value
+            incrementCallData,
+            counterAndProxyAddr, // sourceAddress (A)
+            0 // sourceRollupId (MAINNET)
         );
 
         bytes32 newState = keccak256("l2-state-after-increment");
@@ -207,6 +208,7 @@ contract Scenario1_L1 is Script {
             StateDelta[] memory stateDeltas = new StateDelta[](1);
             stateDeltas[0] = StateDelta({
                 rollupId: 1,
+                currentState: keccak256("l2-initial-state"),
                 newState: newState,
                 etherDelta: 0
             });
@@ -217,20 +219,39 @@ contract Scenario1_L1 is Script {
             ExecutionEntry[] memory entries = new ExecutionEntry[](1);
             entries[0] = ExecutionEntry({
                 stateDeltas: stateDeltas,
-                actionHash: actionHash,
+                crossChainCallHash: callHash,
+                destinationRollupId: 1,
                 calls: calls,
                 nestedActions: nestedActions,
                 callCount: 0,
                 returnData: abi.encode(uint256(1)),
-                failed: false,
                 rollingHash: bytes32(0)
             });
 
-            rollups.postBatch(entries, _noStaticCalls(), 0, 0, 0, "", "proof");
+            address[] memory psList = new address[](1);
+            psList[0] = proofSystemAddr;
+            uint256[] memory rids = new uint256[](1);
+            rids[0] = 1;
+            bytes[] memory proofs = new bytes[](1);
+            proofs[0] = "proof";
+            ProofSystemBatch[] memory batches = new ProofSystemBatch[](1);
+            batches[0] = ProofSystemBatch({
+                proofSystems: psList,
+                rollupIds: rids,
+                entries: entries,
+                lookupCalls: _noLookupCalls(),
+                transientCount: 0,
+                transientLookupCallCount: 0,
+                blobIndices: new uint256[](0),
+                callData: "",
+                proof: proofs,
+                crossProofSystemInteractions: bytes32(0)
+            });
+            rollups.postBatch(batches);
         }
 
         // Alice (= deployer) calls A.incrementProxy()
-        // -> A calls B' -> executeCrossChainCall -> actionHash matches -> returnData returned
+        // -> A calls B' -> executeCrossChainCall -> callHash matches -> returnData returned
         CounterAndProxy(counterAndProxyAddr).incrementProxy();
 
         vm.stopBroadcast();

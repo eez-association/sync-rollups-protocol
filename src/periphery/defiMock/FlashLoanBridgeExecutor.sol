@@ -86,13 +86,10 @@ contract FlashLoanBridgeExecutor is IFlashLoanReceiver {
         address nftContract,
         address _bridge,
         uint256 destRollupId,
-        address returnTo,
-        address nftRecipient
-    ) external {
-        // Snapshot the next token ID before claim() increments it
-        uint256 tokenId = FlashLoanersNFT(nftContract).nextTokenId();
-
-        // Claim the NFT (minted to this contract since we hold >= MIN_BALANCE wrapped tokens)
+        address returnTo
+    )
+        external
+    {
         FlashLoanersNFT(nftContract).claim();
         // Transfer the NFT to the original caller of execute() on L1
         FlashLoanersNFT(nftContract).transferFrom(address(this), nftRecipient, tokenId);

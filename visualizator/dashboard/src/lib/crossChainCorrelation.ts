@@ -4,19 +4,20 @@ import type { TransactionBundle, BundleDirection } from "../types/visualization"
 /**
  * Cross-chain transaction correlation.
  *
- * Matching rule: when the same actionHash appears in ExecutionConsumed events
+ * Matching rule: when the same crossChainCallHash appears in ExecutionConsumed events
  * on BOTH L1 and L2, those two events represent the same cross-chain operation.
  *
  * In the new model:
- * - L1 postBatch loads entries keyed by actionHash
- * - L2 loadExecutionTable loads entries keyed by actionHash
- * - When a proxy call is triggered on one chain, the matching entry (same actionHash)
- *   is consumed from the execution table
- * - The actionHash = keccak256(abi.encode(rollupId, destination, value, data, sourceAddress, sourceRollup))
+ * - L1 postBatch loads entries keyed by crossChainCallHash (TODO(user-decision):
+ *   post-refactor BatchPosted no longer carries entries; decode from tx input).
+ * - L2 loadExecutionTable loads entries keyed by crossChainCallHash.
+ * - When a proxy call is triggered on one chain, the matching entry (same crossChainCallHash)
+ *   is consumed from the execution table.
+ * - The crossChainCallHash = keccak256(abi.encode(targetRollupId, targetAddress, value, data, sourceAddress, sourceRollupId))
  */
 
 export type CorrelatedPair = {
-  actionHash: string;
+  crossChainCallHash: string;
   l1Event: EventRecord;
   l2Event: EventRecord;
 };
@@ -25,7 +26,7 @@ export type CorrelatedPair = {
  * Given all collected events, find correlated cross-chain pairs.
  * Two events are correlated when:
  * 1. Both are ExecutionConsumed
- * 2. They share the same actionHash
+ * 2. They share the same crossChainCallHash
  * 3. One is on L1, the other on L2
  */
 export function findCorrelatedPairs(events: EventRecord[]): CorrelatedPair[] {
@@ -35,20 +36,20 @@ export function findCorrelatedPairs(events: EventRecord[]): CorrelatedPair[] {
 
   for (const event of events) {
     if (event.eventName !== "ExecutionConsumed") continue;
-    const hash = event.args.actionHash as string;
+    const hash = event.args.crossChainCallHash as string;
     if (!hash) continue;
 
     if (event.chain === "l1") {
       l1Consumed.set(hash, event);
       const match = l2Consumed.get(hash);
       if (match) {
-        pairs.push({ actionHash: hash, l1Event: event, l2Event: match });
+        pairs.push({ crossChainCallHash: hash, l1Event: event, l2Event: match });
       }
     } else {
       l2Consumed.set(hash, event);
       const match = l1Consumed.get(hash);
       if (match) {
-        pairs.push({ actionHash: hash, l1Event: match, l2Event: event });
+        pairs.push({ crossChainCallHash: hash, l1Event: match, l2Event: event });
       }
     }
   }
@@ -58,41 +59,29 @@ export function findCorrelatedPairs(events: EventRecord[]): CorrelatedPair[] {
 
 /**
  * Also correlates entries that appear in both BatchPosted (L1) and
- * ExecutionTableLoaded (L2) by actionHash — these represent the same
+ * ExecutionTableLoaded (L2) by crossChainCallHash — these represent the same
  * execution entry loaded on both chains.
  */
 export type CorrelatedEntry = {
-  actionHash: string;
+  crossChainCallHash: string;
   l1EventId: string; // BatchPosted event
   l2EventId: string; // ExecutionTableLoaded event
 };
 
 export function findCorrelatedEntries(events: EventRecord[]): CorrelatedEntry[] {
-  // Collect all actionHashes from BatchPosted entries (L1)
-  const l1Hashes = new Map<string, string>(); // actionHash -> eventId
-  // Collect all actionHashes from ExecutionTableLoaded entries (L2)
+  // Collect all crossChainCallHashes from BatchPosted entries (L1)
+  // TODO(user-decision): post-refactor BatchPosted no longer carries entries; decode from tx input
+  const l1Hashes = new Map<string, string>(); // crossChainCallHash -> eventId
+  // Collect all crossChainCallHashes from ExecutionTableLoaded entries (L2)
   const l2Hashes = new Map<string, string>();
   const correlations: CorrelatedEntry[] = [];
 
   for (const event of events) {
-    if (event.eventName === "BatchPosted" && event.chain === "l1") {
-      const entries = event.args.entries as Array<{ actionHash: string }>;
-      if (entries) {
-        for (const entry of entries) {
-          if (
-            entry.actionHash !==
-            "0x0000000000000000000000000000000000000000000000000000000000000000"
-          ) {
-            l1Hashes.set(entry.actionHash, event.id);
-          }
-        }
-      }
-    }
     if (event.eventName === "ExecutionTableLoaded" && event.chain === "l2") {
-      const entries = event.args.entries as Array<{ actionHash: string }>;
+      const entries = event.args.entries as Array<{ crossChainCallHash: string }>;
       if (entries) {
         for (const entry of entries) {
-          l2Hashes.set(entry.actionHash, event.id);
+          l2Hashes.set(entry.crossChainCallHash, event.id);
         }
       }
     }
@@ -102,7 +91,7 @@ export function findCorrelatedEntries(events: EventRecord[]): CorrelatedEntry[] 
   for (const [hash, l1EventId] of l1Hashes) {
     const l2EventId = l2Hashes.get(hash);
     if (l2EventId) {
-      correlations.push({ actionHash: hash, l1EventId, l2EventId });
+      correlations.push({ crossChainCallHash: hash, l1EventId, l2EventId });
     }
   }
 
@@ -110,27 +99,27 @@ export function findCorrelatedEntries(events: EventRecord[]): CorrelatedEntry[] 
 }
 
 /**
- * Build transaction bundles by grouping events that share actionHashes.
+ * Build transaction bundles by grouping events that share crossChainCallHashes.
  *
  * Strategy:
- * 1. Build a map: actionHash -> [eventIds] from events that carry actionHashes
- *    (BatchPosted entries, ExecutionTableLoaded entries, ExecutionConsumed,
- *     CrossChainCallExecuted, L2TXExecuted)
- * 2. Build a map: eventId -> [actionHashes] (inverse)
- * 3. Use union-find (transitive closure) to group events that share any actionHash
+ * 1. Build a map: crossChainCallHash -> [eventIds] from events that carry crossChainCallHashes
+ *    (ExecutionTableLoaded entries, ExecutionConsumed, CrossChainCallExecuted)
+ *    Note: BatchPosted no longer carries entries — see TODO(user-decision) above.
+ * 2. Build a map: eventId -> [crossChainCallHashes] (inverse)
+ * 3. Use union-find (transitive closure) to group events that share any crossChainCallHash
  * 4. Each group becomes a TransactionBundle
  */
 export function buildTransactionBundles(events: EventRecord[]): TransactionBundle[] {
-  // Map: actionHash -> set of event IDs
+  // Map: crossChainCallHash -> set of event IDs
   const hashToEvents = new Map<string, Set<string>>();
-  // Map: eventId -> set of actionHashes
+  // Map: eventId -> set of crossChainCallHashes
   const eventToHashes = new Map<string, Set<string>>();
 
   const ZERO_HASH = "0x0000000000000000000000000000000000000000000000000000000000000000";
 
-  function link(eventId: string, actionHash: string) {
-    if (!actionHash || actionHash === ZERO_HASH) return;
-    const h = actionHash.toLowerCase();
+  function link(eventId: string, crossChainCallHash: string) {
+    if (!crossChainCallHash || crossChainCallHash === ZERO_HASH) return;
+    const h = crossChainCallHash.toLowerCase();
     if (!hashToEvents.has(h)) hashToEvents.set(h, new Set());
     hashToEvents.get(h)!.add(eventId);
     if (!eventToHashes.has(eventId)) eventToHashes.set(eventId, new Set());
@@ -140,31 +129,27 @@ export function buildTransactionBundles(events: EventRecord[]): TransactionBundl
   for (const event of events) {
     switch (event.eventName) {
       case "BatchPosted": {
-        const entries = event.args.entries as Array<{ actionHash: string }> | undefined;
-        if (entries) {
-          for (const entry of entries) {
-            link(event.id, entry.actionHash);
-          }
-        }
+        // TODO(user-decision): post-refactor BatchPosted no longer carries entries;
+        // decode from tx input to populate crossChainCallHashes here.
         break;
       }
       case "ExecutionTableLoaded": {
-        const entries = event.args.entries as Array<{ actionHash: string }> | undefined;
+        const entries = event.args.entries as Array<{ crossChainCallHash: string }> | undefined;
         if (entries) {
           for (const entry of entries) {
-            link(event.id, entry.actionHash);
+            link(event.id, entry.crossChainCallHash);
           }
         }
         break;
       }
       case "ExecutionConsumed":
-        link(event.id, event.args.actionHash as string);
+        link(event.id, event.args.crossChainCallHash as string);
         break;
       case "CrossChainCallExecuted":
-        link(event.id, event.args.actionHash as string);
+        link(event.id, event.args.crossChainCallHash as string);
         break;
       case "L2TXExecuted":
-        // L2TXExecuted only has entryIndex now, no actionHash — skip linking
+        // L2TXExecuted has rollupId + cursor, no crossChainCallHash — skip linking
         break;
     }
   }
@@ -184,7 +169,7 @@ export function buildTransactionBundles(events: EventRecord[]): TransactionBundl
     if (ra !== rb) parent.set(ra, rb);
   }
 
-  // Group events that share actionHashes
+  // Group events that share crossChainCallHashes
   for (const [, eventIds] of hashToEvents) {
     const arr = [...eventIds];
     for (let i = 1; i < arr.length; i++) {
@@ -200,7 +185,7 @@ export function buildTransactionBundles(events: EventRecord[]): TransactionBundl
     groups.get(root)!.add(eventId);
   }
 
-  // Also add events that don't have actionHashes as standalone bundles
+  // Also add events that don't have crossChainCallHashes as standalone bundles
   const eventMap = new Map(events.map((e) => [e.id, e]));
   const bundledEventIds = new Set(eventToHashes.keys());
 
@@ -219,7 +204,7 @@ export function buildTransactionBundles(events: EventRecord[]): TransactionBundl
 
     if (groupEvents.length === 0) continue;
 
-    // Collect all actionHashes in this group
+    // Collect all crossChainCallHashes in this group
     const allHashes = new Set<string>();
     for (const eid of eventIds) {
       const hashes = eventToHashes.get(eid);
@@ -245,21 +230,16 @@ export function buildTransactionBundles(events: EventRecord[]): TransactionBundl
     const consumedHashes = new Set<string>();
     for (const e of groupEvents) {
       if (e.eventName === "ExecutionConsumed") {
-        consumedHashes.add((e.args.actionHash as string).toLowerCase());
+        consumedHashes.add((e.args.crossChainCallHash as string).toLowerCase());
       }
     }
-    // Check if batch/table entries are all consumed
+    // Check if table entries are all consumed.
+    // TODO(user-decision): BatchPosted entries no longer available here.
     const loadedHashes = new Set<string>();
     for (const e of groupEvents) {
-      if (e.eventName === "BatchPosted") {
-        const entries = e.args.entries as Array<{ actionHash: string }> | undefined;
-        if (entries) entries.forEach((en) => {
-          if (en.actionHash !== ZERO_HASH) loadedHashes.add(en.actionHash.toLowerCase());
-        });
-      }
       if (e.eventName === "ExecutionTableLoaded") {
-        const entries = e.args.entries as Array<{ actionHash: string }> | undefined;
-        if (entries) entries.forEach((en) => loadedHashes.add(en.actionHash.toLowerCase()));
+        const entries = e.args.entries as Array<{ crossChainCallHash: string }> | undefined;
+        if (entries) entries.forEach((en) => loadedHashes.add(en.crossChainCallHash.toLowerCase()));
       }
     }
     const allConsumed = loadedHashes.size > 0 && [...loadedHashes].every((h) => consumedHashes.has(h));
@@ -272,7 +252,7 @@ export function buildTransactionBundles(events: EventRecord[]): TransactionBundl
       id: `bundle-${bundleIdx++}`,
       direction,
       title,
-      actionHashes: [...allHashes],
+      crossChainCallHashes: [...allHashes],
       events: groupEvents.map((e) => e.id),
       chains,
       blockRange: { from: minBlock, to: maxBlock },
@@ -281,14 +261,14 @@ export function buildTransactionBundles(events: EventRecord[]): TransactionBundl
     });
   }
 
-  // Add standalone events (no actionHash) as single-event bundles
+  // Add standalone events (no crossChainCallHash) as single-event bundles
   for (const event of events) {
     if (bundledEventIds.has(event.id)) continue;
     bundles.push({
       id: `bundle-${bundleIdx++}`,
       direction: event.chain === "l1" ? "L1" : "L2",
       title: event.eventName,
-      actionHashes: [],
+      crossChainCallHashes: [],
       events: [event.id],
       chains: new Set([event.chain]),
       blockRange: { from: event.blockNumber, to: event.blockNumber },
@@ -351,7 +331,9 @@ function generateBundleTitle(events: EventRecord[], direction: BundleDirection):
   }
 
   const l2tx = events.find((e) => e.eventName === "L2TXExecuted");
-  if (l2tx) return `L2TX execution (entry ${String(l2tx.args.entryIndex)})`;
+  if (l2tx) {
+    return `L2TX execution (rollup ${String(l2tx.args.rollupId)}, cursor ${String(l2tx.args.cursor)})`;
+  }
 
   const batch = events.find((e) => e.eventName === "BatchPosted");
   const load = events.find((e) => e.eventName === "ExecutionTableLoaded");

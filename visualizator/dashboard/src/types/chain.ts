@@ -1,43 +1,44 @@
 // New model: no more ActionType/Action enums.
-// actionHash = keccak256(abi.encode(rollupId, destination, value, data, sourceAddress, sourceRollup))
+// crossChainCallHash = keccak256(abi.encode(targetRollupId, targetAddress, value, data, sourceAddress, sourceRollupId))
 
 export type CrossChainCall = {
-  destination: `0x${string}`;
+  targetAddress: `0x${string}`;
   value: bigint;
   data: `0x${string}`;
   sourceAddress: `0x${string}`;
-  sourceRollup: bigint;
+  sourceRollupId: bigint;
   revertSpan: bigint;
 };
 
 export type NestedAction = {
-  actionHash: `0x${string}`;
+  crossChainCallHash: `0x${string}`;
   callCount: bigint;
   returnData: `0x${string}`;
 };
 
 export type StateDelta = {
   rollupId: bigint;
+  currentState: `0x${string}`;
   newState: `0x${string}`;
   etherDelta: bigint;
 };
 
 export type ExecutionEntry = {
   stateDeltas: StateDelta[];
-  actionHash: `0x${string}`;
+  crossChainCallHash: `0x${string}`;
+  destinationRollupId: bigint;
   calls: CrossChainCall[];
   nestedActions: NestedAction[];
   callCount: bigint;
   returnData: `0x${string}`;
-  failed: boolean;
   rollingHash: `0x${string}`;
 };
 
-export type StaticCallEntry = {
-  actionHash: `0x${string}`;
+export type LookupCall = {
+  crossChainCallHash: `0x${string}`;
+  destinationRollupId: bigint;
   returnData: `0x${string}`;
   failed: boolean;
-  stateRoot: `0x${string}`;
   callNumber: bigint;
   lastNestedActionConsumed: bigint;
   calls: CrossChainCall[];

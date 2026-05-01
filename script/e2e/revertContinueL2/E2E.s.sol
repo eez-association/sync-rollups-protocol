@@ -5,16 +5,22 @@ import {Script, console} from "forge-std/Script.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
 import {Rollups} from "../../../src/Rollups.sol";
 import {
-    Action,
     StateDelta,
     CrossChainCall,
     NestedAction,
     ExecutionEntry,
-    StaticCall
+    LookupCall
 } from "../../../src/ICrossChainManager.sol";
 import {Counter, SelfCallerWithRevert} from "../../../test/mocks/CounterContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
-import {actionHash, noStaticCalls, noNestedActions, noCalls, RollingHashBuilder} from "../shared/E2EHelpers.sol";
+import {
+    Action,
+    actionHash,
+    noStaticCalls,
+    noNestedActions,
+    noCalls,
+    RollingHashBuilder
+} from "../shared/E2EHelpers.sol";
 
 // ═══════════════════════════════════════════════════════════════════════
 //  RevertContinueL2 scenario — L2-side mirror of revertContinue
@@ -52,26 +58,30 @@ abstract contract RevertContinueL2Actions {
 
     /// @dev Outer action hash: alice calls selfCallerProxy (SelfCallerWithRevert@MAINNET) on L2.
     function _outerActionHash(address selfCaller, address alice) internal pure returns (bytes32) {
-        return actionHash(Action({
-            targetRollupId: MAINNET_ROLLUP_ID,
-            targetAddress: selfCaller,
-            value: 0,
-            data: abi.encodeWithSelector(SelfCallerWithRevert.execute.selector),
-            sourceAddress: alice,
-            sourceRollupId: L2_ROLLUP_ID
-        }));
+        return actionHash(
+            Action({
+                targetRollupId: MAINNET_ROLLUP_ID,
+                targetAddress: selfCaller,
+                value: 0,
+                data: abi.encodeWithSelector(SelfCallerWithRevert.execute.selector),
+                sourceAddress: alice,
+                sourceRollupId: L2_ROLLUP_ID
+            })
+        );
     }
 
     /// @dev Inner action hash: SelfCallerWithRevert calls counterProxy (Counter@L1) on L2.
     function _innerActionHash(address counterL1, address selfCaller) internal pure returns (bytes32) {
-        return actionHash(Action({
-            targetRollupId: MAINNET_ROLLUP_ID,
-            targetAddress: counterL1,
-            value: 0,
-            data: abi.encodeWithSelector(Counter.increment.selector),
-            sourceAddress: selfCaller,
-            sourceRollupId: L2_ROLLUP_ID
-        }));
+        return actionHash(
+            Action({
+                targetRollupId: MAINNET_ROLLUP_ID,
+                targetAddress: counterL1,
+                value: 0,
+                data: abi.encodeWithSelector(Counter.increment.selector),
+                sourceAddress: selfCaller,
+                sourceRollupId: L2_ROLLUP_ID
+            })
+        );
     }
 
     /// @dev Rolling hash: CALL_BEGIN(1) → NESTED_BEGIN(1) → NESTED_END(1) → CALL_END(1, true, "")
@@ -104,7 +114,7 @@ abstract contract RevertContinueL2Actions {
 
         NestedAction[] memory nested = new NestedAction[](1);
         nested[0] = NestedAction({
-            actionHash: _innerActionHash(counterL1, selfCaller),
+            crossChainCallHash: _innerActionHash(counterL1, selfCaller),
             callCount: 0,
             returnData: abi.encode(uint256(1))
         });
@@ -112,12 +122,12 @@ abstract contract RevertContinueL2Actions {
         entries = new ExecutionEntry[](1);
         entries[0] = ExecutionEntry({
             stateDeltas: new StateDelta[](0),
-            actionHash: _outerActionHash(selfCaller, alice),
+            crossChainCallHash: _outerActionHash(selfCaller, alice),
+            destinationRollupId: L2_ROLLUP_ID,
             calls: calls,
             nestedActions: nested,
             callCount: 1,
             returnData: "",
-            failed: false,
             rollingHash: _expectedRollingHash()
         });
     }
@@ -191,10 +201,8 @@ contract ExecuteL2 is Script, RevertContinueL2Actions {
         address alice = msg.sender;
         console.log("ExecuteL2: alice=%s selfCaller=%s selfCallerProxy=%s", alice, selfCallerAddr, selfCallerProxy);
 
-        CrossChainManagerL2(managerAddr).loadExecutionTable(
-            _l2Entries(selfCallerAddr, counterL1Addr, alice),
-            noStaticCalls()
-        );
+        CrossChainManagerL2(managerAddr)
+            .loadExecutionTable(_l2Entries(selfCallerAddr, counterL1Addr, alice), noStaticCalls());
         console.log("ExecuteL2: loadExecutionTable done");
 
         // Trigger: alice calls selfCallerProxy.execute()

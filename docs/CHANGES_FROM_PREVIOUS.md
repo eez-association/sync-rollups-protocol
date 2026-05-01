@@ -91,3 +91,49 @@ For grep-ability when porting old code/docs:
 - You found a stale comment or test that mentions the old machinery.
 
 Otherwise, prefer `SYNC_ROLLUPS_PROTOCOL_SPEC.md` (formal spec) and `EXECUTION_TABLE_SPEC.md` (build-side guide).
+
+---
+
+## Multi-prover refactor on `feature/flatten`
+
+A second migration layered on top of the flat-sequential model. Full design notes live in `MULTI_PROVER_DESIGN.md`; the bullets below are a quick orientation.
+
+### Shape changes
+
+- **`postBatch` signature**: `postBatch(ProofSystemBatch[] batches)` replaces the old single-bundle `postBatch(entries, _staticCalls, transientCount, transientStaticCallCount, blobCount, callData, proof)`. A `ProofSystemBatch` carries its own `proofSystems[]`, `rollupIds[]`, `entries[]`, `lookupCalls[]`, `transientCount`, `transientLookupCallCount`, `blobIndices[]`, `callData`, `proof[]`, and `crossProofSystemInteractions`. Each `postBatch` call carries one or more sub-batches and verifies all their proofs atomically.
+- **Per-rollup queue model**: the global `executions[]` / `executionIndex` / `lastStateUpdateBlock` are replaced by per-rollup storage `verificationByRollup[rid] = { lastVerifiedBlock, queue, lookupQueue, cursor }`. Consumers (`executeCrossChainCall`, `executeL2TX(rollupId)`, `staticCallLookup`) route to the rollup's queue/cursor; cross-rollup state is independent.
+- **Per-rollup manager pattern**: each rollup's owner / threshold / proof-system membership / verification keys live on the rollup's own `IRollup`-conforming contract (reference impl: `src/rollupContract/Rollup.sol`). The central `Rollups` registry no longer holds owner or vkey — it just stores `(rollupContract, stateRoot, etherBalance)` per rollup.
+- **`Action` struct removed from contracts**: an off-chain compat-shim still lives in `script/e2e/shared/E2EHelpers.sol` for tooling that wants to compute `crossChainCallHash` from a struct, but the on-chain interface (`ICrossChainManager.sol`) no longer declares it.
+- **`entry.failed` removed**: top-level entries always succeed. A reverting cross-chain result at the top level is expressed as a `LookupCall { failed: true }` consumed via `staticCallLookup` (static context) or via the failed-reentry fallback in `_consumeNestedAction`. Naturally-reverting inner calls are still captured via `CALL_END(false, retData)`.
+
+### Renames (grep table)
+
+| Old | New |
+|---|---|
+| `StaticCall` (struct) | `LookupCall` |
+| `staticCalls` / `_staticCalls` (storage / arg) | `lookupCalls` / `_transientLookupCalls` / per-rollup `lookupQueue` |
+| `transientStaticCallCount` (postBatch arg) | `transientLookupCallCount` (sub-batch field) |
+| `actionHash` (struct field name) | `crossChainCallHash` |
+| `executeInContext` | `executeInContextAndRevert` |
+| `_computeActionInputHash` | `computeCrossChainCallHash` (now `public pure`) |
+| `executeL2TX()` | `executeL2TX(uint256 rollupId)` |
+| `IZKVerifier` | `IProofSystem` |
+
+### Events / errors reshaped or dropped
+
+| Event/error | Status |
+|---|---|
+| `RollupCreated(rollupId, rollupContract, initialState)` | Reshaped to 3 fields (no more owner / vkey) |
+| `BatchPosted(uint256 subBatchCount)` | Reshaped — just the sub-batch count |
+| `ExecutionConsumed(crossChainCallHash, rollupId, cursor)` | Reshaped — adds rollupId; cursor is per-rollup |
+| `L2TXExecuted(rollupId, cursor)` | Reshaped — adds rollupId |
+| `RollupContractChanged` | New — fires from `setRollupContract` |
+| `ImmediateEntrySkipped(transientIdx, revertData)` | New — emitted instead of reverting when an immediate entry's self-call fails |
+| `StateUpdated`, `VerificationKeyUpdated`, `OwnershipTransferred`, `L2ExecutionPerformed` | Dropped (the corresponding owner-only entry points moved to `Rollup.sol`) |
+| `RollupAlreadyVerifiedThisBlock(rollupId)`, `RollupBatchActiveThisBlock(rollupId)`, `RollupNotInBatch(rollupId)`, `StateRootMismatch(rollupId)`, `ExecutionNotInCurrentBlock(rollupId)`, `PostBatchReentry`, `InvalidProofSystemConfig`, `DuplicateProofSystem` | New errors covering the per-rollup / multi-prover invariants |
+
+### Owner-only operations
+
+`setStateByOwner`, `setVerificationKey`, `transferRollupOwnership` are gone from the central `Rollups` registry. They live on the per-rollup `Rollup.sol` manager (or whatever `IRollup`-conforming contract the rollup owner deployed). The registry exposes only:
+- `setStateRoot(uint256 rollupId, bytes32 newStateRoot)` — callable by the current rollup contract; subject to the same-block lockout when a batch is active.
+- `setRollupContract(uint256 rollupId, address newContract)` — same constraints; fires `rollupContractRegistered(rollupId)` on the new manager.

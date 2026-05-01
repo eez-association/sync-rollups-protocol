@@ -1,11 +1,11 @@
 const crossChainCallTuple = {
   type: "tuple" as const,
   components: [
-    { name: "destination", type: "address" },
+    { name: "targetAddress", type: "address" },
     { name: "value", type: "uint256" },
     { name: "data", type: "bytes" },
     { name: "sourceAddress", type: "address" },
-    { name: "sourceRollup", type: "uint256" },
+    { name: "sourceRollupId", type: "uint256" },
     { name: "revertSpan", type: "uint256" },
   ],
 } as const;
@@ -13,7 +13,7 @@ const crossChainCallTuple = {
 const nestedActionTuple = {
   type: "tuple" as const,
   components: [
-    { name: "actionHash", type: "bytes32" },
+    { name: "crossChainCallHash", type: "bytes32" },
     { name: "callCount", type: "uint256" },
     { name: "returnData", type: "bytes" },
   ],
@@ -23,6 +23,7 @@ const stateDeltaTuple = {
   type: "tuple" as const,
   components: [
     { name: "rollupId", type: "uint256" },
+    { name: "currentState", type: "bytes32" },
     { name: "newState", type: "bytes32" },
     { name: "etherDelta", type: "int256" },
   ],
@@ -33,12 +34,12 @@ const executionEntryTuple = {
   type: "tuple[]" as const,
   components: [
     { name: "stateDeltas", type: "tuple[]", components: stateDeltaTuple.components },
-    { name: "actionHash", type: "bytes32" },
+    { name: "crossChainCallHash", type: "bytes32" },
+    { name: "destinationRollupId", type: "uint256" },
     { name: "calls", type: "tuple[]", components: crossChainCallTuple.components },
     { name: "nestedActions", type: "tuple[]", components: nestedActionTuple.components },
     { name: "callCount", type: "uint256" },
     { name: "returnData", type: "bytes" },
-    { name: "failed", type: "bool" },
     { name: "rollingHash", type: "bytes32" },
   ],
 } as const;
@@ -64,7 +65,7 @@ export const crossChainManagerL2Abi = [
     type: "event",
     name: "ExecutionConsumed",
     inputs: [
-      { name: "actionHash", type: "bytes32", indexed: true },
+      { name: "crossChainCallHash", type: "bytes32", indexed: true },
       { name: "entryIndex", type: "uint256", indexed: true },
     ],
   },
@@ -72,7 +73,7 @@ export const crossChainManagerL2Abi = [
     type: "event",
     name: "CrossChainCallExecuted",
     inputs: [
-      { name: "actionHash", type: "bytes32", indexed: true },
+      { name: "crossChainCallHash", type: "bytes32", indexed: true },
       { name: "proxy", type: "address", indexed: true },
       { name: "sourceAddress", type: "address", indexed: false },
       { name: "callData", type: "bytes", indexed: false },
@@ -95,7 +96,7 @@ export const crossChainManagerL2Abi = [
     inputs: [
       { name: "entryIndex", type: "uint256", indexed: true },
       { name: "nestedNumber", type: "uint256", indexed: true },
-      { name: "actionHash", type: "bytes32", indexed: false },
+      { name: "crossChainCallHash", type: "bytes32", indexed: false },
       { name: "callCount", type: "uint256", indexed: false },
     ],
   },

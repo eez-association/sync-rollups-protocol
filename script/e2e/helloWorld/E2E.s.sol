@@ -2,18 +2,17 @@
 pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
-import {Rollups} from "../../../src/Rollups.sol";
+import {Rollups, ProofSystemBatch} from "../../../src/Rollups.sol";
 import {
-    Action,
     StateDelta,
     CrossChainCall,
     NestedAction,
     ExecutionEntry,
-    StaticCall
+    LookupCall
 } from "../../../src/ICrossChainManager.sol";
 import {HelloWorldL1, HelloWorldL2, IHelloWorldL2} from "../../../test/mocks/helloword.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
-import {actionHash, noStaticCalls, noNestedActions, noCalls} from "../shared/E2EHelpers.sol";
+import {crossChainCallHash, noLookupCalls, noNestedActions, noCalls} from "../shared/E2EHelpers.sol";
 
 // ═══════════════════════════════════════════════════════════════════════
 //  HelloWorld scenario — L1→L2 with rich return data
@@ -31,25 +30,15 @@ abstract contract HelloActions {
         return abi.encodeWithSelector(IHelloWorldL2.getWord.selector);
     }
 
-    function _callAction(address helloL2, address helloL1) internal pure returns (Action memory) {
-        return Action({
-            targetRollupId: L2_ROLLUP_ID,
-            targetAddress: helloL2,
-            value: 0,
-            data: _getWordCallData(),
-            sourceAddress: helloL1,
-            sourceRollupId: MAINNET_ROLLUP_ID
-        });
+    function _callHash(address helloL2, address helloL1) internal pure returns (bytes32) {
+        return crossChainCallHash(L2_ROLLUP_ID, helloL2, 0, _getWordCallData(), helloL1, MAINNET_ROLLUP_ID);
     }
 
-    function _l1Entries(address helloL2, address helloL1)
-        internal
-        pure
-        returns (ExecutionEntry[] memory entries)
-    {
+    function _l1Entries(address helloL2, address helloL1) internal pure returns (ExecutionEntry[] memory entries) {
         StateDelta[] memory deltas = new StateDelta[](1);
         deltas[0] = StateDelta({
             rollupId: L2_ROLLUP_ID,
+            currentState: keccak256("l2-initial-state"),
             newState: keccak256("l2-state-after-helloworld"),
             etherDelta: 0
         });
@@ -57,12 +46,12 @@ abstract contract HelloActions {
         entries = new ExecutionEntry[](1);
         entries[0] = ExecutionEntry({
             stateDeltas: deltas,
-            actionHash: actionHash(_callAction(helloL2, helloL1)),
+            crossChainCallHash: _callHash(helloL2, helloL1),
+            destinationRollupId: L2_ROLLUP_ID,
             calls: noCalls(),
             nestedActions: noNestedActions(),
             callCount: 0,
             returnData: abi.encode("World"),
-            failed: false,
             rollingHash: bytes32(0)
         });
     }
@@ -101,11 +90,36 @@ contract Deploy is Script {
 }
 
 contract Batcher {
-    function execute(Rollups rollups, ExecutionEntry[] calldata entries, StaticCall[] calldata statics, HelloWorldL1 h1)
+    function execute(
+        Rollups rollups,
+        address proofSystem,
+        ExecutionEntry[] calldata entries,
+        LookupCall[] calldata lookupCalls,
+        HelloWorldL1 h1
+    )
         external
         returns (string memory greeting)
     {
-        rollups.postBatch(entries, statics, 0, 0, 0, "", "proof");
+        address[] memory psList = new address[](1);
+        psList[0] = proofSystem;
+        uint256[] memory rids = new uint256[](1);
+        rids[0] = L2_ROLLUP_ID;
+        bytes[] memory proofs = new bytes[](1);
+        proofs[0] = "proof";
+        ProofSystemBatch[] memory batches = new ProofSystemBatch[](1);
+        batches[0] = ProofSystemBatch({
+            proofSystems: psList,
+            rollupIds: rids,
+            entries: entries,
+            lookupCalls: lookupCalls,
+            transientCount: 0,
+            transientLookupCallCount: 0,
+            blobIndices: new uint256[](0),
+            callData: "",
+            proof: proofs,
+            crossProofSystemInteractions: bytes32(0)
+        });
+        rollups.postBatch(batches);
         greeting = h1.helloL2World();
     }
 }
@@ -113,6 +127,7 @@ contract Batcher {
 contract Execute is Script, HelloActions {
     function run() external {
         address rollupsAddr = vm.envAddress("ROLLUPS");
+        address proofSystemAddr = vm.envAddress("PROOF_SYSTEM");
         address helloL2Addr = vm.envAddress("HELLO_WORLD_L2");
         address h1Addr = vm.envAddress("HELLO_WORLD_L1");
 
@@ -120,8 +135,9 @@ contract Execute is Script, HelloActions {
         Batcher batcher = new Batcher();
         string memory greeting = batcher.execute(
             Rollups(rollupsAddr),
+            proofSystemAddr,
             _l1Entries(helloL2Addr, h1Addr),
-            noStaticCalls(),
+            noLookupCalls(),
             HelloWorldL1(h1Addr)
         );
         console.log("done");

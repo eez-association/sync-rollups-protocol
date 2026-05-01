@@ -165,11 +165,8 @@ contract Bridge {
             WrappedToken(token).burn(msg.sender, amount);
             originalToken = info.originalToken;
             originalRollupId = info.originalRollupId;
-            (name, symbol, tokenDecimals) = (
-                IERC20Metadata(token).name(),
-                IERC20Metadata(token).symbol(),
-                IERC20Metadata(token).decimals()
-            );
+            (name, symbol, tokenDecimals) =
+                (IERC20Metadata(token).name(), IERC20Metadata(token).symbol(), IERC20Metadata(token).decimals());
         } else {
             // Native token: lock in this contract
             IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
@@ -213,7 +210,10 @@ contract Bridge {
         string calldata symbol,
         uint8 tokenDecimals,
         uint256 sourceRollupId
-    ) external onlyBridgeProxy(sourceRollupId) {
+    )
+        external
+        onlyBridgeProxy(sourceRollupId)
+    {
         if (originalRollupId == rollupId) {
             // Token is native to this chain → release locked tokens
             IERC20(originalToken).safeTransfer(to, amount);
@@ -259,19 +259,17 @@ contract Bridge {
         string calldata name,
         string calldata symbol,
         uint8 tokenDecimals
-    ) internal returns (address wrappedAddr) {
+    )
+        internal
+        returns (address wrappedAddr)
+    {
         // Check if a WrappedToken already exists for this (token, rollup) pair
         bytes32 salt = _wrappedSalt(originalToken, originalRollupId);
         wrappedAddr = wrappedTokens[salt];
         if (wrappedAddr != address(0)) return wrappedAddr;
 
         // First bridge for this token — deploy a new WrappedToken via CREATE2
-        WrappedToken wrapped = new WrappedToken{salt: salt}(
-            name,
-            symbol,
-            tokenDecimals,
-            address(this)
-        );
+        WrappedToken wrapped = new WrappedToken{salt: salt}(name, symbol, tokenDecimals, address(this));
 
         // Register in both lookup directions: salt → address and address → origin info
         wrappedAddr = address(wrapped);

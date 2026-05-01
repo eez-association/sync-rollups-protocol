@@ -2,17 +2,29 @@
 pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
-import {Rollups} from "../../../src/Rollups.sol";
+import {Rollups, ProofSystemBatch} from "../../../src/Rollups.sol";
 import {
-    Action,
     StateDelta,
     CrossChainCall,
     NestedAction,
     ExecutionEntry,
-    StaticCall
+    LookupCall
 } from "../../../src/ICrossChainManager.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
-import {actionHash, noStaticCalls, noNestedActions, noCalls} from "../shared/E2EHelpers.sol";
+import {
+    Action,
+    actionHash,
+    crossChainCallHash,
+    noLookupCalls,
+    noNestedActions,
+    noCalls
+} from "../shared/E2EHelpers.sol";
+
+// TODO(post-refactor): this file's `Batcher.execute(rollups, entries, statics, ...)` callsite
+// still uses the legacy 7-arg `postBatch(entries, statics, transientCount, ...)` signature.
+// New API: `postBatch(ProofSystemBatch[] batches)`. The user (or a follow-up pass) must rewrite
+// the Batcher to wrap entries into a `ProofSystemBatch[]` similar to `script/e2e/helloWorld/E2E.s.sol`.
+// Other deltas: `entry.failed` removed, `entry.destinationRollupId` added, `StateDelta.currentState` added.
 
 // ═══════════════════════════════════════════════════════════════════════
 //  Bridge scenario — L1→L2 with ETH value transfer
@@ -52,14 +64,11 @@ abstract contract BridgeActions {
         });
     }
 
-    function _l1Entries(address l2Destination, address sender)
-        internal
-        pure
-        returns (ExecutionEntry[] memory entries)
-    {
+    function _l1Entries(address l2Destination, address sender) internal pure returns (ExecutionEntry[] memory entries) {
         StateDelta[] memory deltas = new StateDelta[](1);
         deltas[0] = StateDelta({
             rollupId: L2_ROLLUP_ID,
+            currentState: keccak256("l2-initial-state"),
             newState: keccak256("l2-state-after-bridge"),
             etherDelta: int256(1 ether)
         });
@@ -67,12 +76,12 @@ abstract contract BridgeActions {
         entries = new ExecutionEntry[](1);
         entries[0] = ExecutionEntry({
             stateDeltas: deltas,
-            actionHash: actionHash(_callAction(l2Destination, sender)),
+            crossChainCallHash: actionHash(_callAction(l2Destination, sender)),
+            destinationRollupId: L2_ROLLUP_ID,
             calls: noCalls(),
             nestedActions: noNestedActions(),
             callCount: 0,
             returnData: "",
-            failed: false,
             rollingHash: bytes32(0)
         });
     }
@@ -119,11 +128,34 @@ contract Deploy is Script {
 contract Batcher {
     function execute(
         Rollups rollups,
+        address proofSystem,
         ExecutionEntry[] calldata entries,
-        StaticCall[] calldata statics,
+        LookupCall[] calldata lookupCalls,
         BridgeSender sender
-    ) external payable {
-        rollups.postBatch(entries, statics, 0, 0, 0, "", "proof");
+    )
+        external
+        payable
+    {
+        address[] memory psList = new address[](1);
+        psList[0] = proofSystem;
+        uint256[] memory rids = new uint256[](1);
+        rids[0] = L2_ROLLUP_ID;
+        bytes[] memory proofs = new bytes[](1);
+        proofs[0] = "proof";
+        ProofSystemBatch[] memory batches = new ProofSystemBatch[](1);
+        batches[0] = ProofSystemBatch({
+            proofSystems: psList,
+            rollupIds: rids,
+            entries: entries,
+            lookupCalls: lookupCalls,
+            transientCount: 0,
+            transientLookupCallCount: 0,
+            blobIndices: new uint256[](0),
+            callData: "",
+            proof: proofs,
+            crossProofSystemInteractions: bytes32(0)
+        });
+        rollups.postBatch(batches);
         sender.bridge{value: msg.value}();
     }
 }
@@ -132,15 +164,19 @@ contract Batcher {
 contract Execute is Script, BridgeActions {
     function run() external {
         address rollupsAddr = vm.envAddress("ROLLUPS");
+        address proofSystemAddr = vm.envAddress("PROOF_SYSTEM");
         address l2DestAddr = vm.envAddress("L2_DESTINATION");
         address senderAddr = vm.envAddress("BRIDGE_SENDER");
 
         vm.startBroadcast();
         Batcher batcher = new Batcher();
-        batcher.execute{value: 1 ether}(
+        batcher.execute{
+            value: 1 ether
+        }(
             Rollups(rollupsAddr),
+            proofSystemAddr,
             _l1Entries(l2DestAddr, senderAddr),
-            noStaticCalls(),
+            noLookupCalls(),
             BridgeSender(senderAddr)
         );
         console.log("done");

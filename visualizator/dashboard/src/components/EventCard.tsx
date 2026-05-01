@@ -20,9 +20,9 @@ const EVENT_COLORS: Record<string, string> = {
   CrossChainCallExecuted: COLORS.add,
   CrossChainProxyCreated: COLORS.ok,
   RollupCreated: COLORS.acc,
-  StateUpdated: COLORS.warn,
-  L2ExecutionPerformed: COLORS.l2,
+  RollupContractChanged: COLORS.warn,
   L2TXExecuted: COLORS.warn,
+  ImmediateEntrySkipped: COLORS.warn,
   CallResult: COLORS.dim,
   NestedActionConsumed: COLORS.add,
   EntryExecuted: COLORS.ok,
@@ -35,24 +35,26 @@ function eventColor(eventName: string): string {
 
 function eventDetail(event: EventRecord): string {
   switch (event.eventName) {
-    case "BatchPosted": {
-      const entries = event.args.entries as unknown[] | undefined;
-      return entries ? `Posts ${entries.length} execution ${entries.length === 1 ? "entry" : "entries"} to L1 table` : "";
-    }
+    case "BatchPosted":
+      return `Posts ${String(event.args.subBatchCount ?? 0)} sub-${(event.args.subBatchCount ?? 0n) === 1n ? "batch" : "batches"} to L1`;
     case "ExecutionTableLoaded": {
       const entries = event.args.entries as unknown[] | undefined;
       return entries ? `Loads ${entries.length} ${entries.length === 1 ? "entry" : "entries"} into L2 table` : "";
     }
     case "ExecutionConsumed":
-      return `Entry consumed: ${truncateHex(event.args.actionHash as string)} (index ${String(event.args.entryIndex ?? "")})`;
+      return `Entry consumed: ${truncateHex(event.args.crossChainCallHash as string)} (rollup ${String(event.args.rollupId ?? "")} cursor ${String(event.args.cursor ?? "")})`;
     case "CrossChainCallExecuted":
       return `Proxy ${truncateAddress(event.args.proxy as string)} called by ${truncateAddress(event.args.sourceAddress as string)}`;
     case "CrossChainProxyCreated":
       return `Proxy ${truncateAddress(event.args.proxy as string)} for ${truncateAddress(event.args.originalAddress as string)}`;
     case "RollupCreated":
       return `Rollup ${String(event.args.rollupId)} created`;
-    case "L2ExecutionPerformed":
-      return `State updated for rollup ${String(event.args.rollupId)}`;
+    case "RollupContractChanged":
+      return `Rollup ${String(event.args.rollupId)} contract updated`;
+    case "ImmediateEntrySkipped":
+      return `Immediate entry @ ${String(event.args.transientIdx ?? "")} skipped`;
+    case "L2TXExecuted":
+      return `L2TX rollup ${String(event.args.rollupId ?? "")} cursor ${String(event.args.cursor ?? "")}`;
     case "CallResult":
       return `Call #${String(event.args.callNumber ?? "")} ${event.args.success ? "success" : "failed"}`;
     case "EntryExecuted":
@@ -65,16 +67,8 @@ function eventDetail(event: EventRecord): string {
 function tableChangeSummary(event: EventRecord): { adds: string[]; consumes: string[] } {
   const adds: string[] = [];
   const consumes: string[] = [];
-  if (event.eventName === "BatchPosted") {
-    const entries = event.args.entries as Array<{ actionHash: string }> | undefined;
-    if (entries) {
-      for (const e of entries) {
-        if (e.actionHash !== "0x0000000000000000000000000000000000000000000000000000000000000000") {
-          adds.push(`+${event.chain.toUpperCase()}`);
-        }
-      }
-    }
-  }
+  // TODO(user-decision): post-refactor BatchPosted no longer carries entries;
+  // table change summary for L1 batches must be sourced elsewhere (tx input decode).
   if (event.eventName === "ExecutionTableLoaded") {
     const entries = event.args.entries as unknown[] | undefined;
     if (entries) {
@@ -192,7 +186,7 @@ export const EventCard: React.FC<Props> = ({
         {/* Cross-chain correlation */}
         {correlatedChain && event.eventName === "ExecutionConsumed" && (
           <div style={{ fontSize: "0.52rem", color: COLORS.warn, marginTop: 2 }}>
-            {"<->"} Matched on {correlatedChain.toUpperCase()} (same actionHash)
+            {"<->"} Matched on {correlatedChain.toUpperCase()} (same crossChainCallHash)
           </div>
         )}
 

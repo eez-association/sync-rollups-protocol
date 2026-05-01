@@ -253,7 +253,12 @@ contract CrossChainManagerL2 is ICrossChainManager {
         uint256 sourceRollup,
         ExecutionEntry[] calldata entries,
         LookupCall[] calldata _lookupCalls
-    ) external payable onlySystemAddress returns (bytes memory result) {
+    )
+        external
+        payable
+        onlySystemAddress
+        returns (bytes memory result)
+    {
         if (entries.length == 0) revert EmptyEntries();
         // ETH model: the system mints `value` on L2 by attaching it to msg.value. That ETH
         // lives in the manager balance and is drawn down by `_processNCalls` when it forwards
@@ -491,7 +496,10 @@ contract CrossChainManagerL2 is ICrossChainManager {
 
         for (uint256 i = 0; i < lookupCalls.length; i++) {
             LookupCall storage sc = lookupCalls[i];
-            if (sc.crossChainCallHash == crossChainCallHash && sc.callNumber == callNum && sc.lastNestedActionConsumed == lastNA) {
+            if (
+                sc.crossChainCallHash == crossChainCallHash && sc.callNumber == callNum
+                    && sc.lastNestedActionConsumed == lastNA
+            ) {
                 return _resolveLookupCall(sc);
             }
         }
@@ -528,7 +536,11 @@ contract CrossChainManagerL2 is ICrossChainManager {
         bytes memory data,
         address sourceAddress,
         uint256 sourceRollupId
-    ) public pure returns (bytes32) {
+    )
+        public
+        pure
+        returns (bytes32)
+    {
         return keccak256(abi.encode(targetRollupId, targetAddress, value, data, sourceAddress, sourceRollupId));
     }
 

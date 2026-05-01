@@ -2,32 +2,28 @@
 pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
-import {Rollups} from "../../../src/Rollups.sol";
-import {Rollup} from "../../../src/rollupContract/Rollup.sol";
-import {IProofSystem} from "../../../src/IProofSystem.sol";
-import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
+import {Rollups} from "../../src/Rollups.sol";
+import {Rollup} from "../../src/rollupContract/Rollup.sol";
+import {IProofSystem} from "../../src/IProofSystem.sol";
+import {CrossChainManagerL2} from "../../src/CrossChainManagerL2.sol";
 
-/// @notice Mock proof system that accepts all proofs. Used in e2e flows where the test
-///         orchestrator drives execution and we don't want real proof verification.
-contract AcceptAllProofSystem is IProofSystem {
+/// @notice Mock proof system that accepts all proofs.
+contract MockProofSystem is IProofSystem {
     function verify(bytes calldata, bytes32) external pure override returns (bool) {
         return true;
     }
 }
 
-/// @title DeployRollupsL1
-/// @notice Deploys AcceptAllProofSystem + Rollups + creates L2 rollup (id=1).
-/// @dev The first registered rollup gets id 0 = MAINNET_ROLLUP_ID, which is unpostable
-///      because the strict-increasing rollupIds check in postBatch rejects 0. So we burn
-///      id 0 with a throwaway rollup, then register the L2 rollup at id 1.
-/// Outputs: ROLLUPS, PROOF_SYSTEM, L2_MANAGER, L2_ROLLUP_ID
+/// @title DeployRollupsL1 — Deploy MockProofSystem + Rollups + create L2 rollup (id=1)
+/// @dev Burns rollupId 0 (MAINNET, unpostable) so the L2 rollup gets id 1.
+/// Outputs: PROOF_SYSTEM, ROLLUPS, L2_MANAGER
 contract DeployRollupsL1 is Script {
     bytes32 constant DEFAULT_VK = keccak256("verificationKey");
 
     function run() external {
         vm.startBroadcast();
 
-        AcceptAllProofSystem ps = new AcceptAllProofSystem();
+        MockProofSystem ps = new MockProofSystem();
         Rollups rollups = new Rollups();
 
         // Burn rollupId 0 (MAINNET) so user rollups start at id 1.
@@ -40,7 +36,6 @@ contract DeployRollupsL1 is Script {
             rollups.createRollup(address(burnRollup), bytes32(0));
         }
 
-        // Create L2 manager + register at id 1.
         address[] memory psList2 = new address[](1);
         psList2[0] = address(ps);
         bytes32[] memory vks2 = new bytes32[](1);
@@ -52,15 +47,12 @@ contract DeployRollupsL1 is Script {
         console.log("PROOF_SYSTEM=%s", address(ps));
         console.log("ROLLUPS=%s", address(rollups));
         console.log("L2_MANAGER=%s", address(l2Manager));
-        console.log("L2_ROLLUP_ID=1");
 
         vm.stopBroadcast();
     }
 }
 
-/// @title DeployManagerL2
-/// @notice Deploys CrossChainManagerL2 for the given rollup ID / system address.
-/// Outputs: MANAGER_L2
+/// @title DeployManagerL2 — Deploy CrossChainManagerL2
 contract DeployManagerL2 is Script {
     function run(uint256 rollupId, address systemAddress) external {
         vm.startBroadcast();

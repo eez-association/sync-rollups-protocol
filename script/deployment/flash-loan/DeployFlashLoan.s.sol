@@ -71,15 +71,10 @@ contract ComputeWrappedTokenAddress is Script {
 
         bytes32 wrappedSalt = keccak256(abi.encodePacked(token, tokenOriginRollupId));
         bytes32 wrappedBytecodeHash = keccak256(
-            abi.encodePacked(
-                type(WrappedToken).creationCode,
-                abi.encode(name, symbol, tokenDecimals, bridgeL2)
-            )
+            abi.encodePacked(type(WrappedToken).creationCode, abi.encode(name, symbol, tokenDecimals, bridgeL2))
         );
         address wrappedTokenL2 = address(
-            uint160(
-                uint256(keccak256(abi.encodePacked(bytes1(0xff), bridgeL2, wrappedSalt, wrappedBytecodeHash)))
-            )
+            uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), bridgeL2, wrappedSalt, wrappedBytecodeHash))))
         );
         console.log("WRAPPED_TOKEN_L2=%s", wrappedTokenL2);
     }
@@ -96,8 +91,7 @@ contract DeployFlashLoanL2 is Script {
 
         // ExecutorL2: constructor args unused — claimAndBridgeBack takes all params as function args
         FlashLoanBridgeExecutor executorL2 = new FlashLoanBridgeExecutor(
-            address(0), address(0), address(0), address(0),
-            address(0), address(0), address(0), 0, address(0)
+            address(0), address(0), address(0), address(0), address(0), address(0), address(0), 0, address(0)
         );
         console.log("EXECUTOR_L2=%s", address(executorL2));
 
@@ -125,7 +119,9 @@ contract DeployFlashLoanL1 is Script {
         address bridgeL2,
         uint256 l2RollupId,
         address token
-    ) external {
+    )
+        external
+    {
         vm.startBroadcast();
 
         // FlashLoan pool

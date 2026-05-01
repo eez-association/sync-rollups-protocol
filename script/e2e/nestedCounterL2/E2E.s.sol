@@ -5,16 +5,22 @@ import {Script, console} from "forge-std/Script.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
 import {Rollups} from "../../../src/Rollups.sol";
 import {
-    Action,
     StateDelta,
     CrossChainCall,
     NestedAction,
     ExecutionEntry,
-    StaticCall
+    LookupCall
 } from "../../../src/ICrossChainManager.sol";
 import {Counter, CounterAndProxy} from "../../../test/mocks/CounterContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
-import {actionHash, noStaticCalls, noNestedActions, noCalls, RollingHashBuilder} from "../shared/E2EHelpers.sol";
+import {
+    Action,
+    actionHash,
+    noStaticCalls,
+    noNestedActions,
+    noCalls,
+    RollingHashBuilder
+} from "../shared/E2EHelpers.sol";
 
 // ═══════════════════════════════════════════════════════════════════════
 //  NestedCounterL2 scenario — exercises nestedActions[] on L2 side
@@ -37,26 +43,30 @@ abstract contract NestedL2Actions {
 
     /// @dev Inner action hash: CAP calls counterProxy (Counter@L1) on L2.
     function _innerActionHash(address counterL1, address cap) internal pure returns (bytes32) {
-        return actionHash(Action({
-            targetRollupId: MAINNET_ROLLUP_ID,
-            targetAddress: counterL1,
-            value: 0,
-            data: abi.encodeWithSelector(Counter.increment.selector),
-            sourceAddress: cap,
-            sourceRollupId: L2_ROLLUP_ID
-        }));
+        return actionHash(
+            Action({
+                targetRollupId: MAINNET_ROLLUP_ID,
+                targetAddress: counterL1,
+                value: 0,
+                data: abi.encodeWithSelector(Counter.increment.selector),
+                sourceAddress: cap,
+                sourceRollupId: L2_ROLLUP_ID
+            })
+        );
     }
 
     /// @dev Outer action hash: alice calls capL1Proxy (CAP@MAINNET) on L2.
     function _outerActionHash(address cap, address alice) internal pure returns (bytes32) {
-        return actionHash(Action({
-            targetRollupId: MAINNET_ROLLUP_ID,
-            targetAddress: cap,
-            value: 0,
-            data: abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),
-            sourceAddress: alice,
-            sourceRollupId: L2_ROLLUP_ID
-        }));
+        return actionHash(
+            Action({
+                targetRollupId: MAINNET_ROLLUP_ID,
+                targetAddress: cap,
+                value: 0,
+                data: abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),
+                sourceAddress: alice,
+                sourceRollupId: L2_ROLLUP_ID
+            })
+        );
     }
 
     /// @dev Rolling hash: CALL_BEGIN(1) → NESTED_BEGIN(1) → NESTED_END(1) → CALL_END(1, true, "")
@@ -85,20 +95,18 @@ abstract contract NestedL2Actions {
 
         NestedAction[] memory nested = new NestedAction[](1);
         nested[0] = NestedAction({
-            actionHash: _innerActionHash(counterL1, cap),
-            callCount: 0,
-            returnData: abi.encode(uint256(1))
+            crossChainCallHash: _innerActionHash(counterL1, cap), callCount: 0, returnData: abi.encode(uint256(1))
         });
 
         entries = new ExecutionEntry[](1);
         entries[0] = ExecutionEntry({
             stateDeltas: new StateDelta[](0),
-            actionHash: _outerActionHash(cap, alice),
+            crossChainCallHash: _outerActionHash(cap, alice),
+            destinationRollupId: L2_ROLLUP_ID,
             calls: calls,
             nestedActions: nested,
             callCount: 1,
             returnData: "",
-            failed: false,
             rollingHash: _expectedRollingHash()
         });
     }
@@ -170,10 +178,7 @@ contract ExecuteL2 is Script, NestedL2Actions {
         address alice = msg.sender;
         console.log("ExecuteL2: alice=%s cap=%s capL1Proxy=%s", alice, capAddr, capL1Proxy);
 
-        CrossChainManagerL2(managerAddr).loadExecutionTable(
-            _l2Entries(counterL1Addr, capAddr, alice),
-            noStaticCalls()
-        );
+        CrossChainManagerL2(managerAddr).loadExecutionTable(_l2Entries(counterL1Addr, capAddr, alice), noStaticCalls());
         console.log("ExecuteL2: loadExecutionTable done");
 
         // Trigger: alice calls capL1Proxy.incrementProxy()
