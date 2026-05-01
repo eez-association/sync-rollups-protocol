@@ -70,13 +70,13 @@ contract CrossChainManagerL2 is ICrossChainManager {
     /// @notice Carries execution results out of a reverted context
     error ContextResult(bytes32 rollingHash, uint256 lastNestedActionConsumed, uint256 currentCallNumber);
 
-    /// @notice Error when executeInContext is called by an external address
+    /// @notice Error when executeInContextAndRevert is called by an external address
     error NotSelf();
 
     /// @notice Error when ETH transfer to system address fails
     error EtherTransferFailed();
 
-    /// @notice Error when executeInContext reverts with an unexpected error
+    /// @notice Error when executeInContextAndRevert reverts with an unexpected error
     error UnexpectedContextRevert(bytes revertData);
 
     /// @notice Error when not all nested actions were consumed after execution
@@ -107,7 +107,7 @@ contract CrossChainManagerL2 is ICrossChainManager {
     /// @notice Emitted after an entry's execution completes and all verifications pass
     event EntryExecuted(uint256 indexed entryIndex, bytes32 rollingHash, uint256 callsProcessed, uint256 nestedActionsConsumed);
 
-    /// @notice Emitted after a revert span is processed via executeInContext
+    /// @notice Emitted after a revert span is processed via executeInContextAndRevert
     event RevertSpanExecuted(uint256 indexed entryIndex, uint256 startCallNumber, uint256 span);
 
     /// @param _rollupId The rollup ID this L2 instance belongs to
@@ -308,7 +308,7 @@ contract CrossChainManagerL2 is ICrossChainManager {
     }
 
     /// @notice Executes calls in an isolated context that always reverts
-    function executeInContext(uint256 callCount) external {
+    function executeInContextAndRevert(uint256 callCount) external {
         if (msg.sender != address(this)) revert NotSelf();
         _processNCalls(callCount);
         revert ContextResult(_rollingHash, _lastNestedActionConsumed, _currentCallNumber);
@@ -343,7 +343,7 @@ contract CrossChainManagerL2 is ICrossChainManager {
                 uint256 savedCallNumber = _currentCallNumber;
                 entry.calls[_currentCallNumber].revertSpan = 0;
 
-                try this.executeInContext(revertSpan) {} catch (bytes memory revertData) {
+                try this.executeInContextAndRevert(revertSpan) {} catch (bytes memory revertData) {
                     (_rollingHash, _lastNestedActionConsumed, _currentCallNumber) = _decodeContextResult(revertData);
                 }
 
