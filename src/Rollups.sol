@@ -570,6 +570,10 @@ contract Rollups is ICrossChainManager {
         for (uint256 r = 0; r < batch.rollupIds.length; r++) {
             vkMatrix[r] =
                 IRollup(rollups[batch.rollupIds[r]].rollupContract).getVkeysFromProofSystems(batch.proofSystems);
+            // Manager must return exactly one vkey per proof system. Without this, a manager
+            // returning a short array would OOB-panic at `vkMatrix[r][k]` in
+            // `_verifyProofSystemBatch`; a long array would silently ignore tail entries.
+            if (vkMatrix[r].length != batch.proofSystems.length) revert InvalidProofSystemConfig();
         }
     }
 
