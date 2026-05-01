@@ -1107,22 +1107,29 @@ contract Rollups is ICrossChainManager {
         if (proxyInfo.originalAddress == address(0)) revert UnauthorizedProxy();
 
         uint256 destRid = proxyInfo.originalRollupId;
-        bytes32 crossChainCallHash =
-            computeCrossChainCallHash(destRid, proxyInfo.originalAddress, 0, callData, sourceAddress, MAINNET_ROLLUP_ID);
+        bytes32 crossChainCallHash = computeCrossChainCallHash(
+            destRid, proxyInfo.originalAddress, 0, callData, sourceAddress, MAINNET_ROLLUP_ID
+        );
 
         uint64 callNum = uint64(_currentCallNumber);
         uint64 lastNA = uint64(_lastNestedActionConsumed);
 
         for (uint256 i = 0; i < _transientLookupCalls.length; i++) {
             LookupCall storage sc = _transientLookupCalls[i];
-            if (sc.crossChainCallHash == crossChainCallHash && sc.callNumber == callNum && sc.lastNestedActionConsumed == lastNA) {
+            if (
+                sc.crossChainCallHash == crossChainCallHash && sc.callNumber == callNum
+                    && sc.lastNestedActionConsumed == lastNA
+            ) {
                 return _resolveLookupCall(sc);
             }
         }
         LookupCall[] storage lookupQueue = verificationByRollup[destRid].lookupQueue;
         for (uint256 i = 0; i < lookupQueue.length; i++) {
             LookupCall storage sc = lookupQueue[i];
-            if (sc.crossChainCallHash == crossChainCallHash && sc.callNumber == callNum && sc.lastNestedActionConsumed == lastNA) {
+            if (
+                sc.crossChainCallHash == crossChainCallHash && sc.callNumber == callNum
+                    && sc.lastNestedActionConsumed == lastNA
+            ) {
                 return _resolveLookupCall(sc);
             }
         }
@@ -1224,7 +1231,11 @@ contract Rollups is ICrossChainManager {
         bytes memory data,
         address sourceAddress,
         uint256 sourceRollupId
-    ) public pure returns (bytes32) {
+    )
+        public
+        pure
+        returns (bytes32)
+    {
         return keccak256(abi.encode(targetRollupId, targetAddress, value, data, sourceAddress, sourceRollupId));
     }
 

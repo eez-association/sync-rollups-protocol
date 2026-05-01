@@ -204,12 +204,10 @@ export function discoverFromEvent(
     }
 
     case "RollupCreated":
-    case "StateUpdated":
-    case "VerificationKeyUpdated":
-    case "OwnershipTransferred":
-    case "L2ExecutionPerformed":
+    case "RollupContractChanged":
     case "ExecutionConsumed":
     case "L2TXExecuted":
+    case "ImmediateEntrySkipped":
     case "CallResult":
     case "NestedActionConsumed":
     case "EntryExecuted":

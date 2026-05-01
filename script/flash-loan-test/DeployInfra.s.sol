@@ -1,48 +1,63 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 import {Rollups} from "../../src/Rollups.sol";
+import {Rollup} from "../../src/rollupContract/Rollup.sol";
+import {IProofSystem} from "../../src/IProofSystem.sol";
 import {CrossChainManagerL2} from "../../src/CrossChainManagerL2.sol";
-import {IZKVerifier} from "../../src/IZKVerifier.sol";
 
-contract MockZKVerifier is IZKVerifier {
+/// @notice Mock proof system that accepts all proofs.
+contract MockProofSystem is IProofSystem {
     function verify(bytes calldata, bytes32) external pure override returns (bool) {
         return true;
     }
 }
 
-/// @title DeployRollupsL1 — Deploy MockZKVerifier + Rollups + create L2 rollup
-/// @dev Usage:
-///   forge script script/flash-loan-test/DeployInfra.s.sol:DeployRollupsL1 \
-///     --rpc-url $L1_RPC --broadcast --private-key $PK
+/// @title DeployRollupsL1 — Deploy MockProofSystem + Rollups + create L2 rollup (id=1)
+/// @dev Burns rollupId 0 (MAINNET, unpostable) so the L2 rollup gets id 1.
+/// Outputs: PROOF_SYSTEM, ROLLUPS, L2_MANAGER
 contract DeployRollupsL1 is Script {
+    bytes32 constant DEFAULT_VK = keccak256("verificationKey");
+
     function run() external {
         vm.startBroadcast();
 
-        MockZKVerifier verifier = new MockZKVerifier();
-        Rollups rollups = new Rollups(address(verifier), 1);
-        rollups.createRollup(keccak256("l2-initial-state"), keccak256("verificationKey"), msg.sender);
+        MockProofSystem ps = new MockProofSystem();
+        Rollups rollups = new Rollups();
 
-        console.log("VERIFIER=%s", address(verifier));
+        // Burn rollupId 0 (MAINNET) so user rollups start at id 1.
+        {
+            address[] memory psList = new address[](1);
+            psList[0] = address(ps);
+            bytes32[] memory vks = new bytes32[](1);
+            vks[0] = DEFAULT_VK;
+            Rollup burnRollup = new Rollup(address(rollups), msg.sender, 1, psList, vks);
+            rollups.createRollup(address(burnRollup), bytes32(0));
+        }
+
+        address[] memory psList2 = new address[](1);
+        psList2[0] = address(ps);
+        bytes32[] memory vks2 = new bytes32[](1);
+        vks2[0] = DEFAULT_VK;
+        Rollup l2Manager = new Rollup(address(rollups), msg.sender, 1, psList2, vks2);
+        uint256 rid = rollups.createRollup(address(l2Manager), keccak256("l2-initial-state"));
+        require(rid == 1, "expected L2 rollupId = 1");
+
+        console.log("PROOF_SYSTEM=%s", address(ps));
         console.log("ROLLUPS=%s", address(rollups));
+        console.log("L2_MANAGER=%s", address(l2Manager));
 
         vm.stopBroadcast();
     }
 }
 
 /// @title DeployManagerL2 — Deploy CrossChainManagerL2
-/// @dev Usage:
-///   forge script script/flash-loan-test/DeployInfra.s.sol:DeployManagerL2 \
-///     --rpc-url $L2_RPC --broadcast --private-key $PK \
-///     --sig "run(uint256,address)" $L2_ROLLUP_ID $SYSTEM_ADDRESS
 contract DeployManagerL2 is Script {
     function run(uint256 rollupId, address systemAddress) external {
         vm.startBroadcast();
-
         CrossChainManagerL2 manager = new CrossChainManagerL2(rollupId, systemAddress);
         console.log("MANAGER_L2=%s", address(manager));
-
         vm.stopBroadcast();
     }
 }

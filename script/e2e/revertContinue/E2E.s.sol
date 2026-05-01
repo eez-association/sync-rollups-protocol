@@ -2,18 +2,24 @@
 pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
-import {Rollups} from "../../../src/Rollups.sol";
+import {Rollups, ProofSystemBatch} from "../../../src/Rollups.sol";
 import {
-    Action,
     StateDelta,
     CrossChainCall,
     NestedAction,
     ExecutionEntry,
-    StaticCall
+    LookupCall
 } from "../../../src/ICrossChainManager.sol";
 import {Counter, SelfCallerWithRevert} from "../../../test/mocks/CounterContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
-import {actionHash, noStaticCalls, noNestedActions, noCalls, RollingHashBuilder} from "../shared/E2EHelpers.sol";
+import {
+    Action,
+    actionHash,
+    noLookupCalls,
+    noNestedActions,
+    noCalls,
+    RollingHashBuilder
+} from "../shared/E2EHelpers.sol";
 
 // ═══════════════════════════════════════════════════════════════════════
 //  RevertContinue scenario — revert inside try/catch then continue
@@ -49,26 +55,30 @@ abstract contract RevertContinueActions {
 
     /// @dev Outer action hash: batcher calls selfCallerProxy.execute() on L1.
     function _outerActionHash(address selfCaller, address batcher) internal pure returns (bytes32) {
-        return actionHash(Action({
-            targetRollupId: L2_ROLLUP_ID,
-            targetAddress: selfCaller,
-            value: 0,
-            data: abi.encodeWithSelector(SelfCallerWithRevert.execute.selector),
-            sourceAddress: batcher,
-            sourceRollupId: MAINNET_ROLLUP_ID
-        }));
+        return actionHash(
+            Action({
+                targetRollupId: L2_ROLLUP_ID,
+                targetAddress: selfCaller,
+                value: 0,
+                data: abi.encodeWithSelector(SelfCallerWithRevert.execute.selector),
+                sourceAddress: batcher,
+                sourceRollupId: MAINNET_ROLLUP_ID
+            })
+        );
     }
 
     /// @dev Inner action hash: SelfCallerWithRevert calls counterProxy.increment().
     function _innerActionHash(address counterL2, address selfCaller) internal pure returns (bytes32) {
-        return actionHash(Action({
-            targetRollupId: L2_ROLLUP_ID,
-            targetAddress: counterL2,
-            value: 0,
-            data: abi.encodeWithSelector(Counter.increment.selector),
-            sourceAddress: selfCaller,
-            sourceRollupId: MAINNET_ROLLUP_ID
-        }));
+        return actionHash(
+            Action({
+                targetRollupId: L2_ROLLUP_ID,
+                targetAddress: counterL2,
+                value: 0,
+                data: abi.encodeWithSelector(Counter.increment.selector),
+                sourceAddress: selfCaller,
+                sourceRollupId: MAINNET_ROLLUP_ID
+            })
+        );
     }
 
     /// @dev Rolling hash: CALL_BEGIN(1) → NESTED_BEGIN(1) → NESTED_END(1) → CALL_END(1, true, "")
@@ -92,6 +102,7 @@ abstract contract RevertContinueActions {
         StateDelta[] memory deltas = new StateDelta[](1);
         deltas[0] = StateDelta({
             rollupId: L2_ROLLUP_ID,
+            currentState: keccak256("l2-initial-state"),
             newState: keccak256("l2-state-after-revertcontinue"),
             etherDelta: 0
         });
@@ -108,7 +119,7 @@ abstract contract RevertContinueActions {
 
         NestedAction[] memory nested = new NestedAction[](1);
         nested[0] = NestedAction({
-            actionHash: _innerActionHash(counterL2, selfCaller),
+            crossChainCallHash: _innerActionHash(counterL2, selfCaller),
             callCount: 0,
             returnData: abi.encode(uint256(1))
         });
@@ -116,12 +127,12 @@ abstract contract RevertContinueActions {
         entries = new ExecutionEntry[](1);
         entries[0] = ExecutionEntry({
             stateDeltas: deltas,
-            actionHash: _outerActionHash(selfCaller, batcher),
+            crossChainCallHash: _outerActionHash(selfCaller, batcher),
+            destinationRollupId: L2_ROLLUP_ID,
             calls: calls,
             nestedActions: nested,
             callCount: 1,
             returnData: "",
-            failed: false,
             rollingHash: _expectedRollingHash()
         });
     }
@@ -181,11 +192,33 @@ contract Deploy is Script {
 contract Batcher {
     function execute(
         Rollups rollups,
+        address proofSystem,
         ExecutionEntry[] calldata entries,
-        StaticCall[] calldata statics,
+        LookupCall[] calldata lookupCalls,
         address selfCallerProxy
-    ) external {
-        rollups.postBatch(entries, statics, 0, 0, 0, "", "proof");
+    )
+        external
+    {
+        address[] memory psList = new address[](1);
+        psList[0] = proofSystem;
+        uint256[] memory rids = new uint256[](1);
+        rids[0] = L2_ROLLUP_ID;
+        bytes[] memory proofs = new bytes[](1);
+        proofs[0] = "proof";
+        ProofSystemBatch[] memory batches = new ProofSystemBatch[](1);
+        batches[0] = ProofSystemBatch({
+            proofSystems: psList,
+            rollupIds: rids,
+            entries: entries,
+            lookupCalls: lookupCalls,
+            transientCount: 0,
+            transientLookupCallCount: 0,
+            blobIndices: new uint256[](0),
+            callData: "",
+            proof: proofs,
+            crossProofSystemInteractions: bytes32(0)
+        });
+        rollups.postBatch(batches);
         (bool ok,) = selfCallerProxy.call(abi.encodeWithSelector(SelfCallerWithRevert.execute.selector));
         require(ok, "outer call failed");
     }
@@ -194,6 +227,7 @@ contract Batcher {
 contract Execute is Script, RevertContinueActions {
     function run() external {
         address rollupsAddr = vm.envAddress("ROLLUPS");
+        address proofSystemAddr = vm.envAddress("PROOF_SYSTEM");
         address counterL2 = vm.envAddress("COUNTER_L2");
         address selfCallerAddr = vm.envAddress("SELF_CALLER");
         address selfCallerProxy = vm.envAddress("SELF_CALLER_PROXY");
@@ -203,8 +237,9 @@ contract Execute is Script, RevertContinueActions {
 
         batcher.execute(
             Rollups(rollupsAddr),
+            proofSystemAddr,
             _l1Entries(selfCallerAddr, counterL2, address(batcher)),
-            noStaticCalls(),
+            noLookupCalls(),
             selfCallerProxy
         );
 

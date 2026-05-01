@@ -123,10 +123,8 @@ export function buildBundleSteps(events: EventRecord[]): BundleStep[] {
 
 function stepTitle(event: EventRecord): string {
   switch (event.eventName) {
-    case "BatchPosted": {
-      const entries = event.args.entries as unknown[] | undefined;
-      return `Post batch (${entries?.length ?? 0} entries)`;
-    }
+    case "BatchPosted":
+      return `Post batch (${String(event.args.subBatchCount ?? 0)} sub-batches)`;
     case "ExecutionTableLoaded": {
       const entries = event.args.entries as unknown[] | undefined;
       return `Load execution table (${entries?.length ?? 0} entries)`;
@@ -139,6 +137,10 @@ function stepTitle(event: EventRecord): string {
       return "L2TX executed";
     case "CrossChainProxyCreated":
       return "Proxy created";
+    case "RollupContractChanged":
+      return "Rollup contract changed";
+    case "ImmediateEntrySkipped":
+      return "Immediate entry skipped";
     case "CallResult":
       return "Call result";
     case "NestedActionConsumed":
@@ -155,11 +157,11 @@ function stepTitle(event: EventRecord): string {
 function stepDetail(event: EventRecord): string {
   switch (event.eventName) {
     case "ExecutionConsumed":
-      return `actionHash: ${(event.args.actionHash as string)?.slice(0, 18)}... entryIndex: ${String(event.args.entryIndex ?? "")}`;
+      return `crossChainCallHash: ${(event.args.crossChainCallHash as string)?.slice(0, 18)}... rollupId: ${String(event.args.rollupId ?? "")} cursor: ${String(event.args.cursor ?? "")}`;
     case "CrossChainCallExecuted":
       return `proxy=${truncateAddress(event.args.proxy as string)} src=${truncateAddress(event.args.sourceAddress as string)}`;
     case "L2TXExecuted":
-      return `entryIndex=${String(event.args.entryIndex ?? "")}`;
+      return `rollupId=${String(event.args.rollupId ?? "")} cursor=${String(event.args.cursor ?? "")}`;
     case "CallResult":
       return `call#${String(event.args.callNumber ?? "")} success=${String(event.args.success ?? "")}`;
     case "NestedActionConsumed":
@@ -168,6 +170,12 @@ function stepDetail(event: EventRecord): string {
       return `calls=${String(event.args.callsProcessed ?? "")} nested=${String(event.args.nestedActionsConsumed ?? "")}`;
     case "RevertSpanExecuted":
       return `startCall=${String(event.args.startCallNumber ?? "")} span=${String(event.args.span ?? "")}`;
+    case "ImmediateEntrySkipped":
+      return `transientIdx=${String(event.args.transientIdx ?? "")}`;
+    case "BatchPosted":
+      return `subBatchCount=${String(event.args.subBatchCount ?? "")}`;
+    case "RollupContractChanged":
+      return `rollupId=${String(event.args.rollupId ?? "")} new=${truncateAddress(event.args.newContract as string)}`;
     default:
       return `block ${event.blockNumber.toString()}, tx ${event.transactionHash.slice(0, 10)}...`;
   }

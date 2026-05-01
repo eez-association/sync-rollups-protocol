@@ -2,18 +2,17 @@
 pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
-import {Rollups} from "../../../src/Rollups.sol";
+import {Rollups, ProofSystemBatch} from "../../../src/Rollups.sol";
 import {
-    Action,
     StateDelta,
     CrossChainCall,
     NestedAction,
     ExecutionEntry,
-    StaticCall
+    LookupCall
 } from "../../../src/ICrossChainManager.sol";
 import {Counter, CounterAndProxy, NestedCaller} from "../../../test/mocks/CounterContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
-import {actionHash, noStaticCalls, RollingHashBuilder} from "../shared/E2EHelpers.sol";
+import {Action, actionHash, noStaticCalls, noLookupCalls, RollingHashBuilder} from "../shared/E2EHelpers.sol";
 
 // ═══════════════════════════════════════════════════════════════════════
 //  DeepNested scenario - two levels of nested actions
@@ -47,46 +46,52 @@ abstract contract DeepNestedActions {
 
     /// @dev innermost: CAP calls counterProxy -> increment()
     function _counterActionHash(address counterL2, address cap) internal pure returns (bytes32) {
-        return actionHash(Action({
-            targetRollupId: L2_ROLLUP_ID,
-            targetAddress: counterL2,
-            value: 0,
-            data: abi.encodeWithSelector(Counter.increment.selector),
-            sourceAddress: cap,
-            sourceRollupId: MAINNET_ROLLUP_ID
-        }));
+        return actionHash(
+            Action({
+                targetRollupId: L2_ROLLUP_ID,
+                targetAddress: counterL2,
+                value: 0,
+                data: abi.encodeWithSelector(Counter.increment.selector),
+                sourceAddress: cap,
+                sourceRollupId: MAINNET_ROLLUP_ID
+            })
+        );
     }
 
     /// @dev middle: NestedCaller calls capProxy -> incrementProxy()
     function _capActionHash(address cap, address nestedCaller) internal pure returns (bytes32) {
-        return actionHash(Action({
-            targetRollupId: L2_ROLLUP_ID,
-            targetAddress: cap,
-            value: 0,
-            data: abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),
-            sourceAddress: nestedCaller,
-            sourceRollupId: MAINNET_ROLLUP_ID
-        }));
+        return actionHash(
+            Action({
+                targetRollupId: L2_ROLLUP_ID,
+                targetAddress: cap,
+                value: 0,
+                data: abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),
+                sourceAddress: nestedCaller,
+                sourceRollupId: MAINNET_ROLLUP_ID
+            })
+        );
     }
 
     /// @dev outer trigger: alice calls nestedCallerProxy -> callNested()
     function _outerActionHash(address nestedCaller, address alice) internal pure returns (bytes32) {
-        return actionHash(Action({
-            targetRollupId: L2_ROLLUP_ID,
-            targetAddress: nestedCaller,
-            value: 0,
-            data: abi.encodeWithSelector(NestedCaller.callNested.selector),
-            sourceAddress: alice,
-            sourceRollupId: MAINNET_ROLLUP_ID
-        }));
+        return actionHash(
+            Action({
+                targetRollupId: L2_ROLLUP_ID,
+                targetAddress: nestedCaller,
+                value: 0,
+                data: abi.encodeWithSelector(NestedCaller.callNested.selector),
+                sourceAddress: alice,
+                sourceRollupId: MAINNET_ROLLUP_ID
+            })
+        );
     }
 
     function _expectedRollingHash() internal pure returns (bytes32 h) {
         h = bytes32(0);
-        h = h.appendCallBegin(1);        // calls[0] -> NestedCaller.callNested()  (_ccn=1)
-        h = h.appendNestedBegin(1);       // NestedCaller -> capProxy -> nestedActions[0]
-        h = h.appendCallBegin(2);         // calls[1] inside nested (_ccn=2)
-        h = h.appendNestedBegin(2);       // CAP -> counterProxy -> nestedActions[1]
+        h = h.appendCallBegin(1); // calls[0] -> NestedCaller.callNested()  (_ccn=1)
+        h = h.appendNestedBegin(1); // NestedCaller -> capProxy -> nestedActions[0]
+        h = h.appendCallBegin(2); // calls[1] inside nested (_ccn=2)
+        h = h.appendNestedBegin(2); // CAP -> counterProxy -> nestedActions[1]
         h = h.appendNestedEnd(2);
         h = h.appendCallEnd(2, true, ""); // calls[1] ends (_ccn=2)
         h = h.appendNestedEnd(1);
@@ -94,15 +99,15 @@ abstract contract DeepNestedActions {
         h = h.appendCallEnd(2, true, ""); // calls[0] ends (_ccn still 2)
     }
 
-    function _l1Entries(
-        address counterL2,
-        address cap,
-        address nestedCaller,
-        address alice
-    ) internal pure returns (ExecutionEntry[] memory entries) {
+    function _l1Entries(address counterL2, address cap, address nestedCaller, address alice)
+        internal
+        pure
+        returns (ExecutionEntry[] memory entries)
+    {
         StateDelta[] memory deltas = new StateDelta[](1);
         deltas[0] = StateDelta({
             rollupId: L2_ROLLUP_ID,
+            currentState: keccak256("l2-initial-state"),
             newState: keccak256("l2-state-after-deep-nested"),
             etherDelta: 0
         });
@@ -132,26 +137,20 @@ abstract contract DeepNestedActions {
         });
 
         NestedAction[] memory nested = new NestedAction[](2);
-        nested[0] = NestedAction({
-            actionHash: _capActionHash(cap, nestedCaller),
-            callCount: 1,
-            returnData: ""
-        });
+        nested[0] = NestedAction({crossChainCallHash: _capActionHash(cap, nestedCaller), callCount: 1, returnData: ""});
         nested[1] = NestedAction({
-            actionHash: _counterActionHash(counterL2, cap),
-            callCount: 0,
-            returnData: abi.encode(uint256(1))
+            crossChainCallHash: _counterActionHash(counterL2, cap), callCount: 0, returnData: abi.encode(uint256(1))
         });
 
         entries = new ExecutionEntry[](1);
         entries[0] = ExecutionEntry({
             stateDeltas: deltas,
-            actionHash: _outerActionHash(nestedCaller, alice),
+            crossChainCallHash: _outerActionHash(nestedCaller, alice),
+            destinationRollupId: L2_ROLLUP_ID,
             calls: calls,
             nestedActions: nested,
             callCount: 1,
             returnData: "",
-            failed: false,
             rollingHash: _expectedRollingHash()
         });
     }
@@ -216,11 +215,33 @@ contract Deploy is Script {
 contract Batcher {
     function execute(
         Rollups rollups,
+        address proofSystem,
         ExecutionEntry[] calldata entries,
-        StaticCall[] calldata statics,
+        LookupCall[] calldata lookupCalls,
         address ncProxy
-    ) external {
-        rollups.postBatch(entries, statics, 0, 0, 0, "", "proof");
+    )
+        external
+    {
+        address[] memory psList = new address[](1);
+        psList[0] = proofSystem;
+        uint256[] memory rids = new uint256[](1);
+        rids[0] = L2_ROLLUP_ID;
+        bytes[] memory proofs = new bytes[](1);
+        proofs[0] = "proof";
+        ProofSystemBatch[] memory batches = new ProofSystemBatch[](1);
+        batches[0] = ProofSystemBatch({
+            proofSystems: psList,
+            rollupIds: rids,
+            entries: entries,
+            lookupCalls: lookupCalls,
+            transientCount: 0,
+            transientLookupCallCount: 0,
+            blobIndices: new uint256[](0),
+            callData: "",
+            proof: proofs,
+            crossProofSystemInteractions: bytes32(0)
+        });
+        rollups.postBatch(batches);
         (bool ok,) = ncProxy.call(abi.encodeWithSelector(NestedCaller.callNested.selector));
         require(ok, "outer call failed");
     }
@@ -229,6 +250,7 @@ contract Batcher {
 contract Execute is Script, DeepNestedActions {
     function run() external {
         address rollupsAddr = vm.envAddress("ROLLUPS");
+        address proofSystemAddr = vm.envAddress("PROOF_SYSTEM");
         address counterL2 = vm.envAddress("COUNTER_L2");
         address capAddr = vm.envAddress("COUNTER_AND_PROXY");
         address ncAddr = vm.envAddress("NESTED_CALLER");
@@ -239,8 +261,9 @@ contract Execute is Script, DeepNestedActions {
 
         batcher.execute(
             Rollups(rollupsAddr),
+            proofSystemAddr,
             _l1Entries(counterL2, capAddr, ncAddr, address(batcher)),
-            noStaticCalls(),
+            noLookupCalls(),
             ncProxy
         );
 

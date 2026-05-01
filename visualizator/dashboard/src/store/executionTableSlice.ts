@@ -6,8 +6,8 @@ export type ExecutionTableSlice = {
   l2Table: TableEntry[];
   addL1Entries: (entries: TableEntry[]) => void;
   addL2Entries: (entries: TableEntry[]) => void;
-  consumeL1Entry: (actionHash: string, actionDetail?: Record<string, string>) => void;
-  consumeL2Entry: (actionHash: string, actionDetail?: Record<string, string>) => void;
+  consumeL1Entry: (crossChainCallHash: string, actionDetail?: Record<string, string>) => void;
+  consumeL2Entry: (crossChainCallHash: string, actionDetail?: Record<string, string>) => void;
   clearTables: () => void;
 };
 
@@ -34,18 +34,18 @@ export const createExecutionTableSlice: StateCreator<ExecutionTableSlice> = (
         ...entries,
       ],
     })),
-  consumeL1Entry: (actionHash, actionDetail) =>
+  consumeL1Entry: (crossChainCallHash, actionDetail) =>
     set((state) => ({
       l1Table: state.l1Table.map((e) =>
-        e.actionHash === actionHash
+        e.crossChainCallHash === crossChainCallHash
           ? { ...e, status: "jc" as const, ...(actionDetail && Object.keys(actionDetail).length > 0 ? { actionDetail } : {}) }
           : e,
       ),
     })),
-  consumeL2Entry: (actionHash, actionDetail) =>
+  consumeL2Entry: (crossChainCallHash, actionDetail) =>
     set((state) => ({
       l2Table: state.l2Table.map((e) =>
-        e.actionHash === actionHash
+        e.crossChainCallHash === crossChainCallHash
           ? { ...e, status: "jc" as const, ...(actionDetail && Object.keys(actionDetail).length > 0 ? { actionDetail } : {}) }
           : e,
       ),

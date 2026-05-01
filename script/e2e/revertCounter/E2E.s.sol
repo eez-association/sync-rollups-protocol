@@ -2,18 +2,24 @@
 pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
-import {Rollups} from "../../../src/Rollups.sol";
+import {Rollups, ProofSystemBatch} from "../../../src/Rollups.sol";
 import {
-    Action,
     StateDelta,
     CrossChainCall,
     NestedAction,
     ExecutionEntry,
-    StaticCall
+    LookupCall
 } from "../../../src/ICrossChainManager.sol";
 import {Counter} from "../../../test/mocks/CounterContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
-import {actionHash, noStaticCalls, noNestedActions, noCalls, RollingHashBuilder} from "../shared/E2EHelpers.sol";
+import {
+    Action,
+    actionHash,
+    noLookupCalls,
+    noNestedActions,
+    noCalls,
+    RollingHashBuilder
+} from "../shared/E2EHelpers.sol";
 
 // ═══════════════════════════════════════════════════════════════════════
 //  RevertCounter scenario — exercises CrossChainCall.revertSpan as a
@@ -65,14 +71,16 @@ abstract contract RevertActions {
     /// @dev Outer action hash: alice calls counterProxy (proxy for Counter@L2) on L1.
     ///      This is just the trigger — it selects which entry to consume.
     function _outerActionHash(address counterL2, address alice) internal pure returns (bytes32) {
-        return actionHash(Action({
-            targetRollupId: L2_ROLLUP_ID,
-            targetAddress: counterL2,
-            value: 0,
-            data: abi.encodeWithSelector(Counter.increment.selector),
-            sourceAddress: alice,
-            sourceRollupId: MAINNET_ROLLUP_ID
-        }));
+        return actionHash(
+            Action({
+                targetRollupId: L2_ROLLUP_ID,
+                targetAddress: counterL2,
+                value: 0,
+                data: abi.encodeWithSelector(Counter.increment.selector),
+                sourceAddress: alice,
+                sourceRollupId: MAINNET_ROLLUP_ID
+            })
+        );
     }
 
     /// @dev Rolling hash: CALL_BEGIN(1) → CALL_END(1, true, abi.encode(1)).
@@ -93,6 +101,7 @@ abstract contract RevertActions {
         StateDelta[] memory deltas = new StateDelta[](1);
         deltas[0] = StateDelta({
             rollupId: L2_ROLLUP_ID,
+            currentState: keccak256("l2-initial-state"),
             newState: keccak256("l2-state-after-forced-revert"),
             etherDelta: 0
         });
@@ -114,12 +123,12 @@ abstract contract RevertActions {
         entries = new ExecutionEntry[](1);
         entries[0] = ExecutionEntry({
             stateDeltas: deltas,
-            actionHash: _outerActionHash(counterL2, alice),
+            crossChainCallHash: _outerActionHash(counterL2, alice),
+            destinationRollupId: L2_ROLLUP_ID,
             calls: calls,
             nestedActions: noNestedActions(),
             callCount: 1,
             returnData: "",
-            failed: false,
             rollingHash: _expectedRollingHash()
         });
     }
@@ -171,11 +180,33 @@ contract Deploy is Script {
 contract Batcher {
     function execute(
         Rollups rollups,
+        address proofSystem,
         ExecutionEntry[] calldata entries,
-        StaticCall[] calldata statics,
+        LookupCall[] calldata lookupCalls,
         address counterProxy
-    ) external {
-        rollups.postBatch(entries, statics, 0, 0, 0, "", "proof");
+    )
+        external
+    {
+        address[] memory psList = new address[](1);
+        psList[0] = proofSystem;
+        uint256[] memory rids = new uint256[](1);
+        rids[0] = L2_ROLLUP_ID;
+        bytes[] memory proofs = new bytes[](1);
+        proofs[0] = "proof";
+        ProofSystemBatch[] memory batches = new ProofSystemBatch[](1);
+        batches[0] = ProofSystemBatch({
+            proofSystems: psList,
+            rollupIds: rids,
+            entries: entries,
+            lookupCalls: lookupCalls,
+            transientCount: 0,
+            transientLookupCallCount: 0,
+            blobIndices: new uint256[](0),
+            callData: "",
+            proof: proofs,
+            crossProofSystemInteractions: bytes32(0)
+        });
+        rollups.postBatch(batches);
         // Trigger: call counterProxy.increment() — consumes the entry.
         // The inner call in the entry runs inside executeInContext and is force-reverted.
         (bool ok,) = counterProxy.call(abi.encodeWithSelector(Counter.increment.selector));
@@ -186,6 +217,7 @@ contract Batcher {
 contract Execute is Script, RevertActions {
     function run() external {
         address rollupsAddr = vm.envAddress("ROLLUPS");
+        address proofSystemAddr = vm.envAddress("PROOF_SYSTEM");
         address counterL2 = vm.envAddress("COUNTER_L2");
         address counterL1 = vm.envAddress("COUNTER_L1");
         address counterProxy = vm.envAddress("COUNTER_PROXY");
@@ -196,8 +228,9 @@ contract Execute is Script, RevertActions {
         // alice = batcher (msg.sender into the proxy)
         batcher.execute(
             Rollups(rollupsAddr),
+            proofSystemAddr,
             _l1Entries(counterL1, counterL2, address(batcher)),
-            noStaticCalls(),
+            noLookupCalls(),
             counterProxy
         );
 

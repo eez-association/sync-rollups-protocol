@@ -2,18 +2,24 @@
 pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
-import {Rollups} from "../../../src/Rollups.sol";
+import {Rollups, ProofSystemBatch} from "../../../src/Rollups.sol";
 import {
-    Action,
     StateDelta,
     CrossChainCall,
     NestedAction,
     ExecutionEntry,
-    StaticCall
+    LookupCall
 } from "../../../src/ICrossChainManager.sol";
 import {Counter, CounterAndProxy} from "../../../test/mocks/CounterContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
-import {actionHash, noStaticCalls, noNestedActions, noCalls, RollingHashBuilder} from "../shared/E2EHelpers.sol";
+import {
+    Action,
+    actionHash,
+    noLookupCalls,
+    noNestedActions,
+    noCalls,
+    RollingHashBuilder
+} from "../shared/E2EHelpers.sol";
 
 // ═══════════════════════════════════════════════════════════════════════
 //  NestedCounter scenario — exercises ExecutionEntry.nestedActions[]
@@ -36,26 +42,30 @@ abstract contract NestedActions {
 
     /// @dev Inner action hash: CounterAndProxy calls the counter proxy reentrantly.
     function _innerActionHash(address counterL2, address cap) internal pure returns (bytes32) {
-        return actionHash(Action({
-            targetRollupId: L2_ROLLUP_ID,
-            targetAddress: counterL2,
-            value: 0,
-            data: abi.encodeWithSelector(Counter.increment.selector),
-            sourceAddress: cap,
-            sourceRollupId: MAINNET_ROLLUP_ID
-        }));
+        return actionHash(
+            Action({
+                targetRollupId: L2_ROLLUP_ID,
+                targetAddress: counterL2,
+                value: 0,
+                data: abi.encodeWithSelector(Counter.increment.selector),
+                sourceAddress: cap,
+                sourceRollupId: MAINNET_ROLLUP_ID
+            })
+        );
     }
 
     /// @dev Outer action hash: alice triggers CAP via its L2-side proxy.
     function _outerActionHash(address cap, address alice) internal pure returns (bytes32) {
-        return actionHash(Action({
-            targetRollupId: L2_ROLLUP_ID,
-            targetAddress: cap,
-            value: 0,
-            data: abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),
-            sourceAddress: alice,
-            sourceRollupId: MAINNET_ROLLUP_ID
-        }));
+        return actionHash(
+            Action({
+                targetRollupId: L2_ROLLUP_ID,
+                targetAddress: cap,
+                value: 0,
+                data: abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),
+                sourceAddress: alice,
+                sourceRollupId: MAINNET_ROLLUP_ID
+            })
+        );
     }
 
     /// @dev Rolling hash replay: CALL_BEGIN(1) → NESTED_BEGIN(1) → NESTED_END(1) → CALL_END(1, true, "")
@@ -76,6 +86,7 @@ abstract contract NestedActions {
         StateDelta[] memory deltas = new StateDelta[](1);
         deltas[0] = StateDelta({
             rollupId: L2_ROLLUP_ID,
+            currentState: keccak256("l2-initial-state"),
             newState: keccak256("l2-state-after-nested"),
             etherDelta: 0
         });
@@ -92,20 +103,18 @@ abstract contract NestedActions {
 
         NestedAction[] memory nested = new NestedAction[](1);
         nested[0] = NestedAction({
-            actionHash: _innerActionHash(counterL2, cap),
-            callCount: 0,
-            returnData: abi.encode(uint256(1))
+            crossChainCallHash: _innerActionHash(counterL2, cap), callCount: 0, returnData: abi.encode(uint256(1))
         });
 
         entries = new ExecutionEntry[](1);
         entries[0] = ExecutionEntry({
             stateDeltas: deltas,
-            actionHash: _outerActionHash(cap, alice),
+            crossChainCallHash: _outerActionHash(cap, alice),
+            destinationRollupId: L2_ROLLUP_ID,
             calls: calls,
             nestedActions: nested,
             callCount: 1,
             returnData: "",
-            failed: false,
             rollingHash: _expectedRollingHash()
         });
     }
@@ -157,11 +166,33 @@ contract Deploy is Script {
 contract Batcher {
     function execute(
         Rollups rollups,
+        address proofSystem,
         ExecutionEntry[] calldata entries,
-        StaticCall[] calldata statics,
+        LookupCall[] calldata lookupCalls,
         address capL2Proxy
-    ) external {
-        rollups.postBatch(entries, statics, 0, 0, 0, "", "proof");
+    )
+        external
+    {
+        address[] memory psList = new address[](1);
+        psList[0] = proofSystem;
+        uint256[] memory rids = new uint256[](1);
+        rids[0] = L2_ROLLUP_ID;
+        bytes[] memory proofs = new bytes[](1);
+        proofs[0] = "proof";
+        ProofSystemBatch[] memory batches = new ProofSystemBatch[](1);
+        batches[0] = ProofSystemBatch({
+            proofSystems: psList,
+            rollupIds: rids,
+            entries: entries,
+            lookupCalls: lookupCalls,
+            transientCount: 0,
+            transientLookupCallCount: 0,
+            blobIndices: new uint256[](0),
+            callData: "",
+            proof: proofs,
+            crossProofSystemInteractions: bytes32(0)
+        });
+        rollups.postBatch(batches);
         (bool ok,) = capL2Proxy.call(abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector));
         require(ok, "outer call failed");
     }
@@ -170,6 +201,7 @@ contract Batcher {
 contract Execute is Script, NestedActions {
     function run() external {
         address rollupsAddr = vm.envAddress("ROLLUPS");
+        address proofSystemAddr = vm.envAddress("PROOF_SYSTEM");
         address counterL2Addr = vm.envAddress("COUNTER_L2");
         address capAddr = vm.envAddress("COUNTER_AND_PROXY");
         address capL2Proxy = vm.envAddress("CAP_L2_PROXY");
@@ -178,11 +210,12 @@ contract Execute is Script, NestedActions {
         Batcher batcher = new Batcher();
 
         // Alice = the Batcher contract itself (msg.sender into capL2Proxy).
-        // The outer entry's actionHash must use alice = address(batcher).
+        // The outer entry's crossChainCallHash must use alice = address(batcher).
         batcher.execute(
             Rollups(rollupsAddr),
+            proofSystemAddr,
             _l1Entries(counterL2Addr, capAddr, address(batcher)),
-            noStaticCalls(),
+            noLookupCalls(),
             capL2Proxy
         );
 

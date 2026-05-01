@@ -2,7 +2,8 @@
 pragma solidity ^0.8.28;
 
 import {Test, console} from "forge-std/Test.sol";
-import {Rollups, RollupConfig} from "../src/Rollups.sol";
+import {Rollups, RollupConfig, ProofSystemBatch} from "../src/Rollups.sol";
+import {Rollup} from "../src/rollupContract/Rollup.sol";
 import {CrossChainManagerL2} from "../src/CrossChainManagerL2.sol";
 import {CrossChainProxy} from "../src/CrossChainProxy.sol";
 import {
@@ -10,22 +11,16 @@ import {
     StateDelta,
     CrossChainCall,
     NestedAction,
-    StaticCall,
+    LookupCall,
     ProxyInfo
 } from "../src/ICrossChainManager.sol";
-import {IZKVerifier} from "../src/IZKVerifier.sol";
+import {MockProofSystem} from "./mocks/MockProofSystem.sol";
 import {Bridge} from "../src/periphery/Bridge.sol";
 import {WrappedToken} from "../src/periphery/WrappedToken.sol";
 import {FlashLoan} from "../src/periphery/defiMock/FlashLoan.sol";
 import {FlashLoanBridgeExecutor} from "../src/periphery/defiMock/FlashLoanBridgeExecutor.sol";
 import {FlashLoanersNFT} from "../src/periphery/defiMock/FlashLoanersNFT.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-
-contract MockZKVerifierFL is IZKVerifier {
-    function verify(bytes calldata, bytes32) external pure override returns (bool) {
-        return true;
-    }
-}
 
 contract FlashLoanTestToken is ERC20 {
     constructor() ERC20("Test Token", "TT") {
@@ -62,7 +57,8 @@ contract FlashLoanTestToken is ERC20 {
 contract IntegrationTestFlashLoan is Test {
     // ── L1 contracts ──
     Rollups public rollups;
-    MockZKVerifierFL public verifier;
+    MockProofSystem public ps;
+    Rollup public l2Manager;
 
     // ── L2 contracts ──
     CrossChainManagerL2 public managerL2;
@@ -105,9 +101,27 @@ contract IntegrationTestFlashLoan is Test {
 
     function setUp() public {
         // ── L1 infrastructure ──
-        verifier = new MockZKVerifierFL();
-        rollups = new Rollups(address(verifier), 1);
-        rollups.createRollup(keccak256("l2-initial-state"), DEFAULT_VK, address(this));
+        rollups = new Rollups();
+        ps = new MockProofSystem();
+
+        // Burn rollupId 0 = MAINNET so the L2 rollup gets id 1.
+        {
+            address[] memory psList = new address[](1);
+            psList[0] = address(ps);
+            bytes32[] memory vks = new bytes32[](1);
+            vks[0] = DEFAULT_VK;
+            Rollup burnRollup = new Rollup(address(rollups), address(this), 1, psList, vks);
+            rollups.createRollup(address(burnRollup), bytes32(0));
+        }
+        {
+            address[] memory psList = new address[](1);
+            psList[0] = address(ps);
+            bytes32[] memory vks = new bytes32[](1);
+            vks[0] = DEFAULT_VK;
+            l2Manager = new Rollup(address(rollups), address(this), 1, psList, vks);
+            uint256 rid = rollups.createRollup(address(l2Manager), keccak256("l2-initial-state"));
+            require(rid == L2_ROLLUP_ID, "expected L2_ROLLUP_ID = 1");
+        }
 
         // ── L2 infrastructure ──
         managerL2 = new CrossChainManagerL2(L2_ROLLUP_ID, SYSTEM_ADDRESS);
@@ -131,8 +145,7 @@ contract IntegrationTestFlashLoan is Test {
         // ── Deploy executorL2 with placeholder immutables ──
         // Only claimAndBridgeBack (parameter-based) is called on executorL2; immutables unused.
         executorL2 = new FlashLoanBridgeExecutor(
-            address(0), address(0), address(0), address(0),
-            address(0), address(0), address(0), 0, address(0)
+            address(0), address(0), address(0), address(0), address(0), address(0), address(0), 0, address(0)
         );
 
         // ── Create proxies ──
@@ -145,25 +158,53 @@ contract IntegrationTestFlashLoan is Test {
     // ──────────────────────────────────────────────
 
     function _getRollupState(uint256 rollupId) internal view returns (bytes32) {
-        (,, bytes32 stateRoot,) = rollups.rollups(rollupId);
+        (, bytes32 stateRoot,) = rollups.rollups(rollupId);
         return stateRoot;
     }
 
     /// @dev Computes action hash the same way contracts do
-    function _actionHash(
+    function _crossChainCallHash(
         uint256 rollupId,
         address destination,
         uint256 value,
         bytes memory data,
         address sourceAddress,
         uint256 sourceRollup
-    ) internal pure returns (bytes32) {
+    )
+        internal
+        pure
+        returns (bytes32)
+    {
         return keccak256(abi.encode(rollupId, destination, value, data, sourceAddress, sourceRollup));
     }
 
-    /// @dev Helper to create an empty StaticCall array
-    function _noStaticCalls() internal pure returns (StaticCall[] memory) {
-        return new StaticCall[](0);
+    /// @dev Helper to create an empty LookupCall array
+    /// @dev Wraps a single sub-batch to L2 and posts it.
+    function _postBatchToL2(ExecutionEntry[] memory entries, uint256 transientCount) internal {
+        address[] memory psList = new address[](1);
+        psList[0] = address(ps);
+        uint256[] memory rids = new uint256[](1);
+        rids[0] = L2_ROLLUP_ID;
+        bytes[] memory proofs = new bytes[](1);
+        proofs[0] = "proof";
+        ProofSystemBatch[] memory batches = new ProofSystemBatch[](1);
+        batches[0] = ProofSystemBatch({
+            proofSystems: psList,
+            rollupIds: rids,
+            entries: entries,
+            lookupCalls: _noLookupCalls(),
+            transientCount: transientCount,
+            transientLookupCallCount: 0,
+            blobIndices: new uint256[](0),
+            callData: "",
+            proof: proofs,
+            crossProofSystemInteractions: bytes32(0)
+        });
+        rollups.postBatch(batches);
+    }
+
+    function _noLookupCalls() internal pure returns (LookupCall[] memory) {
+        return new LookupCall[](0);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -182,14 +223,23 @@ contract IntegrationTestFlashLoan is Test {
         //  bridgeL1.bridgeTokens creates proxy(bridgeL2, L2) on L1
         //  proxy fallback -> Rollups.executeCrossChainCall(bridgeL1, receiveTokensCalldata)
         //  proxyInfo: (bridgeL2, L2)
-        //  actionHash = hash(L2, bridgeL2, 0, receiveTokensCalldata, bridgeL1, MAINNET)
+        //  crossChainCallHash = hash(L2, bridgeL2, 0, receiveTokensCalldata, bridgeL1, MAINNET)
 
         bytes memory phase1ReceiveCalldata = abi.encodeCall(
             Bridge.receiveTokens,
-            (address(token), MAINNET_ROLLUP_ID, address(executorL2), 10_000e18, "Test Token", "TT", 18, MAINNET_ROLLUP_ID)
+            (
+                address(token),
+                MAINNET_ROLLUP_ID,
+                address(executorL2),
+                10_000e18,
+                "Test Token",
+                "TT",
+                18,
+                MAINNET_ROLLUP_ID
+            )
         );
 
-        bytes32 phase1L1ActionHash = _actionHash(
+        bytes32 phase1L1ActionHash = _crossChainCallHash(
             L2_ROLLUP_ID, address(bridgeL2), 0, phase1ReceiveCalldata, address(bridgeL1), MAINNET_ROLLUP_ID
         );
 
@@ -197,14 +247,17 @@ contract IntegrationTestFlashLoan is Test {
 
         {
             StateDelta[] memory stateDeltas = new StateDelta[](1);
-            stateDeltas[0] = StateDelta({rollupId: L2_ROLLUP_ID, newState: s1, etherDelta: 0});
+            stateDeltas[0] = StateDelta({
+                rollupId: L2_ROLLUP_ID, currentState: keccak256("l2-initial-state"), newState: s1, etherDelta: 0
+            });
 
             ExecutionEntry[] memory entries = new ExecutionEntry[](1);
             entries[0].stateDeltas = stateDeltas;
-            entries[0].actionHash = phase1L1ActionHash;
+            entries[0].crossChainCallHash = phase1L1ActionHash;
+            entries[0].destinationRollupId = L2_ROLLUP_ID;
             // No calls, returnData = "", rollingHash = 0
 
-            rollups.postBatch(entries, _noStaticCalls(), 0, 0, 0, "", "proof");
+            _postBatchToL2(entries, 0);
         }
 
         // Bridge tokens from test contract
@@ -221,12 +274,11 @@ contract IntegrationTestFlashLoan is Test {
         //  Trigger: test contract calls proxyBridgeL1OnL2 with empty data
         //    -> managerL2.executeCrossChainCall(address(this), "")
         //    -> proxyInfo: (bridgeL1, MAINNET)
-        //    -> actionHash = hash(MAINNET, bridgeL1, 0, "", address(this), L2)
+        //    -> crossChainCallHash = hash(MAINNET, bridgeL1, 0, "", address(this), L2)
         //    -> entry consumed -> calls[0] routes receiveTokens to bridgeL2
 
-        bytes32 phase1L2TriggerHash = _actionHash(
-            MAINNET_ROLLUP_ID, address(bridgeL1), 0, "", address(this), L2_ROLLUP_ID
-        );
+        bytes32 phase1L2TriggerHash =
+            _crossChainCallHash(MAINNET_ROLLUP_ID, address(bridgeL1), 0, "", address(this), L2_ROLLUP_ID);
 
         CrossChainCall[] memory phase1L2Calls = new CrossChainCall[](1);
         phase1L2Calls[0] = CrossChainCall({
@@ -250,7 +302,7 @@ contract IntegrationTestFlashLoan is Test {
         {
             ExecutionEntry[] memory entries = new ExecutionEntry[](1);
             entries[0].stateDeltas = new StateDelta[](0);
-            entries[0].actionHash = phase1L2TriggerHash;
+            entries[0].crossChainCallHash = phase1L2TriggerHash;
             entries[0].calls = phase1L2Calls;
             entries[0].nestedActions = new NestedAction[](0);
             entries[0].callCount = 1;
@@ -258,7 +310,7 @@ contract IntegrationTestFlashLoan is Test {
             entries[0].rollingHash = phase1L2RollingHash;
 
             vm.prank(SYSTEM_ADDRESS);
-            managerL2.loadExecutionTable(entries, _noStaticCalls());
+            managerL2.loadExecutionTable(entries, _noLookupCalls());
         }
 
         // Trigger L2 delivery
@@ -316,14 +368,23 @@ contract IntegrationTestFlashLoan is Test {
         //   Wait: bridgeL1 itself calls bridgeProxy.call(...), so msg.sender at proxy = bridgeL1.
         //   executeCrossChainCall(sourceAddress=bridgeL1, callData=receiveTokensCalldata_bridge)
         //   proxyInfo: (bridgeL2, L2)
-        //   actionHash = hash(L2, bridgeL2, 0, calldata, bridgeL1, MAINNET)
+        //   crossChainCallHash = hash(L2, bridgeL2, 0, calldata, bridgeL1, MAINNET)
 
         bytes memory bridgeReceiveCalldata = abi.encodeCall(
             Bridge.receiveTokens,
-            (address(token), MAINNET_ROLLUP_ID, address(executorL2), 10_000e18, "Test Token", "TT", 18, MAINNET_ROLLUP_ID)
+            (
+                address(token),
+                MAINNET_ROLLUP_ID,
+                address(executorL2),
+                10_000e18,
+                "Test Token",
+                "TT",
+                18,
+                MAINNET_ROLLUP_ID
+            )
         );
 
-        bytes32 l1Entry0ActionHash = _actionHash(
+        bytes32 l1Entry0ActionHash = _crossChainCallHash(
             L2_ROLLUP_ID, address(bridgeL2), 0, bridgeReceiveCalldata, address(bridgeL1), MAINNET_ROLLUP_ID
         );
 
@@ -331,14 +392,14 @@ contract IntegrationTestFlashLoan is Test {
         //   msg.sender at proxy = executorL1 (executorL1 calls executorL2Proxy from onFlashLoan)
         //   executeCrossChainCall(sourceAddress=executorL1, callData=claimAndBridgeBackCalldata)
         //   proxyInfo: (executorL2, L2)
-        //   actionHash = hash(L2, executorL2, 0, calldata, executorL1, MAINNET)
+        //   crossChainCallHash = hash(L2, executorL2, 0, calldata, executorL1, MAINNET)
 
         bytes memory claimAndBridgeBackCalldata = abi.encodeCall(
             FlashLoanBridgeExecutor.claimAndBridgeBack,
             (wrappedTokenL2, address(nftL2), address(bridgeL2), MAINNET_ROLLUP_ID, address(executorL1))
         );
 
-        bytes32 l1Entry1ActionHash = _actionHash(
+        bytes32 l1Entry1ActionHash = _crossChainCallHash(
             L2_ROLLUP_ID, address(executorL2), 0, claimAndBridgeBackCalldata, address(executorL1), MAINNET_ROLLUP_ID
         );
 
@@ -347,14 +408,14 @@ contract IntegrationTestFlashLoan is Test {
         //   msg.sender at L2 proxy = bridgeL2
         //   managerL2.executeCrossChainCall(bridgeL2, retReceiveCalldata)
         //   proxyInfo: (bridgeL1, MAINNET)
-        //   actionHash = hash(MAINNET, bridgeL1, 0, retReceiveCalldata, bridgeL2, L2)
+        //   crossChainCallHash = hash(MAINNET, bridgeL1, 0, retReceiveCalldata, bridgeL2, L2)
 
         bytes memory retReceiveCalldata = abi.encodeCall(
             Bridge.receiveTokens,
             (address(token), MAINNET_ROLLUP_ID, address(executorL1), 10_000e18, "Test Token", "TT", 18, L2_ROLLUP_ID)
         );
 
-        bytes32 l2Entry0ActionHash = _actionHash(
+        bytes32 l2Entry0ActionHash = _crossChainCallHash(
             MAINNET_ROLLUP_ID, address(bridgeL1), 0, retReceiveCalldata, address(bridgeL2), L2_ROLLUP_ID
         );
 
@@ -413,11 +474,11 @@ contract IntegrationTestFlashLoan is Test {
         {
             ExecutionEntry[] memory l2Entries = new ExecutionEntry[](1);
             l2Entries[0].stateDeltas = new StateDelta[](0);
-            l2Entries[0].actionHash = l2Entry0ActionHash;
+            l2Entries[0].crossChainCallHash = l2Entry0ActionHash;
             // No calls, returnData = "", rollingHash = 0
 
             vm.prank(SYSTEM_ADDRESS);
-            managerL2.loadExecutionTable(l2Entries, _noStaticCalls());
+            managerL2.loadExecutionTable(l2Entries, _noLookupCalls());
         }
 
         // ── Post L1 batch ──
@@ -430,23 +491,25 @@ contract IntegrationTestFlashLoan is Test {
 
             // Entry #0: bridgeTokens proxy call (no calls, simple state delta)
             StateDelta[] memory deltas0 = new StateDelta[](1);
-            deltas0[0] = StateDelta({rollupId: L2_ROLLUP_ID, newState: s2, etherDelta: 0});
+            deltas0[0] = StateDelta({rollupId: L2_ROLLUP_ID, currentState: s1, newState: s2, etherDelta: 0});
             l1Entries[0].stateDeltas = deltas0;
-            l1Entries[0].actionHash = l1Entry0ActionHash;
+            l1Entries[0].crossChainCallHash = l1Entry0ActionHash;
+            l1Entries[0].destinationRollupId = L2_ROLLUP_ID;
             // calls[], nestedActions[], callCount, returnData, rollingHash all default (empty/zero)
 
             // Entry #1: executorL2Proxy call (with calls to claimAndBridgeBack + receiveTokens)
             StateDelta[] memory deltas1 = new StateDelta[](1);
-            deltas1[0] = StateDelta({rollupId: L2_ROLLUP_ID, newState: s3, etherDelta: 0});
+            deltas1[0] = StateDelta({rollupId: L2_ROLLUP_ID, currentState: s2, newState: s3, etherDelta: 0});
             l1Entries[1].stateDeltas = deltas1;
-            l1Entries[1].actionHash = l1Entry1ActionHash;
+            l1Entries[1].crossChainCallHash = l1Entry1ActionHash;
+            l1Entries[1].destinationRollupId = L2_ROLLUP_ID;
             l1Entries[1].calls = l1Entry1Calls;
             l1Entries[1].nestedActions = new NestedAction[](0);
             l1Entries[1].callCount = 2;
             l1Entries[1].returnData = "";
             l1Entries[1].rollingHash = l1Entry1RollingHash;
 
-            rollups.postBatch(l1Entries, _noStaticCalls(), 0, 0, 0, "", "proof");
+            _postBatchToL2(l1Entries, 0);
         }
 
         // ── Pre-flash-loan state ──
@@ -487,7 +550,7 @@ contract IntegrationTestFlashLoan is Test {
         assertEq(_getRollupState(L2_ROLLUP_ID), s3, "L2 state should be updated to s3");
 
         // Execution entries consumed
-        assertEq(rollups.executionIndex(), 2, "Both L1 entries should be consumed");
+        assertEq(rollups.queueCursor(L2_ROLLUP_ID), 2, "Both L1 entries should be consumed");
         assertEq(managerL2.executionIndex(), 1, "L2 entry should be consumed");
     }
 }

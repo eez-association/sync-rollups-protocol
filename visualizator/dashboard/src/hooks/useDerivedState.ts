@@ -55,9 +55,8 @@ function computeActiveForEvent(
     }
 
     case "ExecutionConsumed":
-    case "L2ExecutionPerformed":
     case "RollupCreated":
-    case "StateUpdated":
+    case "RollupContractChanged":
       if (managerAddr) activeNodes.push(managerAddr);
       break;
 
@@ -138,8 +137,8 @@ export function useDerivedState() {
 
       // Consume entries
       for (const info of mutations.l1Consumes) {
-        const truncated = truncateHex(info.actionHash);
-        const entry = replayL1.find((e) => e.actionHash === truncated);
+        const truncated = truncateHex(info.crossChainCallHash);
+        const entry = replayL1.find((e) => e.crossChainCallHash === truncated);
         if (entry) {
           entry.status = isCurrent ? "jc" : "consumed";
           if (info.actionDetail && Object.keys(info.actionDetail).length > 0) {
@@ -148,8 +147,8 @@ export function useDerivedState() {
         }
       }
       for (const info of mutations.l2Consumes) {
-        const truncated = truncateHex(info.actionHash);
-        const entry = replayL2.find((e) => e.actionHash === truncated);
+        const truncated = truncateHex(info.crossChainCallHash);
+        const entry = replayL2.find((e) => e.crossChainCallHash === truncated);
         if (entry) {
           entry.status = isCurrent ? "jc" : "consumed";
           if (info.actionDetail && Object.keys(info.actionDetail).length > 0) {

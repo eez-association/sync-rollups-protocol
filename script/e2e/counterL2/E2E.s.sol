@@ -4,16 +4,15 @@ pragma solidity ^0.8.28;
 import {Script, console} from "forge-std/Script.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
 import {
-    Action,
     StateDelta,
     CrossChainCall,
     NestedAction,
     ExecutionEntry,
-    StaticCall
+    LookupCall
 } from "../../../src/ICrossChainManager.sol";
 import {Counter, CounterAndProxy} from "../../../test/mocks/CounterContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
-import {actionHash, noStaticCalls, noNestedActions, noCalls} from "../shared/E2EHelpers.sol";
+import {Action, actionHash, noStaticCalls, noLookupCalls, noNestedActions, noCalls} from "../shared/E2EHelpers.sol";
 
 // ═══════════════════════════════════════════════════════════════════════
 //  CounterL2 scenario — L2-starting, simplest case (mirror of counter)
@@ -56,12 +55,12 @@ abstract contract CounterL2Actions {
         entries = new ExecutionEntry[](1);
         entries[0] = ExecutionEntry({
             stateDeltas: new StateDelta[](0),
-            actionHash: actionHash(_callAction(counterL1, counterAndProxyL2)),
+            crossChainCallHash: actionHash(_callAction(counterL1, counterAndProxyL2)),
+            destinationRollupId: L2_ROLLUP_ID,
             calls: noCalls(),
             nestedActions: noNestedActions(),
             callCount: 0,
             returnData: abi.encode(uint256(1)),
-            failed: false,
             rollingHash: bytes32(0)
         });
     }
@@ -127,10 +126,7 @@ contract ExecuteL2 is Script, CounterL2Actions {
         console.log("ExecuteL2: manager=%s counterL1=%s cap=%s", managerAddr, counterL1Addr, capAddr);
 
         vm.startBroadcast();
-        CrossChainManagerL2(managerAddr).loadExecutionTable(
-            _l2Entries(counterL1Addr, capAddr),
-            noStaticCalls()
-        );
+        CrossChainManagerL2(managerAddr).loadExecutionTable(_l2Entries(counterL1Addr, capAddr), noStaticCalls());
         console.log("ExecuteL2: loadExecutionTable done");
 
         CounterAndProxy(capAddr).incrementProxy();
@@ -178,7 +174,7 @@ contract ComputeExpected is ComputeExpectedBase, CounterL2Actions {
         ExecutionEntry[] memory l2 = _l2Entries(counterL1Addr, capAddr);
 
         bytes32 l2Hash = _entryHash(l2[0]);
-        bytes32 callHash = l2[0].actionHash;
+        bytes32 callHash = l2[0].crossChainCallHash;
 
         console.log("EXPECTED_L2_HASHES=[%s]", vm.toString(l2Hash));
         console.log("EXPECTED_L2_CALL_HASHES=[%s]", vm.toString(callHash));

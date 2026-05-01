@@ -1,11 +1,11 @@
 const crossChainCallTuple = {
   type: "tuple" as const,
   components: [
-    { name: "destination", type: "address" },
+    { name: "targetAddress", type: "address" },
     { name: "value", type: "uint256" },
     { name: "data", type: "bytes" },
     { name: "sourceAddress", type: "address" },
-    { name: "sourceRollup", type: "uint256" },
+    { name: "sourceRollupId", type: "uint256" },
     { name: "revertSpan", type: "uint256" },
   ],
 } as const;
@@ -13,7 +13,7 @@ const crossChainCallTuple = {
 const nestedActionTuple = {
   type: "tuple" as const,
   components: [
-    { name: "actionHash", type: "bytes32" },
+    { name: "crossChainCallHash", type: "bytes32" },
     { name: "callCount", type: "uint256" },
     { name: "returnData", type: "bytes" },
   ],
@@ -23,6 +23,7 @@ const stateDeltaTuple = {
   type: "tuple" as const,
   components: [
     { name: "rollupId", type: "uint256" },
+    { name: "currentState", type: "bytes32" },
     { name: "newState", type: "bytes32" },
     { name: "etherDelta", type: "int256" },
   ],
@@ -33,50 +34,64 @@ const executionEntryTuple = {
   type: "tuple[]" as const,
   components: [
     { name: "stateDeltas", type: "tuple[]", components: stateDeltaTuple.components },
-    { name: "actionHash", type: "bytes32" },
+    { name: "crossChainCallHash", type: "bytes32" },
+    { name: "destinationRollupId", type: "uint256" },
     { name: "calls", type: "tuple[]", components: crossChainCallTuple.components },
     { name: "nestedActions", type: "tuple[]", components: nestedActionTuple.components },
     { name: "callCount", type: "uint256" },
     { name: "returnData", type: "bytes" },
-    { name: "failed", type: "bool" },
     { name: "rollingHash", type: "bytes32" },
   ],
 } as const;
 
+const lookupCallTuple = {
+  type: "tuple" as const,
+  components: [
+    { name: "crossChainCallHash", type: "bytes32" },
+    { name: "destinationRollupId", type: "uint256" },
+    { name: "returnData", type: "bytes" },
+    { name: "failed", type: "bool" },
+    { name: "callNumber", type: "uint64" },
+    { name: "lastNestedActionConsumed", type: "uint64" },
+    { name: "calls", type: "tuple[]", components: crossChainCallTuple.components },
+    { name: "rollingHash", type: "bytes32" },
+  ],
+} as const;
+
+const proofSystemBatchTuple = {
+  type: "tuple[]" as const,
+  components: [
+    { name: "proofSystems", type: "address[]" },
+    { name: "rollupIds", type: "uint256[]" },
+    { name: "entries", type: "tuple[]", components: executionEntryTuple.components },
+    { name: "lookupCalls", type: "tuple[]", components: lookupCallTuple.components },
+    { name: "transientCount", type: "uint256" },
+    { name: "transientLookupCallCount", type: "uint256" },
+    { name: "blobIndices", type: "uint256[]" },
+    { name: "callData", type: "bytes" },
+    { name: "proof", type: "bytes[]" },
+    { name: "crossProofSystemInteractions", type: "bytes32" },
+  ],
+} as const;
+
 export const rollupsAbi = [
+  // ── Events ──
   {
     type: "event",
     name: "RollupCreated",
     inputs: [
       { name: "rollupId", type: "uint256", indexed: true },
-      { name: "owner", type: "address", indexed: true },
-      { name: "verificationKey", type: "bytes32", indexed: false },
+      { name: "rollupContract", type: "address", indexed: true },
       { name: "initialState", type: "bytes32", indexed: false },
     ],
   },
   {
     type: "event",
-    name: "StateUpdated",
+    name: "RollupContractChanged",
     inputs: [
       { name: "rollupId", type: "uint256", indexed: true },
-      { name: "newStateRoot", type: "bytes32", indexed: false },
-    ],
-  },
-  {
-    type: "event",
-    name: "VerificationKeyUpdated",
-    inputs: [
-      { name: "rollupId", type: "uint256", indexed: true },
-      { name: "newVerificationKey", type: "bytes32", indexed: false },
-    ],
-  },
-  {
-    type: "event",
-    name: "OwnershipTransferred",
-    inputs: [
-      { name: "rollupId", type: "uint256", indexed: true },
-      { name: "previousOwner", type: "address", indexed: true },
-      { name: "newOwner", type: "address", indexed: true },
+      { name: "previousContract", type: "address", indexed: true },
+      { name: "newContract", type: "address", indexed: true },
     ],
   },
   {
@@ -90,25 +105,18 @@ export const rollupsAbi = [
   },
   {
     type: "event",
-    name: "L2ExecutionPerformed",
-    inputs: [
-      { name: "rollupId", type: "uint256", indexed: true },
-      { name: "newState", type: "bytes32", indexed: false },
-    ],
-  },
-  {
-    type: "event",
     name: "ExecutionConsumed",
     inputs: [
-      { name: "actionHash", type: "bytes32", indexed: true },
-      { name: "entryIndex", type: "uint256", indexed: true },
+      { name: "crossChainCallHash", type: "bytes32", indexed: true },
+      { name: "rollupId", type: "uint256", indexed: true },
+      { name: "cursor", type: "uint256", indexed: true },
     ],
   },
   {
     type: "event",
     name: "CrossChainCallExecuted",
     inputs: [
-      { name: "actionHash", type: "bytes32", indexed: true },
+      { name: "crossChainCallHash", type: "bytes32", indexed: true },
       { name: "proxy", type: "address", indexed: true },
       { name: "sourceAddress", type: "address", indexed: false },
       { name: "callData", type: "bytes", indexed: false },
@@ -119,15 +127,23 @@ export const rollupsAbi = [
     type: "event",
     name: "L2TXExecuted",
     inputs: [
-      { name: "entryIndex", type: "uint256", indexed: true },
+      { name: "rollupId", type: "uint256", indexed: true },
+      { name: "cursor", type: "uint256", indexed: true },
     ],
   },
   {
     type: "event",
     name: "BatchPosted",
     inputs: [
-      { ...executionEntryTuple, indexed: false },
-      { name: "publicInputsHash", type: "bytes32", indexed: false },
+      { name: "subBatchCount", type: "uint256", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "ImmediateEntrySkipped",
+    inputs: [
+      { name: "transientIdx", type: "uint256", indexed: true },
+      { name: "revertData", type: "bytes", indexed: false },
     ],
   },
   {
@@ -146,7 +162,7 @@ export const rollupsAbi = [
     inputs: [
       { name: "entryIndex", type: "uint256", indexed: true },
       { name: "nestedNumber", type: "uint256", indexed: true },
-      { name: "actionHash", type: "bytes32", indexed: false },
+      { name: "crossChainCallHash", type: "bytes32", indexed: false },
       { name: "callCount", type: "uint256", indexed: false },
     ],
   },
@@ -167,6 +183,85 @@ export const rollupsAbi = [
       { name: "entryIndex", type: "uint256", indexed: true },
       { name: "startCallNumber", type: "uint256", indexed: false },
       { name: "span", type: "uint256", indexed: false },
+    ],
+  },
+
+  // ── Functions ──
+  {
+    type: "function",
+    name: "createRollup",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "rollupContract", type: "address" },
+      { name: "initialState", type: "bytes32" },
+    ],
+    outputs: [{ name: "rollupId", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "postBatch",
+    stateMutability: "nonpayable",
+    inputs: [
+      { ...proofSystemBatchTuple, name: "batches" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "executeCrossChainCall",
+    stateMutability: "payable",
+    inputs: [
+      { name: "sourceAddress", type: "address" },
+      { name: "callData", type: "bytes" },
+    ],
+    outputs: [{ name: "result", type: "bytes" }],
+  },
+  {
+    type: "function",
+    name: "executeL2TX",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "rollupId", type: "uint256" }],
+    outputs: [{ name: "result", type: "bytes" }],
+  },
+  {
+    type: "function",
+    name: "staticCallLookup",
+    stateMutability: "view",
+    inputs: [
+      { name: "sourceAddress", type: "address" },
+      { name: "callData", type: "bytes" },
+    ],
+    outputs: [{ name: "result", type: "bytes" }],
+  },
+  {
+    type: "function",
+    name: "createCrossChainProxy",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "originalAddress", type: "address" },
+      { name: "originalRollupId", type: "uint256" },
+    ],
+    outputs: [{ name: "proxy", type: "address" }],
+  },
+  {
+    type: "function",
+    name: "computeCrossChainProxyAddress",
+    stateMutability: "view",
+    inputs: [
+      { name: "originalAddress", type: "address" },
+      { name: "originalRollupId", type: "uint256" },
+    ],
+    outputs: [{ type: "address" }],
+  },
+  {
+    type: "function",
+    name: "rollups",
+    stateMutability: "view",
+    inputs: [{ name: "rollupId", type: "uint256" }],
+    outputs: [
+      { name: "rollupContract", type: "address" },
+      { name: "stateRoot", type: "bytes32" },
+      { name: "etherBalance", type: "uint256" },
     ],
   },
 ] as const;

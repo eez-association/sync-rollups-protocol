@@ -4,16 +4,22 @@ pragma solidity ^0.8.28;
 import {Script, console} from "forge-std/Script.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
 import {
-    Action,
     StateDelta,
     CrossChainCall,
     NestedAction,
     ExecutionEntry,
-    StaticCall
+    LookupCall
 } from "../../../src/ICrossChainManager.sol";
 import {Counter} from "../../../test/mocks/CounterContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
-import {actionHash, noStaticCalls, noNestedActions, noCalls, RollingHashBuilder} from "../shared/E2EHelpers.sol";
+import {
+    Action,
+    actionHash,
+    noStaticCalls,
+    noNestedActions,
+    noCalls,
+    RollingHashBuilder
+} from "../shared/E2EHelpers.sol";
 
 // ═══════════════════════════════════════════════════════════════════════
 //  RevertCounterL2 — mirror of revertCounter on the L2 side.
@@ -51,14 +57,16 @@ abstract contract RevertL2Actions {
 
     /// @dev Outer action hash: alice calls counterProxy (Counter@L1) on L2.
     function _outerActionHash(address counterL1, address alice) internal pure returns (bytes32) {
-        return actionHash(Action({
-            targetRollupId: MAINNET_ROLLUP_ID,
-            targetAddress: counterL1,
-            value: 0,
-            data: abi.encodeWithSelector(Counter.increment.selector),
-            sourceAddress: alice,
-            sourceRollupId: L2_ROLLUP_ID
-        }));
+        return actionHash(
+            Action({
+                targetRollupId: MAINNET_ROLLUP_ID,
+                targetAddress: counterL1,
+                value: 0,
+                data: abi.encodeWithSelector(Counter.increment.selector),
+                sourceAddress: alice,
+                sourceRollupId: L2_ROLLUP_ID
+            })
+        );
     }
 
     /// @dev Rolling hash: CALL_BEGIN(1) → CALL_END(1, true, abi.encode(1)).
@@ -90,12 +98,12 @@ abstract contract RevertL2Actions {
         entries = new ExecutionEntry[](1);
         entries[0] = ExecutionEntry({
             stateDeltas: new StateDelta[](0),
-            actionHash: _outerActionHash(counterL1, alice),
+            crossChainCallHash: _outerActionHash(counterL1, alice),
+            destinationRollupId: L2_ROLLUP_ID,
             calls: calls,
             nestedActions: noNestedActions(),
             callCount: 1,
             returnData: "",
-            failed: false,
             rollingHash: _expectedRollingHash()
         });
     }
@@ -156,10 +164,7 @@ contract ExecuteL2 is Script, RevertL2Actions {
         address alice = msg.sender;
         console.log("ExecuteL2: alice=%s counterProxy=%s", alice, counterProxy);
 
-        CrossChainManagerL2(managerAddr).loadExecutionTable(
-            _l2Entries(counterL2, counterL1, alice),
-            noStaticCalls()
-        );
+        CrossChainManagerL2(managerAddr).loadExecutionTable(_l2Entries(counterL2, counterL1, alice), noStaticCalls());
         console.log("ExecuteL2: loadExecutionTable done");
 
         // Trigger: alice calls counterProxy.increment() — consumes the entry.

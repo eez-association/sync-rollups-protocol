@@ -30,15 +30,15 @@ export type EntryStatus = "ja" | "jc" | "ok" | "consumed";
 
 export type TableEntry = {
   id: string;
-  actionHash: string;
+  crossChainCallHash: string;
   delta: string | null;
   status: EntryStatus;
   stateDeltas: string[];
   rollupIds: bigint[];
   actionDetail?: Record<string, string>;
-  /** Full untruncated action hash for decoding/verification */
-  fullActionHash?: string;
-  /** Entry metadata: callCount, nestedActions count, failed, rollingHash */
+  /** Full untruncated cross-chain call hash for decoding/verification */
+  fullCrossChainCallHash?: string;
+  /** Entry metadata: callCount, nestedActions count, rollingHash */
   entryMeta?: Record<string, string>;
 };
 
@@ -52,7 +52,7 @@ export type TransactionBundle = {
   id: string;
   direction: BundleDirection;
   title: string;
-  actionHashes: string[];
+  crossChainCallHashes: string[];
   events: string[]; // event IDs
   chains: Set<"l1" | "l2">;
   blockRange: { from: bigint; to: bigint };

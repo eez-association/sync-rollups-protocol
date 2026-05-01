@@ -2,19 +2,18 @@
 pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
-import {Rollups} from "../../../src/Rollups.sol";
+import {Rollups, ProofSystemBatch} from "../../../src/Rollups.sol";
 import {
-    Action,
     StateDelta,
     CrossChainCall,
     NestedAction,
     ExecutionEntry,
-    StaticCall
+    LookupCall
 } from "../../../src/ICrossChainManager.sol";
 import {Counter} from "../../../test/mocks/CounterContracts.sol";
 import {CallTwoDifferent} from "../../../test/mocks/MultiCallContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
-import {actionHash, noStaticCalls, noNestedActions, noCalls} from "../shared/E2EHelpers.sol";
+import {Action, actionHash, noLookupCalls, noNestedActions, noCalls} from "../shared/E2EHelpers.sol";
 
 // ═══════════════════════════════════════════════════════════════════════
 //  Multi-call scenario: two different targets
@@ -50,6 +49,7 @@ abstract contract TwoDiffActions {
         StateDelta[] memory deltas1 = new StateDelta[](1);
         deltas1[0] = StateDelta({
             rollupId: L2_ROLLUP_ID,
+            currentState: keccak256("l2-initial-state"),
             newState: keccak256("l2-state-after-two-diff-1"),
             etherDelta: 0
         });
@@ -57,6 +57,7 @@ abstract contract TwoDiffActions {
         StateDelta[] memory deltas2 = new StateDelta[](1);
         deltas2[0] = StateDelta({
             rollupId: L2_ROLLUP_ID,
+            currentState: keccak256("l2-state-after-two-diff-1"),
             newState: keccak256("l2-state-after-two-diff-2"),
             etherDelta: 0
         });
@@ -64,22 +65,22 @@ abstract contract TwoDiffActions {
         entries = new ExecutionEntry[](2);
         entries[0] = ExecutionEntry({
             stateDeltas: deltas1,
-            actionHash: hA,
+            crossChainCallHash: hA,
+            destinationRollupId: L2_ROLLUP_ID,
             calls: noCalls(),
             nestedActions: noNestedActions(),
             callCount: 0,
             returnData: abi.encode(uint256(1)),
-            failed: false,
             rollingHash: bytes32(0)
         });
         entries[1] = ExecutionEntry({
             stateDeltas: deltas2,
-            actionHash: hB,
+            crossChainCallHash: hB,
+            destinationRollupId: L2_ROLLUP_ID,
             calls: noCalls(),
             nestedActions: noNestedActions(),
             callCount: 0,
             returnData: abi.encode(uint256(1)),
-            failed: false,
             rollingHash: bytes32(0)
         });
     }
@@ -106,12 +107,20 @@ contract Deploy is Script {
         Rollups rollups = Rollups(rollupsAddr);
 
         address proxyA;
-        try rollups.createCrossChainProxy(counterA, L2_ROLLUP_ID) returns (address p) { proxyA = p; }
-        catch { proxyA = rollups.computeCrossChainProxyAddress(counterA, L2_ROLLUP_ID); }
+        try rollups.createCrossChainProxy(counterA, L2_ROLLUP_ID) returns (address p) {
+            proxyA = p;
+        }
+            catch {
+            proxyA = rollups.computeCrossChainProxyAddress(counterA, L2_ROLLUP_ID);
+        }
 
         address proxyB;
-        try rollups.createCrossChainProxy(counterB, L2_ROLLUP_ID) returns (address p) { proxyB = p; }
-        catch { proxyB = rollups.computeCrossChainProxyAddress(counterB, L2_ROLLUP_ID); }
+        try rollups.createCrossChainProxy(counterB, L2_ROLLUP_ID) returns (address p) {
+            proxyB = p;
+        }
+            catch {
+            proxyB = rollups.computeCrossChainProxyAddress(counterB, L2_ROLLUP_ID);
+        }
 
         CallTwoDifferent caller = new CallTwoDifferent();
         console.log("PROXY_A=%s", proxyA);
@@ -124,13 +133,36 @@ contract Deploy is Script {
 contract Batcher {
     function execute(
         Rollups rollups,
+        address proofSystem,
         ExecutionEntry[] calldata entries,
-        StaticCall[] calldata statics,
+        LookupCall[] calldata lookupCalls,
         CallTwoDifferent caller,
         address pA,
         address pB
-    ) external returns (uint256 a, uint256 b) {
-        rollups.postBatch(entries, statics, 0, 0, 0, "", "proof");
+    )
+        external
+        returns (uint256 a, uint256 b)
+    {
+        address[] memory psList = new address[](1);
+        psList[0] = proofSystem;
+        uint256[] memory rids = new uint256[](1);
+        rids[0] = L2_ROLLUP_ID;
+        bytes[] memory proofs = new bytes[](1);
+        proofs[0] = "proof";
+        ProofSystemBatch[] memory batches = new ProofSystemBatch[](1);
+        batches[0] = ProofSystemBatch({
+            proofSystems: psList,
+            rollupIds: rids,
+            entries: entries,
+            lookupCalls: lookupCalls,
+            transientCount: 0,
+            transientLookupCallCount: 0,
+            blobIndices: new uint256[](0),
+            callData: "",
+            proof: proofs,
+            crossProofSystemInteractions: bytes32(0)
+        });
+        rollups.postBatch(batches);
         (a, b) = caller.callBothCounters(pA, pB);
     }
 }
@@ -138,6 +170,7 @@ contract Batcher {
 contract Execute is Script, TwoDiffActions {
     function run() external {
         address rollupsAddr = vm.envAddress("ROLLUPS");
+        address proofSystemAddr = vm.envAddress("PROOF_SYSTEM");
         address counterA = vm.envAddress("COUNTER_A_L2");
         address counterB = vm.envAddress("COUNTER_B_L2");
         address proxyA = vm.envAddress("PROXY_A");
@@ -148,8 +181,9 @@ contract Execute is Script, TwoDiffActions {
         Batcher batcher = new Batcher();
         (uint256 a, uint256 b) = batcher.execute(
             Rollups(rollupsAddr),
+            proofSystemAddr,
             _l1Entries(counterA, counterB, callerAddr),
-            noStaticCalls(),
+            noLookupCalls(),
             CallTwoDifferent(callerAddr),
             proxyA,
             proxyB

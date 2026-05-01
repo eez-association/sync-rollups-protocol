@@ -10,16 +10,16 @@ const KNOWN_SELECTORS: Record<string, string> = {
 };
 
 /**
- * Fields that make up the action hash in the new model.
- * actionHash = keccak256(abi.encode(rollupId, destination, value, data, sourceAddress, sourceRollup))
+ * Fields that make up the cross-chain call hash in the new model.
+ * crossChainCallHash = keccak256(abi.encode(targetRollupId, targetAddress, value, data, sourceAddress, sourceRollupId))
  */
 export type ActionInputFields = {
-  rollupId: bigint;
-  destination: `0x${string}`;
+  targetRollupId: bigint;
+  targetAddress: `0x${string}`;
   value: bigint;
   data: `0x${string}`;
   sourceAddress: `0x${string}`;
-  sourceRollup: bigint;
+  sourceRollupId: bigint;
 };
 
 export type DecodedActionHash = {
@@ -30,31 +30,31 @@ export type DecodedActionHash = {
 };
 
 const ACTION_INPUT_TYPE = [
-  { type: "uint256", name: "rollupId" },
-  { type: "address", name: "destination" },
+  { type: "uint256", name: "targetRollupId" },
+  { type: "address", name: "targetAddress" },
   { type: "uint256", name: "value" },
   { type: "bytes", name: "data" },
   { type: "address", name: "sourceAddress" },
-  { type: "uint256", name: "sourceRollup" },
+  { type: "uint256", name: "sourceRollupId" },
 ] as const;
 
 /**
- * Compute actionHash = keccak256(abi.encode(rollupId, destination, value, data, sourceAddress, sourceRollup))
+ * Compute crossChainCallHash = keccak256(abi.encode(targetRollupId, targetAddress, value, data, sourceAddress, sourceRollupId))
  */
 export function computeActionHash(fields: ActionInputFields): `0x${string}` {
   const encoded = encodeAbiParameters(ACTION_INPUT_TYPE, [
-    fields.rollupId,
-    fields.destination,
+    fields.targetRollupId,
+    fields.targetAddress,
     fields.value,
     fields.data,
     fields.sourceAddress,
-    fields.sourceRollup,
+    fields.sourceRollupId,
   ]);
   return keccak256(encoded);
 }
 
 /**
- * Decode and verify an action hash given the input fields and the stored hash.
+ * Decode and verify a cross-chain call hash given the input fields and the stored hash.
  */
 export function decodeActionHash(
   storedHash: string,
@@ -86,12 +86,12 @@ export function formatActionInputFields(fields: ActionInputFields): Record<strin
   const zeroAddr = "0x0000000000000000000000000000000000000000";
 
   return {
-    rollupId: fields.rollupId.toString(),
-    destination: fields.destination === zeroAddr ? "address(0)" : truncateAddress(fields.destination),
+    targetRollupId: fields.targetRollupId.toString(),
+    targetAddress: fields.targetAddress === zeroAddr ? "address(0)" : truncateAddress(fields.targetAddress),
     value: fields.value.toString(),
     data: dataDisplay,
     sourceAddress: fields.sourceAddress === zeroAddr ? "address(0)" : truncateAddress(fields.sourceAddress),
-    sourceRollup: fields.sourceRollup.toString(),
+    sourceRollupId: fields.sourceRollupId.toString(),
   };
 }
 
@@ -100,10 +100,10 @@ export function formatActionInputFields(fields: ActionInputFields): Record<strin
  * "CALL{L2, B, inc(), src=A}"
  */
 export function actionSummary(fields: ActionInputFields): string {
-  const rollup = fields.rollupId === 0n ? "MAIN" : `L2(${fields.rollupId})`;
+  const rollup = fields.targetRollupId === 0n ? "MAIN" : `L2(${fields.targetRollupId})`;
   const zeroAddr = "0x0000000000000000000000000000000000000000";
 
-  const dest = fields.destination === zeroAddr ? "0x0" : truncateAddress(fields.destination);
+  const dest = fields.targetAddress === zeroAddr ? "0x0" : truncateAddress(fields.targetAddress);
   const selector = fields.data.length >= 10 ? fields.data.slice(0, 10) : fields.data;
   const fnName = KNOWN_SELECTORS[selector.toLowerCase()] ?? selector;
   const src = fields.sourceAddress === zeroAddr ? "0x0" : truncateAddress(fields.sourceAddress);

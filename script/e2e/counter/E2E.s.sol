@@ -2,18 +2,17 @@
 pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
-import {Rollups} from "../../../src/Rollups.sol";
+import {Rollups, ProofSystemBatch} from "../../../src/Rollups.sol";
 import {
-    Action,
     StateDelta,
     CrossChainCall,
     NestedAction,
     ExecutionEntry,
-    StaticCall
+    LookupCall
 } from "../../../src/ICrossChainManager.sol";
 import {Counter, CounterAndProxy} from "../../../test/mocks/CounterContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
-import {actionHash, noStaticCalls, noNestedActions, noCalls} from "../shared/E2EHelpers.sol";
+import {crossChainCallHash, noLookupCalls, noNestedActions, noCalls} from "../shared/E2EHelpers.sol";
 
 // ═══════════════════════════════════════════════════════════════════════
 //  Counter scenario — L1-starting, simplest case
@@ -40,15 +39,8 @@ abstract contract CounterActions {
         return abi.encodeWithSelector(Counter.increment.selector);
     }
 
-    function _callAction(address counterL2, address counterAndProxy) internal pure returns (Action memory) {
-        return Action({
-            targetRollupId: L2_ROLLUP_ID,
-            targetAddress: counterL2,
-            value: 0,
-            data: _incrementCallData(),
-            sourceAddress: counterAndProxy,
-            sourceRollupId: MAINNET_ROLLUP_ID
-        });
+    function _callHash(address counterL2, address counterAndProxy) internal pure returns (bytes32) {
+        return crossChainCallHash(L2_ROLLUP_ID, counterL2, 0, _incrementCallData(), counterAndProxy, MAINNET_ROLLUP_ID);
     }
 
     /// @dev Single L1 entry — matches Scenario 1 of IntegrationTest.t.sol.
@@ -60,6 +52,7 @@ abstract contract CounterActions {
         StateDelta[] memory deltas = new StateDelta[](1);
         deltas[0] = StateDelta({
             rollupId: L2_ROLLUP_ID,
+            currentState: keccak256("l2-initial-state"),
             newState: keccak256("l2-state-after-counter"),
             etherDelta: 0
         });
@@ -67,12 +60,12 @@ abstract contract CounterActions {
         entries = new ExecutionEntry[](1);
         entries[0] = ExecutionEntry({
             stateDeltas: deltas,
-            actionHash: actionHash(_callAction(counterL2, counterAndProxy)),
+            crossChainCallHash: _callHash(counterL2, counterAndProxy),
+            destinationRollupId: L2_ROLLUP_ID,
             calls: noCalls(),
             nestedActions: noNestedActions(),
             callCount: 0,
             returnData: abi.encode(uint256(1)),
-            failed: false,
             rollingHash: bytes32(0)
         });
     }
@@ -80,10 +73,35 @@ abstract contract CounterActions {
 
 /// @notice Batcher: postBatch + incrementProxy in one tx (local mode only).
 contract Batcher {
-    function execute(Rollups rollups, ExecutionEntry[] calldata entries, StaticCall[] calldata statics, CounterAndProxy cap)
+    function execute(
+        Rollups rollups,
+        address proofSystem,
+        ExecutionEntry[] calldata entries,
+        LookupCall[] calldata lookupCalls,
+        CounterAndProxy cap
+    )
         external
     {
-        rollups.postBatch(entries, statics, 0, 0, 0, "", "proof");
+        address[] memory psList = new address[](1);
+        psList[0] = proofSystem;
+        uint256[] memory rids = new uint256[](1);
+        rids[0] = L2_ROLLUP_ID;
+        bytes[] memory proofs = new bytes[](1);
+        proofs[0] = "proof";
+        ProofSystemBatch[] memory batches = new ProofSystemBatch[](1);
+        batches[0] = ProofSystemBatch({
+            proofSystems: psList,
+            rollupIds: rids,
+            entries: entries,
+            lookupCalls: lookupCalls,
+            transientCount: 0,
+            transientLookupCallCount: 0,
+            blobIndices: new uint256[](0),
+            callData: "",
+            proof: proofs,
+            crossProofSystemInteractions: bytes32(0)
+        });
+        rollups.postBatch(batches);
         cap.incrementProxy();
     }
 }
@@ -138,6 +156,7 @@ contract Deploy is Script {
 contract Execute is Script, CounterActions {
     function run() external {
         address rollupsAddr = vm.envAddress("ROLLUPS");
+        address proofSystemAddr = vm.envAddress("PROOF_SYSTEM");
         address counterL2Addr = vm.envAddress("COUNTER_L2");
         address capAddr = vm.envAddress("COUNTER_AND_PROXY");
 
@@ -145,8 +164,9 @@ contract Execute is Script, CounterActions {
         Batcher batcher = new Batcher();
         batcher.execute(
             Rollups(rollupsAddr),
+            proofSystemAddr,
             _l1Entries(counterL2Addr, capAddr),
-            noStaticCalls(),
+            noLookupCalls(),
             CounterAndProxy(capAddr)
         );
 
@@ -192,7 +212,7 @@ contract ComputeExpected is ComputeExpectedBase, CounterActions {
         ExecutionEntry[] memory l1 = _l1Entries(counterL2Addr, capAddr);
 
         bytes32 l1Hash = _entryHash(l1[0]);
-        bytes32 callHash = l1[0].actionHash;
+        bytes32 callHash = l1[0].crossChainCallHash;
 
         console.log("EXPECTED_L1_HASHES=[%s]", vm.toString(l1Hash));
         console.log("EXPECTED_L1_CALL_HASHES=[%s]", vm.toString(callHash));

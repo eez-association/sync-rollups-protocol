@@ -69,7 +69,9 @@ contract FlashLoanBridgeExecutor is IFlashLoanReceiver {
         address _bridge,
         uint256 destRollupId,
         address returnTo
-    ) external {
+    )
+        external
+    {
         FlashLoanersNFT(nftContract).claim();
         uint256 balance = IERC20(wrappedToken).balanceOf(address(this));
         Bridge(_bridge).bridgeTokens(wrappedToken, balance, destRollupId, returnTo);

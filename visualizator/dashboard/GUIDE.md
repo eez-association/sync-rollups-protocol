@@ -33,7 +33,7 @@ Open http://localhost:5173 and click **Connect**. You should see 11 events strea
 ### Execution Tables
 - **L1 Table**: 1 entry added at step 3 (BatchPosted), consumed at step 7 (ExecutionConsumed)
 - **L2 Table**: 1 entry added at step 8 (ExecutionTableLoaded), consumed at step 11 (ExecutionConsumed)
-- Entries expand to show full action details (actionType, destination, data, scope, etc.)
+- Entries expand to show full call details (targetAddress, data, sourceAddress, sourceRollupId, etc.)
 - Entry states: cyan glow = just added, red border + strikethrough = just consumed, dimmed = old consumed
 
 ### Contract State
@@ -116,17 +116,17 @@ Step  Chain  Event                           Table Change
   3   L1    BatchPosted                      +L1 entry      (1 deferred entry)
   4   L2    CrossChainProxyCreated           -              (C' proxy deployed)
   5   L1    CrossChainCallExecuted           -              (A calls B')
-  6   L1    L2ExecutionPerformed             -              (L2 state updated)
+  6   L1    EntryExecuted                    -              (entry rolling-hash verified)
   7   L1    ExecutionConsumed                -L1 entry      (CALL matched)
   8   L2    ExecutionTableLoaded             +L2 entry      (SYSTEM loads table)
-  9   L2    IncomingCrossChainCallExecuted   -              (B.increment() runs)
+  9   L2    CrossChainCallExecuted           -              (B.increment() runs)
  10   L2    CrossChainProxyCreated           -              (A' proxy auto-created)
  11   L2    ExecutionConsumed                -L2 entry      (RESULT matched)
 ```
 
 ## Cross-Chain Correlation
 
-When the same `actionHash` appears in `ExecutionConsumed` events on both L1 and L2, these events represent the same cross-chain operation. The dashboard shows a correlation indicator on matched events.
+When the same `crossChainCallHash` appears in `ExecutionConsumed` events on both L1 and L2, these events represent the same cross-chain operation. The dashboard shows a correlation indicator on matched events.
 
 ## Build & Development
 

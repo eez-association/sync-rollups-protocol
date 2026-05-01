@@ -7,7 +7,7 @@ import { truncateHex } from "./actionFormatter";
  * Returns { adds, consumes } for the appropriate chain.
  */
 export type ConsumeInfo = {
-  actionHash: string;
+  crossChainCallHash: string;
   actionDetail: Record<string, string>;
 };
 
@@ -28,29 +28,8 @@ export function processEventForTables(
 
   switch (event.eventName) {
     case "BatchPosted": {
-      const entries = event.args.entries as Array<{
-        stateDeltas: Array<{
-          rollupId: bigint;
-          newState: string;
-          etherDelta: bigint;
-        }>;
-        actionHash: string;
-        calls: unknown[];
-        nestedActions: unknown[];
-        callCount: bigint;
-        returnData: string;
-        failed: boolean;
-        rollingHash: string;
-      }>;
-      if (!entries) break;
-      for (const entry of entries) {
-        const isImmediate =
-          entry.actionHash ===
-          "0x0000000000000000000000000000000000000000000000000000000000000000";
-        if (isImmediate) continue; // Immediate entries don't go to table
-        const te = entryToTableEntry(entry, event.id);
-        result.l1Adds.push(te);
-      }
+      // TODO(user-decision): post-refactor BatchPosted no longer carries entries;
+      // decode from tx input or rebuild table from EntryExecuted / ExecutionConsumed events.
       break;
     }
 
@@ -58,15 +37,16 @@ export function processEventForTables(
       const entries = event.args.entries as Array<{
         stateDeltas: Array<{
           rollupId: bigint;
+          currentState: string;
           newState: string;
           etherDelta: bigint;
         }>;
-        actionHash: string;
+        crossChainCallHash: string;
+        destinationRollupId: bigint;
         calls: unknown[];
         nestedActions: unknown[];
         callCount: bigint;
         returnData: string;
-        failed: boolean;
         rollingHash: string;
       }>;
       if (!entries) break;
@@ -78,12 +58,13 @@ export function processEventForTables(
     }
 
     case "ExecutionConsumed": {
-      const actionHash = event.args.actionHash as string;
+      const crossChainCallHash = event.args.crossChainCallHash as string;
       const actionDetail: Record<string, string> = {
-        actionHash,
-        entryIndex: String(event.args.entryIndex ?? ""),
+        crossChainCallHash,
+        rollupId: String(event.args.rollupId ?? ""),
+        cursor: String(event.args.cursor ?? ""),
       };
-      const info: ConsumeInfo = { actionHash, actionDetail };
+      const info: ConsumeInfo = { crossChainCallHash, actionDetail };
       if (event.chain === "l1") {
         result.l1Consumes.push(info);
       } else {
@@ -100,15 +81,16 @@ function entryToTableEntry(
   entry: {
     stateDeltas: Array<{
       rollupId: bigint;
+      currentState: string;
       newState: string;
       etherDelta: bigint;
     }>;
-    actionHash: string;
+    crossChainCallHash: string;
+    destinationRollupId: bigint;
     calls: unknown[];
     nestedActions: unknown[];
     callCount: bigint;
     returnData: string;
-    failed: boolean;
     rollingHash: string;
   },
   eventId: string,
@@ -122,7 +104,7 @@ function entryToTableEntry(
     callCount: String(entry.callCount ?? 0),
     callsLen: String(entry.calls?.length ?? 0),
     nestedLen: String(entry.nestedActions?.length ?? 0),
-    failed: entry.failed ? "true" : "false",
+    destinationRollupId: String(entry.destinationRollupId ?? 0),
     rollingHash: truncateHex(entry.rollingHash ?? "0x0"),
     returnData: entry.returnData && entry.returnData !== "0x"
       ? truncateHex(entry.returnData, 12)
@@ -130,14 +112,14 @@ function entryToTableEntry(
   };
 
   return {
-    id: `${eventId}-${entry.actionHash}`,
-    actionHash: truncateHex(entry.actionHash),
+    id: `${eventId}-${entry.crossChainCallHash}`,
+    crossChainCallHash: truncateHex(entry.crossChainCallHash),
     delta: deltas.length > 0 ? deltas.join("; ") : null,
     status: "ja",
     stateDeltas: deltas,
     rollupIds,
-    actionDetail: { actionHash: entry.actionHash },
-    fullActionHash: entry.actionHash,
+    actionDetail: { crossChainCallHash: entry.crossChainCallHash },
+    fullCrossChainCallHash: entry.crossChainCallHash,
     entryMeta,
   };
 }
@@ -156,53 +138,23 @@ export function extractRollupState(
       const rid = String(event.args.rollupId);
       updates.push(
         { rollupId: rid, key: `Rollup ${rid} state`, value: truncateHex(event.args.initialState as string) },
-        { rollupId: rid, key: `Rollup ${rid} owner`, value: (event.args.owner as string) },
-        { rollupId: rid, key: `Rollup ${rid} vk`, value: truncateHex(event.args.verificationKey as string) },
+        { rollupId: rid, key: `Rollup ${rid} contract`, value: (event.args.rollupContract as string) },
       );
       break;
     }
-    case "StateUpdated": {
+    case "RollupContractChanged": {
       const rid = String(event.args.rollupId);
       updates.push({
         rollupId: rid,
-        key: `Rollup ${rid} state`,
-        value: truncateHex(event.args.newStateRoot as string),
-      });
-      break;
-    }
-    case "L2ExecutionPerformed": {
-      const rid = String(event.args.rollupId);
-      updates.push({
-        rollupId: rid,
-        key: `Rollup ${rid} state`,
-        value: truncateHex(event.args.newState as string),
+        key: `Rollup ${rid} contract`,
+        value: (event.args.newContract as string),
       });
       break;
     }
     case "BatchPosted": {
-      const entries = event.args.entries as Array<{
-        stateDeltas: Array<{
-          rollupId: bigint;
-          newState: string;
-          etherDelta: bigint;
-        }>;
-        actionHash: string;
-      }>;
-      if (!entries) break;
-      for (const entry of entries) {
-        const isImmediate =
-          entry.actionHash ===
-          "0x0000000000000000000000000000000000000000000000000000000000000000";
-        if (!isImmediate) continue;
-        for (const sd of entry.stateDeltas) {
-          const rid = String(sd.rollupId);
-          updates.push({
-            rollupId: rid,
-            key: `Rollup ${rid} state`,
-            value: truncateHex(sd.newState),
-          });
-        }
-      }
+      // TODO(user-decision): post-refactor BatchPosted no longer carries entries;
+      // state-delta extraction must come from another source (tx input decode or
+      // an alternative event stream).
       break;
     }
   }

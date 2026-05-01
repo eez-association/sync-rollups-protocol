@@ -131,8 +131,8 @@ export function buildBundleArchitecture(
   // Reorder events: setup (BatchPosted, ExecutionTableLoaded) first, then actions
   const EVENT_PRIORITY: Record<string, number> = {
     BatchPosted: 0, ExecutionTableLoaded: 1, CrossChainProxyCreated: 2,
-    L2ExecutionPerformed: 3, ExecutionConsumed: 4, CrossChainCallExecuted: 5,
-    L2TXExecuted: 5, CallResult: 6, NestedActionConsumed: 6,
+    RollupContractChanged: 3, ExecutionConsumed: 4, CrossChainCallExecuted: 5,
+    L2TXExecuted: 5, ImmediateEntrySkipped: 5, CallResult: 6, NestedActionConsumed: 6,
     EntryExecuted: 7, RevertSpanExecuted: 6,
   };
   const orderedEvents = [...bundleEvents].sort((a, b) => {
@@ -266,7 +266,8 @@ export function buildBundleArchitecture(
         const ch = event.chain;
         const mgrId = ch === "l1" ? l1MgrId : l2MgrId;
         nodes.push(mgrId);
-        desc = `Entry consumed on ${ch.toUpperCase()} (index ${String(event.args.entryIndex ?? "")})`;
+        const cursor = event.args.cursor ?? event.args.entryIndex ?? "";
+        desc = `Entry consumed on ${ch.toUpperCase()} (cursor ${String(cursor)})`;
         break;
       }
       case "CrossChainProxyCreated": {
@@ -277,11 +278,6 @@ export function buildBundleArchitecture(
         edges.push(`${proxyId}->${mgrId}`);
         const proxyLabel = addrSet.get(proxyId)?.label ?? "proxy";
         desc = `Proxy created: ${proxyLabel}`;
-        break;
-      }
-      case "L2ExecutionPerformed": {
-        nodes.push(l1MgrId);
-        desc = `State updated for rollup ${String(event.args.rollupId)}`;
         break;
       }
       case "CallResult": {
@@ -422,7 +418,7 @@ function computeTableStates(events: EventRecord[]): StepTableState[] {
 
     // Mark consumed entries
     for (const info of result.l1Consumes) {
-      const entry = l1Entries.find(e => e.fullActionHash === info.actionHash && e.stepStatus !== "consumed");
+      const entry = l1Entries.find(e => e.fullCrossChainCallHash === info.crossChainCallHash && e.stepStatus !== "consumed");
       if (entry) {
         entry.stepStatus = "jc";
         if (info.actionDetail && Object.keys(info.actionDetail).length > 0) {
@@ -431,7 +427,7 @@ function computeTableStates(events: EventRecord[]): StepTableState[] {
       }
     }
     for (const info of result.l2Consumes) {
-      const entry = l2Entries.find(e => e.fullActionHash === info.actionHash && e.stepStatus !== "consumed");
+      const entry = l2Entries.find(e => e.fullCrossChainCallHash === info.crossChainCallHash && e.stepStatus !== "consumed");
       if (entry) {
         entry.stepStatus = "jc";
         if (info.actionDetail && Object.keys(info.actionDetail).length > 0) {
@@ -468,41 +464,24 @@ function computeContractStates(events: EventRecord[]): StepContractState[] {
       case "RollupCreated": {
         const rid = String(event.args.rollupId);
         const k1 = `Rollup ${rid} state`;
-        const k2 = `Rollup ${rid} owner`;
+        const k2 = `Rollup ${rid} contract`;
         stateMap.set(k1, truncateHash(event.args.initialState as string));
-        stateMap.set(k2, truncateAddress(event.args.owner as string));
+        stateMap.set(k2, truncateAddress(event.args.rollupContract as string));
         changedKeys.add(k1);
         changedKeys.add(k2);
         break;
       }
+      case "RollupContractChanged": {
+        const rid = String(event.args.rollupId);
+        const k = `Rollup ${rid} contract`;
+        stateMap.set(k, truncateAddress(event.args.newContract as string));
+        changedKeys.add(k);
+        break;
+      }
       case "BatchPosted": {
-        const entries = event.args.entries as Array<{
-          stateDeltas: Array<{ rollupId: bigint; newState: string }>;
-          actionHash: string;
-        }>;
-        if (entries) {
-          for (const entry of entries) {
-            for (const sd of entry.stateDeltas) {
-              const k = `Rollup ${sd.rollupId} state`;
-              stateMap.set(k, truncateHash(sd.newState));
-              changedKeys.add(k);
-            }
-          }
-        }
-        break;
-      }
-      case "L2ExecutionPerformed": {
-        const rid = String(event.args.rollupId);
-        const k = `Rollup ${rid} state`;
-        stateMap.set(k, truncateHash(event.args.newState as string));
-        changedKeys.add(k);
-        break;
-      }
-      case "StateUpdated": {
-        const rid = String(event.args.rollupId);
-        const k = `Rollup ${rid} state`;
-        stateMap.set(k, truncateHash(event.args.newStateRoot as string));
-        changedKeys.add(k);
+        // TODO(user-decision): post-refactor BatchPosted no longer carries entries;
+        // state-delta visibility for the batch must be reconstructed from tx input or
+        // an alternative event stream.
         break;
       }
     }

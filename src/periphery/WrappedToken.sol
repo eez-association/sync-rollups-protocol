@@ -18,12 +18,10 @@ contract WrappedToken is ERC20, ERC20Permit {
         _;
     }
 
-    constructor(
-        string memory name_,
-        string memory symbol_,
-        uint8 decimals_,
-        address bridge_
-    ) ERC20(name_, symbol_) ERC20Permit(name_) {
+    constructor(string memory name_, string memory symbol_, uint8 decimals_, address bridge_)
+        ERC20(name_, symbol_)
+        ERC20Permit(name_)
+    {
         BRIDGE = bridge_;
         _tokenDecimals = decimals_;
     }

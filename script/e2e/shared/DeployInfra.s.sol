@@ -3,33 +3,55 @@ pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 import {Rollups} from "../../../src/Rollups.sol";
+import {Rollup} from "../../../src/rollupContract/Rollup.sol";
+import {IProofSystem} from "../../../src/IProofSystem.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
-import {IZKVerifier} from "../../../src/IZKVerifier.sol";
 
-/// @notice Mock verifier that accepts all proofs.
-contract AcceptAllVerifier is IZKVerifier {
+/// @notice Mock proof system that accepts all proofs. Used in e2e flows where the test
+///         orchestrator drives execution and we don't want real proof verification.
+contract AcceptAllProofSystem is IProofSystem {
     function verify(bytes calldata, bytes32) external pure override returns (bool) {
         return true;
     }
 }
 
 /// @title DeployRollupsL1
-/// @notice Deploys AcceptAllVerifier + Rollups + creates L2 rollup (id=1).
-/// Outputs: ROLLUPS, VERIFIER, L2_ROLLUP_ID
+/// @notice Deploys AcceptAllProofSystem + Rollups + creates L2 rollup (id=1).
+/// @dev The first registered rollup gets id 0 = MAINNET_ROLLUP_ID, which is unpostable
+///      because the strict-increasing rollupIds check in postBatch rejects 0. So we burn
+///      id 0 with a throwaway rollup, then register the L2 rollup at id 1.
+/// Outputs: ROLLUPS, PROOF_SYSTEM, L2_MANAGER, L2_ROLLUP_ID
 contract DeployRollupsL1 is Script {
     bytes32 constant DEFAULT_VK = keccak256("verificationKey");
 
     function run() external {
         vm.startBroadcast();
 
-        AcceptAllVerifier verifier = new AcceptAllVerifier();
-        Rollups rollups = new Rollups(address(verifier), 1);
+        AcceptAllProofSystem ps = new AcceptAllProofSystem();
+        Rollups rollups = new Rollups();
 
-        // Create L2 rollup with id=1
-        rollups.createRollup(keccak256("l2-initial-state"), DEFAULT_VK, msg.sender);
+        // Burn rollupId 0 (MAINNET) so user rollups start at id 1.
+        {
+            address[] memory psList = new address[](1);
+            psList[0] = address(ps);
+            bytes32[] memory vks = new bytes32[](1);
+            vks[0] = DEFAULT_VK;
+            Rollup burnRollup = new Rollup(address(rollups), msg.sender, 1, psList, vks);
+            rollups.createRollup(address(burnRollup), bytes32(0));
+        }
 
-        console.log("VERIFIER=%s", address(verifier));
+        // Create L2 manager + register at id 1.
+        address[] memory psList2 = new address[](1);
+        psList2[0] = address(ps);
+        bytes32[] memory vks2 = new bytes32[](1);
+        vks2[0] = DEFAULT_VK;
+        Rollup l2Manager = new Rollup(address(rollups), msg.sender, 1, psList2, vks2);
+        uint256 rid = rollups.createRollup(address(l2Manager), keccak256("l2-initial-state"));
+        require(rid == 1, "expected L2 rollupId = 1");
+
+        console.log("PROOF_SYSTEM=%s", address(ps));
         console.log("ROLLUPS=%s", address(rollups));
+        console.log("L2_MANAGER=%s", address(l2Manager));
         console.log("L2_ROLLUP_ID=1");
 
         vm.stopBroadcast();

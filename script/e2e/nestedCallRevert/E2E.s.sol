@@ -2,18 +2,17 @@
 pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
-import {Rollups} from "../../../src/Rollups.sol";
+import {Rollups, ProofSystemBatch} from "../../../src/Rollups.sol";
 import {
-    Action,
     StateDelta,
     CrossChainCall,
     NestedAction,
     ExecutionEntry,
-    StaticCall
+    LookupCall
 } from "../../../src/ICrossChainManager.sol";
 import {Counter, SafeCounterAndProxy} from "../../../test/mocks/CounterContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
-import {actionHash, noStaticCalls, RollingHashBuilder} from "../shared/E2EHelpers.sol";
+import {Action, actionHash, noLookupCalls, RollingHashBuilder} from "../shared/E2EHelpers.sol";
 
 // ═══════════════════════════════════════════════════════════════════════
 //  NestedCallRevert - nested reentrant call that fails; caller recovers
@@ -48,28 +47,32 @@ abstract contract NestedCallRevertActions {
     using RollingHashBuilder for bytes32;
 
     function _outerActionHash(address scap, address alice) internal pure returns (bytes32) {
-        return actionHash(Action({
-            targetRollupId: L2_ROLLUP_ID,
-            targetAddress: scap,
-            value: 0,
-            data: abi.encodeWithSelector(SafeCounterAndProxy.incrementProxy.selector),
-            sourceAddress: alice,
-            sourceRollupId: MAINNET_ROLLUP_ID
-        }));
+        return actionHash(
+            Action({
+                targetRollupId: L2_ROLLUP_ID,
+                targetAddress: scap,
+                value: 0,
+                data: abi.encodeWithSelector(SafeCounterAndProxy.incrementProxy.selector),
+                sourceAddress: alice,
+                sourceRollupId: MAINNET_ROLLUP_ID
+            })
+        );
     }
 
     /// @dev Inner action hash: SCAP's reentrant call to Counter@L2 that reverts.
     ///      `executeCrossChainCall` hardcodes srcRollup=MAINNET on L1, so this
     ///      hash uses MAINNET as the source rollup.
     function _innerActionHash(address counterL2, address scap) internal pure returns (bytes32) {
-        return actionHash(Action({
-            targetRollupId: L2_ROLLUP_ID,
-            targetAddress: counterL2,
-            value: 0,
-            data: abi.encodeWithSelector(Counter.increment.selector),
-            sourceAddress: scap,
-            sourceRollupId: MAINNET_ROLLUP_ID
-        }));
+        return actionHash(
+            Action({
+                targetRollupId: L2_ROLLUP_ID,
+                targetAddress: counterL2,
+                value: 0,
+                data: abi.encodeWithSelector(Counter.increment.selector),
+                sourceAddress: scap,
+                sourceRollupId: MAINNET_ROLLUP_ID
+            })
+        );
     }
 
     /// @dev Rolling hash: just CALL_BEGIN(1) -> CALL_END(1, true, "")
@@ -81,14 +84,11 @@ abstract contract NestedCallRevertActions {
         h = h.appendCallEnd(1, true, "");
     }
 
-    function _l1Entries(address scap, address alice)
-        internal
-        pure
-        returns (ExecutionEntry[] memory entries)
-    {
+    function _l1Entries(address scap, address alice) internal pure returns (ExecutionEntry[] memory entries) {
         StateDelta[] memory deltas = new StateDelta[](1);
         deltas[0] = StateDelta({
             rollupId: L2_ROLLUP_ID,
+            currentState: keccak256("l2-initial-state"),
             newState: keccak256("l2-state-after-nested-call-revert"),
             etherDelta: 0
         });
@@ -106,31 +106,27 @@ abstract contract NestedCallRevertActions {
         entries = new ExecutionEntry[](1);
         entries[0] = ExecutionEntry({
             stateDeltas: deltas,
-            actionHash: _outerActionHash(scap, alice),
+            crossChainCallHash: _outerActionHash(scap, alice),
+            destinationRollupId: L2_ROLLUP_ID,
             calls: calls,
             nestedActions: new NestedAction[](0),
             callCount: 1,
             returnData: "",
-            failed: false,
             rollingHash: _expectedRollingHash()
         });
     }
 
-    /// @dev StaticCall that models the reverting reentrant call. Keyed by
+    /// @dev LookupCall that models the reverting reentrant call. Keyed by
     ///      (innerActionHash, callNumber=1, lastNestedActionConsumed=0) — the
     ///      same key the lookup uses when SCAP's inner call hits the manager.
     ///      `failed=true` makes _resolveStaticCall revert with returnData.
-    function _l1StaticCalls(address counterL2, address scap)
-        internal
-        pure
-        returns (StaticCall[] memory statics)
-    {
-        statics = new StaticCall[](1);
-        statics[0] = StaticCall({
-            actionHash: _innerActionHash(counterL2, scap),
+    function _l1LookupCalls(address counterL2, address scap) internal pure returns (LookupCall[] memory statics) {
+        statics = new LookupCall[](1);
+        statics[0] = LookupCall({
+            crossChainCallHash: _innerActionHash(counterL2, scap),
+            destinationRollupId: L2_ROLLUP_ID,
             returnData: bytes("inner reverts"),
             failed: true,
-            stateRoot: bytes32(0),
             callNumber: 1,
             lastNestedActionConsumed: 0,
             calls: new CrossChainCall[](0),
@@ -193,11 +189,33 @@ contract Deploy is Script {
 contract Batcher {
     function execute(
         Rollups rollups,
+        address proofSystem,
         ExecutionEntry[] calldata entries,
-        StaticCall[] calldata statics,
+        LookupCall[] calldata lookupCalls,
         address scapProxy
-    ) external {
-        rollups.postBatch(entries, statics, 0, 0, 0, "", "proof");
+    )
+        external
+    {
+        address[] memory psList = new address[](1);
+        psList[0] = proofSystem;
+        uint256[] memory rids = new uint256[](1);
+        rids[0] = L2_ROLLUP_ID;
+        bytes[] memory proofs = new bytes[](1);
+        proofs[0] = "proof";
+        ProofSystemBatch[] memory batches = new ProofSystemBatch[](1);
+        batches[0] = ProofSystemBatch({
+            proofSystems: psList,
+            rollupIds: rids,
+            entries: entries,
+            lookupCalls: lookupCalls,
+            transientCount: 0,
+            transientLookupCallCount: 0,
+            blobIndices: new uint256[](0),
+            callData: "",
+            proof: proofs,
+            crossProofSystemInteractions: bytes32(0)
+        });
+        rollups.postBatch(batches);
         (bool ok,) = scapProxy.call(abi.encodeWithSelector(SafeCounterAndProxy.incrementProxy.selector));
         require(ok, "outer call failed");
     }
@@ -206,6 +224,7 @@ contract Batcher {
 contract Execute is Script, NestedCallRevertActions {
     function run() external {
         address rollupsAddr = vm.envAddress("ROLLUPS");
+        address proofSystemAddr = vm.envAddress("PROOF_SYSTEM");
         address scapAddr = vm.envAddress("SAFE_CAP");
         address scapProxy = vm.envAddress("SAFE_CAP_PROXY");
         address counterL2 = vm.envAddress("COUNTER_L2");
@@ -215,8 +234,9 @@ contract Execute is Script, NestedCallRevertActions {
 
         batcher.execute(
             Rollups(rollupsAddr),
+            proofSystemAddr,
             _l1Entries(scapAddr, address(batcher)),
-            _l1StaticCalls(counterL2, scapAddr),
+            _l1LookupCalls(counterL2, scapAddr),
             scapProxy
         );
 
@@ -260,14 +280,16 @@ contract ComputeExpected is ComputeExpectedBase, NestedCallRevertActions {
         address alice = msg.sender;
 
         ExecutionEntry[] memory l1 = _l1Entries(scapAddr, alice);
-        StaticCall[] memory statics = _l1StaticCalls(counterL2, scapAddr);
+        LookupCall[] memory statics = _l1LookupCalls(counterL2, scapAddr);
         bytes32 l1Hash = _entryHash(l1[0]);
 
         console.log("EXPECTED_L1_HASHES=[%s]", vm.toString(l1Hash));
         console.log("");
-        console.log("=== EXPECTED L1 TABLE (1 entry, 1 call, 0 nested - reentrant revert via failed=true StaticCall) ===");
+        console.log(
+            "=== EXPECTED L1 TABLE (1 entry, 1 call, 0 nested - reentrant revert via failed=true LookupCall) ==="
+        );
         _logEntry(0, l1[0]);
         console.log("=== EXPECTED L1 STATIC CALLS (1 failed=true entry) ===");
-        _logStaticCall(0, statics[0]);
+        _logLookupCall(0, statics[0]);
     }
 }

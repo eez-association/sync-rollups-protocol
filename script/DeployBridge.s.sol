@@ -82,9 +82,8 @@ contract BridgeDeployL2 is Script {
 
 function _computeBridgeAddress(bytes32 salt) view returns (address) {
     bytes memory initCode = type(Bridge).creationCode;
-    return address(
-        uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), CREATE2_FACTORY, salt, keccak256(initCode)))))
-    );
+    return
+        address(uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), CREATE2_FACTORY, salt, keccak256(initCode))))));
 }
 
 function _deployBridge(bytes32 salt) returns (address deployed) {

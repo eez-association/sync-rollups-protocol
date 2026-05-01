@@ -3,31 +3,30 @@ pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 import {
-    Action,
     StateDelta,
     CrossChainCall,
     NestedAction,
     ExecutionEntry,
-    StaticCall
+    LookupCall
 } from "../../../src/ICrossChainManager.sol";
 
 /// @title ComputeExpectedBase — Shared formatting helpers for ComputeExpected contracts
 /// @dev Each test's ComputeExpected inherits this and overrides _name() and _funcName().
-///   The flatten model identifies entries by (actionHash, rollingHash) — both are bound
+///   The flatten model identifies entries by (crossChainCallHash, rollingHash) — both are bound
 ///   into the entry hash below and used for subset verification by Verify.s.sol.
 abstract contract ComputeExpectedBase is Script {
     // ══════════════════════════════════════════════════════════════════
     //  Entry identity hash used by Verify.s.sol for subset matching.
     //  The flatten model binds all execution behaviour into rollingHash,
-    //  so (actionHash, rollingHash) is a stable identifier for an entry.
+    //  so (crossChainCallHash, rollingHash) is a stable identifier for an entry.
     // ══════════════════════════════════════════════════════════════════
 
-    function _entryHash(bytes32 actionHash, bytes32 rollingHash) internal pure returns (bytes32) {
-        return keccak256(abi.encode(actionHash, rollingHash));
+    function _entryHash(bytes32 crossChainCallHash, bytes32 rollingHash) internal pure returns (bytes32) {
+        return keccak256(abi.encode(crossChainCallHash, rollingHash));
     }
 
     function _entryHash(ExecutionEntry memory e) internal pure returns (bytes32) {
-        return _entryHash(e.actionHash, e.rollingHash);
+        return _entryHash(e.crossChainCallHash, e.rollingHash);
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -43,31 +42,13 @@ abstract contract ComputeExpectedBase is Script {
     }
 
     // ══════════════════════════════════════════════════════════════════
-    //  Action / CrossChainCall formatting
+    //  CrossChainCall formatting (the legacy `Action` struct was removed)
     // ══════════════════════════════════════════════════════════════════
 
-    function _fmtAction(Action memory a) internal view returns (string memory) {
-        string memory func =
-            a.data.length == 0 ? "(ETH transfer)" : string.concat(".", _funcName(bytes4(a.data)), "()");
-        string memory valStr = a.value > 0 ? string.concat("  value=", _fmtEther(a.value)) : "";
-        return string.concat(
-            "Action ",
-            _name(a.targetAddress),
-            func,
-            valStr,
-            "  from=",
-            _name(a.sourceAddress),
-            " @ rollup ",
-            vm.toString(a.sourceRollupId)
-        );
-    }
-
     function _fmtCall(CrossChainCall memory c) internal view returns (string memory) {
-        string memory func =
-            c.data.length == 0 ? "(ETH transfer)" : string.concat(".", _funcName(bytes4(c.data)), "()");
+        string memory func = c.data.length == 0 ? "(ETH transfer)" : string.concat(".", _funcName(bytes4(c.data)), "()");
         string memory valStr = c.value > 0 ? string.concat("  value=", _fmtEther(c.value)) : "";
-        string memory revertStr =
-            c.revertSpan > 0 ? string.concat("  revertSpan=", vm.toString(c.revertSpan)) : "";
+        string memory revertStr = c.revertSpan > 0 ? string.concat("  revertSpan=", vm.toString(c.revertSpan)) : "";
         return string.concat(
             "CALL ",
             _name(c.targetAddress),
@@ -83,8 +64,8 @@ abstract contract ComputeExpectedBase is Script {
 
     function _fmtNested(NestedAction memory n) internal pure returns (string memory) {
         return string.concat(
-            "NESTED actionHash=",
-            _shortHash(n.actionHash),
+            "NESTED crossChainCallHash=",
+            _shortHash(n.crossChainCallHash),
             "  callCount=",
             vm.toString(n.callCount),
             "  retData=",
@@ -99,9 +80,9 @@ abstract contract ComputeExpectedBase is Script {
     /// @notice L1 deferred entry (with state deltas + rolling hash).
     function _logEntry(uint256 idx, ExecutionEntry memory e) internal view {
         bytes32 hash = _entryHash(e);
-        bool immediate = e.actionHash == bytes32(0);
+        bool immediate = e.crossChainCallHash == bytes32(0);
         console.log("  [%s] %s  entryHash=%s", idx, immediate ? "IMMEDIATE" : "DEFERRED", vm.toString(hash));
-        console.log("      actionHash:  %s", vm.toString(e.actionHash));
+        console.log("      crossChainCallHash:  %s", vm.toString(e.crossChainCallHash));
         console.log("      rollingHash: %s", vm.toString(e.rollingHash));
         console.log("      callCount=%s  calls=%s  nested=%s", e.callCount, e.calls.length, e.nestedActions.length);
 
@@ -111,11 +92,7 @@ abstract contract ComputeExpectedBase is Script {
                 sd.etherDelta == 0 ? "" : string.concat("  ether: ", _fmtEtherSigned(sd.etherDelta));
             console.log(
                 string.concat(
-                    "      state: rollup ",
-                    vm.toString(sd.rollupId),
-                    " -> ",
-                    _shortHash(sd.newState),
-                    etherStr
+                    "      state: rollup ", vm.toString(sd.rollupId), " -> ", _shortHash(sd.newState), etherStr
                 )
             );
         }
@@ -128,16 +105,14 @@ abstract contract ComputeExpectedBase is Script {
         if (e.returnData.length > 0) {
             console.log("      returnData: %s", _shortBytes(e.returnData));
         }
-        if (e.failed) {
-            console.log("      failed: TRUE");
-        }
+        // POST-REFACTOR: ExecutionEntry.failed removed; reverts via LookupCall.
     }
 
     /// @notice L2 entry (no state deltas, no ether tracking).
     function _logL2Entry(uint256 idx, ExecutionEntry memory e) internal view {
         bytes32 hash = _entryHash(e);
         console.log("  [%s] entryHash=%s", idx, vm.toString(hash));
-        console.log("      actionHash:  %s", vm.toString(e.actionHash));
+        console.log("      crossChainCallHash:  %s", vm.toString(e.crossChainCallHash));
         console.log("      rollingHash: %s", vm.toString(e.rollingHash));
         console.log("      callCount=%s  calls=%s  nested=%s", e.callCount, e.calls.length, e.nestedActions.length);
         for (uint256 c = 0; c < e.calls.length; c++) {
@@ -151,9 +126,14 @@ abstract contract ComputeExpectedBase is Script {
         }
     }
 
-    function _logStaticCall(uint256 idx, StaticCall memory sc) internal pure {
-        console.log("  [%s] STATIC actionHash=%s", idx, vm.toString(sc.actionHash));
-        console.log("      callNumber=%s  lastNA=%s  failed=%s", sc.callNumber, sc.lastNestedActionConsumed, sc.failed ? "true" : "false");
+    function _logLookupCall(uint256 idx, LookupCall memory sc) internal pure {
+        console.log("  [%s] STATIC crossChainCallHash=%s", idx, vm.toString(sc.crossChainCallHash));
+        console.log(
+            "      callNumber=%s  lastNA=%s  failed=%s",
+            sc.callNumber,
+            sc.lastNestedActionConsumed,
+            sc.failed ? "true" : "false"
+        );
         if (sc.returnData.length > 0) {
             console.log("      returnData: %s", _shortBytes(sc.returnData));
         }
@@ -174,8 +154,8 @@ abstract contract ComputeExpectedBase is Script {
             string.concat(
                 "  [",
                 vm.toString(idx),
-                "] actionHash=",
-                _shortHash(e.actionHash),
+                "] crossChainCallHash=",
+                _shortHash(e.crossChainCallHash),
                 "  calls=",
                 vm.toString(e.calls.length),
                 "  nested=",
