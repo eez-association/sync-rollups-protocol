@@ -230,6 +230,12 @@ contract Rollups is ICrossChainManager {
     /// @notice Emitted after a revert span is processed via executeInContextAndRevert
     event RevertSpanExecuted(uint256 indexed entryIndex, uint256 startCallNumber, uint256 span);
 
+    /// @notice Emitted when an immediate entry's `_applyAndExecute` reverts during postBatch
+    ///         step 4. The entry's state changes are rolled back; the cursor advances and the
+    ///         loop continues with the next immediate entry. `revertData` carries the inner
+    ///         revert payload (custom error or message) for off-chain debugging.
+    event ImmediateEntrySkipped(uint256 indexed transientIdx, bytes revertData);
+
     /// @notice Error when proof verification fails
     error InvalidProof();
 
@@ -361,9 +367,11 @@ contract Rollups is ICrossChainManager {
     ///      5. Drain the leading run of transient entries whose `actionHash == 0` inline
     ///         (pure L2 transactions + L2 transactions that touch L1). These have no source
     ///         action to match so they cannot be driven by the meta hook — the only place
-    ///         they can be consumed during postBatch is here. The transient cursor advances
-    ///         past all of them before the hook fires; each entry runs its own
-    ///         `_applyAndExecute` cycle with independent rolling hash / cursor resets.
+    ///         they can be consumed during postBatch is here. Each entry is dispatched via
+    ///         a `try/catch` self-call (`attemptApplyImmediate`); if `_applyAndExecute`
+    ///         reverts, the entry's state mutations roll back, an `ImmediateEntrySkipped`
+    ///         event is emitted, and the loop continues with the next entry. The cursor
+    ///         advance happens outside the try frame so it survives.
     ///      6. If `msg.sender` is a contract, invoke its `IMetaCrossChainReceiver` hook so it
     ///         can drive the rest of the transient-backed entries via cross-chain proxy calls
     ///         within the same transaction.
@@ -435,15 +443,25 @@ contract Rollups is ICrossChainManager {
         //    meta hook starts driving non-zero-actionHash entries via proxy calls. Each runs
         //    its own `_applyAndExecute` cycle (rolling hash / cursors reset per entry).
         //    `etherIn = 0` because these entries aren't driven by an external value transfer.
+        //
+        //    REVERTIBLE: each entry is dispatched through a self-call wrapper. If
+        //    `_applyAndExecute` reverts (currentState mismatch, rolling-hash mismatch,
+        //    unconsumed calls / nested actions, etc.), the EVM revert rolls back ALL state
+        //    mutations from that entry — leaving on-chain state as if the entry never ran.
+        //    The cursor advance happens OUTSIDE the try frame, so the loop continues with
+        //    the next entry. Skipped entries emit `ImmediateEntrySkipped` for off-chain debug.
+        //    Soundness backstop: any later entry that depended on the skipped entry's state
+        //    deltas will fail its own `StateRootMismatch` check at consumption time — the
+        //    cascade naturally drops dependent work without needing a global abort.
         while (
             _transientExecutionIndex < _transientExecutions.length
                 && _transientExecutions[_transientExecutionIndex].actionHash == bytes32(0)
         ) {
             uint256 idx = _transientExecutionIndex;
-            _currentEntryIndex = idx;
-            _currentEntryRollupId = 0; // marker: transient phase (storage routes via length)
-            ExecutionEntry storage immediate = _transientExecutions[idx];
-            _applyAndExecute(immediate.stateDeltas, immediate.callCount, immediate.rollingHash, 0);
+            try this.attemptApplyImmediate(idx) {}
+            catch (bytes memory revertData) {
+                emit ImmediateEntrySkipped(idx, revertData);
+            }
             _transientExecutionIndex = idx + 1;
         }
 
@@ -935,6 +953,24 @@ contract Rollups is ICrossChainManager {
         if (msg.sender != address(this)) revert NotSelf();
         _processNCalls(callCount);
         revert ContextResult(_rollingHash, _lastNestedActionConsumed, _currentCallNumber);
+    }
+
+    /// @notice Self-call wrapper that runs `_applyAndExecute` for one immediate entry
+    ///         in an isolated frame. Used by `postBatch` step 4 to make immediate-entry
+    ///         execution revertible: if this frame reverts, the surrounding `try/catch`
+    ///         in postBatch catches and skips to the next entry instead of aborting the
+    ///         whole batch. Unlike `executeInContextAndRevert`, this propagates the inner
+    ///         result — succeeds when `_applyAndExecute` succeeds, reverts when it reverts.
+    /// @dev Sets `_currentEntryIndex` / `_currentEntryRollupId` here so transient state for
+    ///      the entry being processed is set within the same frame as `_applyAndExecute`.
+    ///      On revert those writes roll back too, which is fine — the next iteration sets
+    ///      them fresh. The cursor advance in postBatch happens OUTSIDE this frame.
+    function attemptApplyImmediate(uint256 transientIdx) public {
+        if (msg.sender != address(this)) revert NotSelf();
+        ExecutionEntry storage entry = _transientExecutions[transientIdx];
+        _currentEntryIndex = transientIdx;
+        _currentEntryRollupId = 0; // marker: transient phase (storage routes via length)
+        _applyAndExecute(entry.stateDeltas, entry.callCount, entry.rollingHash, 0);
     }
 
     /// @notice Decodes a ContextResult revert payload
