@@ -29,12 +29,11 @@ abstract contract ProofSystemRegistry {
     /// @notice Registers a new proof system
     /// @param proofSystem The proof-system contract (must implement IProofSystem)
     function registerProofSystem(IProofSystem proofSystem) external {
-        address addr = address(proofSystem);
-        if (addr == address(0)) revert InvalidProofSystem();
-        if (isProofSystem[addr]) revert ProofSystemAlreadyRegistered(addr);
-        isProofSystem[addr] = true;
-        proofSystems.push(addr);
-        emit ProofSystemRegistered(addr, msg.sender);
+        if (address(proofSystem) == address(0)) revert InvalidProofSystem();
+        if (isProofSystem[address(proofSystem)]) revert ProofSystemAlreadyRegistered(address(proofSystem));
+        isProofSystem[address(proofSystem)] = true;
+        proofSystems.push(address(proofSystem));
+        emit ProofSystemRegistered(address(proofSystem), msg.sender);
     }
 
     /// @notice Number of registered proof systems
