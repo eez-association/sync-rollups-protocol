@@ -35,7 +35,7 @@ start_anvil() {
     echo "Anvil running (PID $pid)"
 }
 
-# ── Deploy infrastructure (Rollups on L1, optionally CCManagerL2 on L2) ──
+# ── Deploy infrastructure (EEZ on L1, optionally CCManagerL2 on L2) ──
 # Sets ROLLUPS (and MANAGER_L2 if L2_RPC provided)
 deploy_infra() {
     local l1_rpc="$1"
@@ -45,12 +45,16 @@ deploy_infra() {
     local system_address="${5:-0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266}"
 
     echo ""
-    echo "====== Deploy Rollups (L1) ======"
+    echo "====== Deploy EEZ (L1) ======"
     local output
-    output=$(forge script script/e2e/shared/DeployInfra.s.sol:DeployRollupsL1 \
+    output=$(forge script script/e2e/shared/DeployInfra.s.sol:DeployEEZL1 \
         --rpc-url "$l1_rpc" --broadcast --private-key "$pk" 2>&1)
     ROLLUPS=$(extract "$output" "ROLLUPS")
+    PROOF_SYSTEM=$(extract "$output" "PROOF_SYSTEM")
+    L2_MANAGER=$(extract "$output" "L2_MANAGER")
     echo "ROLLUPS=$ROLLUPS"
+    echo "PROOF_SYSTEM=$PROOF_SYSTEM"
+    echo "L2_MANAGER=$L2_MANAGER"
 
     if [[ -n "$l2_rpc" ]]; then
         echo ""
@@ -178,61 +182,30 @@ get_block_from_broadcast() {
     printf "%d\n" "$(jq -r '.receipts[-1].blockNumber' "$json")"
 }
 
-# ── Extract L2 block numbers from a postBatch tx's callData (flatten ABI) ──
-# postBatch(ExecutionEntry[], StaticCall[], uint256, bytes, bytes)
-# We only need to decode the 4th param (callData: bytes), which encodes (uint256[], bytes[]).
+# ── Extract L2 block numbers from a postVerifyAndExecuteOrSaveExecutionsFromBatch tx's callData ──
+# OBSOLETE post-refactor — see comment at top of file. Cross-chain block
+# correlation is no longer encoded on-chain; use off-chain indexing if needed.
+# Post-refactor `postVerifyAndExecuteOrSaveExecutionsFromBatch(ProofSystemBatchPerVerificationEntries[] batches)` no longer carries an L2
+# block list: the per-prover `callData` field is opaque prover input, not an
+# orchestrator-declared list of L2 blocks. Kept for call-site compat — always
+# returns "[]".
 extract_l2_blocks_from_tx() {
-    local tx_hash="$1" rpc="$2"
-    local postbatch_sig='postBatch(((uint256,bytes32,int256)[],bytes32,(address,uint256,bytes,address,uint256,uint256)[],(bytes32,uint256,bytes)[],uint256,bytes,bool,bytes32)[],(bytes32,bytes,bool,bytes32,uint64,uint64,(address,uint256,bytes,address,uint256,uint256)[],bytes32)[],uint256,bytes,bytes)'
-
-    local input
-    input=$(cast tx "$tx_hash" input --rpc-url "$rpc" 2>/dev/null) || { echo "[]"; return; }
-
-    # Decode postBatch, take 4th param (callData bytes) — line 4 in output
-    local calldata_hex
-    calldata_hex=$(cast calldata-decode "$postbatch_sig" "$input" 2>/dev/null | sed -n '4p') || { echo "[]"; return; }
-
-    if [[ -z "$calldata_hex" || "$calldata_hex" == "0x" ]]; then
-        echo "[]"
-        return
-    fi
-
-    local decoded
-    decoded=$(cast abi-decode "f()(uint256[],bytes[])" "$calldata_hex" 2>/dev/null) || { echo "[]"; return; }
-
-    local blocks_str
-    blocks_str=$(echo "$decoded" | head -1 | grep -oE '\[[0-9, ]*\]' | head -1)
-    echo "${blocks_str:-[]}"
+    echo "[]"
+    return 0
 }
 
 # ── Find L1 batch block that references a specific L2 block ──
+# OBSOLETE post-refactor — see comment at top of file. Cross-chain block
+# correlation is no longer encoded on-chain; use off-chain indexing if needed.
+# Computes the new `BatchPosted(uint256)` signature for completeness, but the
+# inner extract_l2_blocks_from_tx call has nothing to find, so the function
+# always reports "not found" (return 1).
 find_batch_block_by_l2_ref() {
-    local l2_block="$1" l1_from="$2" l1_to="$3" rollups="$4" rpc="$5"
-    # Computed from keccak256 of flatten-ABI BatchPosted signature.
-    # If this ever misses events, regenerate via cast keccak on the event signature.
+    # Correct post-refactor event signature (kept here so callers that grep
+    # this script for the SIG aren't pointed at the old ABI).
     local SIG_BATCH
-    SIG_BATCH=$(cast keccak 'BatchPosted(((uint256,bytes32,int256)[],bytes32,(address,uint256,bytes,address,uint256,uint256)[],(bytes32,uint256,bytes)[],uint256,bytes,bool,bytes32)[],bytes32)')
-
-    local logs_json
-    logs_json=$(cast logs --from-block "$l1_from" --to-block "$l1_to" \
-        --address "$rollups" --rpc-url "$rpc" --json 2>/dev/null) || return 1
-
-    local tx_pairs
-    tx_pairs=$(echo "$logs_json" | jq -r \
-        "[.[] | select(.topics[0] == \"$SIG_BATCH\") | {tx: .transactionHash, block: .blockNumber}] | unique_by(.tx) | .[] | \"\(.tx) \(.block)\"") || return 1
-
-    [[ -z "$tx_pairs" ]] && return 1
-
-    while IFS=' ' read -r tx_hash block_hex; do
-        local l2_blocks
-        l2_blocks=$(extract_l2_blocks_from_tx "$tx_hash" "$rpc")
-        if echo "$l2_blocks" | grep -qE "(^|\[|,) *${l2_block} *(,|\]|$)"; then
-            FOUND_L1_BLOCK=$(printf "%d" "$block_hex")
-            FOUND_BATCH_TX="$tx_hash"
-            return 0
-        fi
-    done <<< "$tx_pairs"
-
+    SIG_BATCH=$(cast keccak 'BatchPosted(uint256)') || true
+    : "$SIG_BATCH"  # silence unused-var lint
     return 1
 }
 

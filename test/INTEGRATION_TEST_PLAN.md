@@ -2,7 +2,7 @@
 
 ## Context
 
-Integration tests cover cross-chain execution scenarios using the flat calls/rolling-hash model. Each test constructs `ExecutionEntry` structs with flat `calls[]` arrays, computes rolling hashes with the 4 tagged events, and verifies end-to-end execution across L1 (Rollups) and L2 (CrossChainManagerL2).
+Integration tests cover cross-chain execution scenarios using the flat calls/rolling-hash model. Each test constructs `ExecutionEntry` structs with flat `calls[]` arrays, computes rolling hashes with the 4 tagged events, and verifies end-to-end execution across L1 (EEZ) and L2 (CrossChainManagerL2).
 
 ## Legend
 
@@ -31,7 +31,7 @@ Integration tests cover cross-chain execution scenarios using the flat calls/rol
 - 1 deferred `ExecutionEntry` on L1 with `actionHash` matching `(rollupId=L2, dest=B, source=A, sourceRollup=MAINNET)`
 - `calls[]` is empty (simple consumption, no sub-calls)
 - `returnData = abi.encode(1)` (pre-computed result of B.increment())
-- Triggered by Alice calling B' proxy, which calls `executeCrossChainCall`
+- Triggered by Alice calling B' proxy, which calls `executeL1ToL2Call`
 
 ### Scenario 2: L2 calls L1 (simple deferred entry)
 
@@ -43,7 +43,7 @@ Integration tests cover cross-chain execution scenarios using the flat calls/rol
 
 ### Scenario 3: Nested L2 entry (cross-manager)
 
-**Flow:** L2 entry has `calls[]` that execute A.incrementProxy() via A' proxy. Inside A, a call crosses into Rollups (different manager), consuming a separate L1 deferred entry.
+**Flow:** L2 entry has `calls[]` that execute A.incrementProxy() via A' proxy. Inside A, a call crosses into EEZ (different manager), consuming a separate L1 deferred entry.
 
 - L2 entry with 1 call in `calls[]`, `callCount=1`
 - Rolling hash computed with CALL_BEGIN(1) + CALL_END(1)
@@ -75,7 +75,7 @@ Full lock -> mint -> burn -> release cycle. 4 phases:
 1. L1: lock tokens via Bridge.bridgeTokens (deferred entry)
 2. L2: mint wrapped tokens via Bridge.receiveTokens (system loads entry)
 3. L2: burn wrapped tokens via Bridge.bridgeTokens (deferred entry)
-4. L1: release original tokens via immediate entry in postBatch
+4. L1: release original tokens via immediate entry in postVerifyAndExecuteOrSaveExecutionsFromBatch
 
 ---
 
@@ -108,7 +108,7 @@ For nested actions (wrap inner calls):
 ## API Reference
 
 ```solidity
-postBatch(ExecutionEntry[] entries, StaticCall[] staticCalls, uint256 transientCount, uint256 transientStaticCallCount, uint256 blobCount, bytes callData, bytes proof)
+postVerifyAndExecuteOrSaveExecutionsFromBatch(ExecutionEntry[] entries, StaticCall[] staticCalls, uint256 transientCount, uint256 transientStaticCallCount, uint256 blobCount, bytes callData, bytes proof)
 loadExecutionTable(ExecutionEntry[] entries, StaticCall[] staticCalls)
 executeL2TX()  // no arguments, consumes next entry with actionHash == 0
 ```

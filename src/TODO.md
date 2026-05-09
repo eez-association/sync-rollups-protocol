@@ -14,7 +14,7 @@ refactor's open questions and is updated as the design evolves.
 ### Resolution applied
 
 Dropped `bool failed` from `ExecutionEntry`. Deferred entries always succeed at the top
-level — `executeCrossChainCall` returns `entry.returnData` as success.
+level — `executeL1ToL2Call` returns `entry.returnData` as success.
 
 ### Rationale
 
@@ -27,7 +27,7 @@ entry point) or via the failed-reentry fallback in `_consumeNestedAction`.
 Splitting along this seam:
 - **`ExecutionEntry`** = state-mutating execution. Always succeeds at the top level.
   Inner calls may revert naturally; their `(success=false, retData)` is captured in the
-  rolling-hash `CALL_END` payload. The entry's outer `executeCrossChainCall` still
+  rolling-hash `CALL_END` payload. The entry's outer `executeL1ToL2Call` still
   returns `entry.returnData` as success.
 - **`LookupCall`** with `failed: true` = revert replay. Content-addressed by
   `(crossChainCallHash, callNumber, lastNestedActionConsumed)`, replays cached sub-calls if any,
@@ -68,7 +68,7 @@ revert-from-`_consumeAndExecute` path, so the cursor++ always commits.
 - **Mapping from lookup-key hash to index.** O(1) but adds storage cost per entry (extra SSTORE on publish).
 - **Require strict execution-order ordering**, so sequential cursor lookup works (no key match needed).
 
-The TODO comment lives inline at `staticCallLookup` in `src/Rollups.sol`. Punted until profiling shows it matters.
+The TODO comment lives inline at `staticCallLookup` in `src/EEZ.sol`. Punted until profiling shows it matters.
 
 ---
 
@@ -80,7 +80,7 @@ The TODO comment lives inline at `staticCallLookup` in `src/Rollups.sol`. Punted
 
 ### Optimization sketch
 
-Track per-sub-batch transient consumption (or walk `_transientExecutionIndex` back to sub-batch boundaries) and skip publishing the persistent tail of any sub-batch whose transient prefix wasn't fully drained. Only a win if hooks frequently leave entries unconsumed; in normal operation hooks should drain. TODO comment lives inline at `_publishRemainder` in `src/Rollups.sol`.
+Track per-sub-batch transient consumption (or walk `_transientExecutionIndex` back to sub-batch boundaries) and skip publishing the persistent tail of any sub-batch whose transient prefix wasn't fully drained. Only a win if hooks frequently leave entries unconsumed; in normal operation hooks should drain. TODO comment lives inline at `_publishRemainder` in `src/EEZ.sol`.
 
 ---
 
@@ -108,7 +108,7 @@ Decide whether to:
   - Double-registration of the same manager address for two rollupIds.
   - Handoff back to a previously-used reference manager (`rollupIdSet` permanent latch).
   - `rollupId == 0` (MAINNET) excluded from sub-batches by the strict-increasing check.
-  - Possible "join" of `Action` and `CrossChainCall`.
+  - Possible "join" of `Action` and `L2ToL1Call`.
   - Per-(destination rollup) call ID counter idea.
 - [`docs/CAVEATS.md`](../docs/CAVEATS.md) — operator-facing edge cases.
 - [`docs/SYNC_ROLLUPS_PROTOCOL_SPEC.md`](../docs/SYNC_ROLLUPS_PROTOCOL_SPEC.md) — formal protocol spec.

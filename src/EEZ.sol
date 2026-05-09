@@ -2,13 +2,13 @@
 pragma solidity ^0.8.28;
 
 import {IProofSystem} from "./IProofSystem.sol";
-import {IRollup} from "./rollupContract/IRollup.sol";
+import {IRollupContract} from "./rollupContract/IRollup.sol";
 import {CrossChainProxy} from "./CrossChainProxy.sol";
 import {
     ICrossChainManager,
     StateDelta,
-    CrossChainCall,
-    NestedAction,
+    L2ToL1Call,
+    ExpectedL1ToL2Call,
     LookupCall,
     ExecutionEntry,
     ProxyInfo
@@ -16,9 +16,9 @@ import {
 import {IMetaCrossChainReceiver} from "./interfaces/IMetaCrossChainReceiver.sol";
 
 /// @notice Rollup configuration held by the central registry.
-/// @dev Owner, threshold, and per-PS vkeys live on the per-rollup `IRollup` contract pointed
+/// @dev Owner, threshold, and per-PS vkeys live on the per-rollup `IRollupContract` contract pointed
 ///      to by `rollupContract`. The central registry holds only the *state* (state root,
-///      ether balance) and reads vkeys through `IRollup.getVkeysFromProofSystems` — which
+///      ether balance) and reads vkeys through `IRollupContract.checkProofSystemsAndGetVkeys` — which
 ///      enforces the manager's threshold internally and reverts if not met. Threshold itself
 ///      is never read by the registry.
 struct RollupConfig {
@@ -27,48 +27,55 @@ struct RollupConfig {
     uint256 etherBalance;
 }
 
-/// @notice One sub-batch's payload — a group of proof systems jointly attesting to a set of
-///         rollups' state transitions, all sharing the same entries / lookup calls /
-///         crossProofSystemInteractions binding.
-/// @dev `rollupIds` must be strictly increasing within a sub-batch (cross-batch disjointness
-///      is enforced for free by `_markVerifiedThisBlock`'s once-per-block guard).
-///      `proofSystems` must be strictly increasing (rejects address(0) and duplicates).
-///      Each manager enforces ITS OWN `getVkeysFromProofSystems` strict semantic: every
-///      `proofSystems[i]` must be allowed for that rollup (non-zero vkey) AND
-///      `proofSystems.length` must be ≥ that rollup's threshold. Net effect: the (rid × ps)
-///      vkMatrix is uniformly non-zero — the orchestrator must choose a `proofSystems` set
-///      that's a subset of every participating rollup's allowed set.
-/// @dev `blobIndices` selects which of the tx-level EIP-4844 blobs this sub-batch consumes;
-///      `callData` is sub-batch-scoped (each PS's circuit gets its own region).
-/// @dev `transientCount` and `transientLookupCallCount` are per-sub-batch: from each sub-batch
-///      we pull its first `transientCount` entries and first `transientLookupCallCount` static
-///      calls into the shared transient tables (concatenated in sub-batch order). They are
-///      pure on-chain dispatch parameters — not bound by the proof — so the orchestrator can
-///      tune the transient/persistent split per sub-batch without re-proving.
-struct ProofSystemBatch {
-    address[] proofSystems;
-    uint256[] rollupIds;
+/// @notice One participating rollup in a `ProofSystemBatchPerVerificationEntries` together
+///         with the SUBSET of the batch's global `proofSystems[]` that this rollup accepts.
+/// @dev `proofSystemIndex[]` is a list of indices into the parent batch's `proofSystems[]`,
+///      strictly increasing. The on-chain registry resolves them to PS addresses and hands
+///      that subset to this rollup's manager via `IRollupContract.checkProofSystemsAndGetVkeys`. The
+///      manager enforces its own threshold against `proofSystemIndex.length`.
+struct RollupIdWithProofSystems {
+    uint256 rollupId;
+    uint64[] proofSystemIndex;
+}
+
+/// @notice One batch's payload — a group of proof systems jointly attesting to a set of
+///         rollups' state transitions. Each rollup picks the subset of `proofSystems[]` it
+///         accepts via `RollupIdWithProofSystems[r].proofSystemIndex`.
+/// @dev The participating rollups (read off `RollupIdWithProofSystems[r].rollupId`) must be
+///      strictly increasing — paired with the once-per-block-per-rollup invariant on
+///      `_markVerifiedThisBlock`, this prevents a single batch from verifying the same
+///      rollup twice. `proofSystems[]` is the batch-global PS list (strictly increasing,
+///      rejects address(0) and duplicates). Each rollup's `proofSystemIndex[]` is strictly
+///      increasing too, indices in `[0, proofSystems.length)`, and its length must satisfy
+///      that rollup's threshold (enforced by `IRollupContract.checkProofSystemsAndGetVkeys`).
+/// @dev `blobIndices` selects which of the tx-level EIP-4844 blobs this batch consumes;
+///      `callData` is batch-scoped (each PS's circuit gets its own region).
+/// @dev `transientExecutionEntryCount` and `transientLookupCallCount` are pure on-chain
+///      dispatch parameters — not bound by the proof — so the orchestrator can tune the
+///      transient/persistent split without re-proving.
+struct ProofSystemBatchPerVerificationEntries {
     ExecutionEntry[] entries;
-    LookupCall[] lookupCalls;
-    uint256 transientCount;
+    LookupCall[] l1ToL2lookupCalls;
+    uint256 transientExecutionEntryCount;
     uint256 transientLookupCallCount;
+    address[] proofSystems;
+    RollupIdWithProofSystems[] rollupIdsWithProofSystems;
+    bytes32 crossProofSystemInteractions;
     uint256[] blobIndices;
     bytes callData;
-    bytes[] proof;
-    bytes32 crossProofSystemInteractions;
+    bytes[] proofs;
 }
 
 /// @notice Per-rollup deferred-consumption queue + once-per-block guard
 /// @dev `lastVerifiedBlock` doubles as:
 ///        (a) the once-per-block-per-rollup invariant (a rollup can be verified at most once
-///            per L1 block — required so multiple `postBatch` calls in the same block are
+///            per L1 block — required so multiple `postVerifyAndExecuteOrSaveExecutionsFromBatch` calls in the same block are
 ///            only allowed on disjoint rollup sets);
 ///        (b) read gate for consumers (entries can only be consumed in the block they were
-///            posted — `executeCrossChainCall` / `executeL2TX` / `staticCallLookup` all gate
+///            posted — `executeL1ToL2Call` / `executeL2TX` / `staticCallLookup` all gate
 ///            on `lastVerifiedBlock(rid) == block.number`);
-///        (c) lockout signal for the registry's owner-escape paths — `Rollups.setStateRoot`
-///            and `Rollups.setRollupContract` revert `RollupBatchActiveThisBlock` when this
-///            equals `block.number`;
+///        (c) lockout signal for the registry's owner-escape path `EEZ.setStateRoot`,
+///            which reverts `RollupBatchActiveThisBlock` when this equals `block.number`;
 ///        (d) the lazy-reset signal — when `lastVerifiedBlock < block.number` the queue is
 ///            considered empty, no explicit cleanup pass needed.
 struct RollupVerification {
@@ -78,30 +85,30 @@ struct RollupVerification {
     uint256 cursor;
 }
 
-/// @title Rollups
+/// @title EEZ
 /// @notice L1 contract managing rollup state roots, multi-prover batch posting, and cross-chain call execution
-/// @dev Execution entries are posted via `postBatch()` with one or more sub-batches, each
-///      attested by ≥ threshold proof systems. Atomic verification: if any single proof
-///      fails, the whole batch reverts.
+/// @dev Execution entries are posted via `postVerifyAndExecuteOrSaveExecutionsFromBatch(batch)`,
+///      attested by ≥ threshold proof systems per rollup. Atomic verification: if any single
+///      proof fails, the whole batch reverts.
 ///
-///      Each sub-batch's leading `transientCount` entries are concatenated (in sub-batch
-///      order) into `_transientExecutions` (semantically transient, cleared at end of
-///      postBatch). The leading run of those entries with `crossChainCallHash == 0` runs inline as
-///      "immediate" entries (state deltas + flat calls + rolling hash, one `_applyAndExecute`
-///      cycle per entry). Then `IMetaCrossChainReceiver(msg.sender).executeMetaCrossChainTransactions()`
+///      The batch's leading `transientExecutionEntryCount` entries are loaded into
+///      `_transientExecutions` (semantically transient, cleared at end of every batch). The
+///      leading run of those entries with `proxyEntryHash == 0` runs inline as "immediate"
+///      entries (state deltas + flat calls + rolling hash, one `_applyAndExecute` cycle per
+///      entry). Then `IMetaCrossChainReceiver(msg.sender).executeMetaCrossChainTransactions()`
 ///      is invoked (when msg.sender has code) so the caller can drive the remaining transient
 ///      entries via cross-chain proxy calls within the same transaction.
 ///
-///      Each sub-batch's remainder (entries past its `transientCount`) is published into
+///      The batch remainder (entries past `transientExecutionEntryCount`) is published into
 ///      per-rollup queues keyed by `destinationRollupId` UNCONDITIONALLY — even if the meta
 ///      hook left transient entries unconsumed. Soundness backstop: every entry's
 ///      `StateDelta.currentState` is checked at consumption time, so any persistent entry
 ///      whose preconditions were lost with the dropped transient leftover simply fails its
 ///      `StateRootMismatch` check.
 ///
-///      Deferred consumption: `executeCrossChainCall` (proxy entry) and `executeL2TX(rid)`
-///      route to `verificationByRollup[rid].queue[cursor]` and advance the per-rollup cursor.
-contract Rollups is ICrossChainManager {
+///      Deferred consumption: `executeL1ToL2Call` (proxy entry) and `executeL2TX(rid)` route
+///      to `verificationByRollup[rid].queue[cursor]` and advance the per-rollup cursor.
+contract EEZ is ICrossChainManager {
     /// @notice The rollup ID representing L1 mainnet
     uint256 public constant MAINNET_ROLLUP_ID = 0;
 
@@ -129,15 +136,15 @@ contract Rollups is ICrossChainManager {
 
     // ── Transient-backed execution entries & lookup calls ──
     //
-    // First N entries / M lookup calls of the flattened sub-batch stream live here instead of
+    // First N entries / M lookup calls of the batch's leading prefix live here instead of
     // the per-rollup persistent queues to save storage gas during intra-tx (meta-hook)
-    // consumption. Semantically transient (populated and cleared within a single postBatch
+    // consumption. Semantically transient (populated and cleared within a single batch
     // call) but declared as regular storage since Solidity 0.8.34 does not yet support
     // `transient` data location for reference types with nested dynamic arrays. Both are
-    // cleared at the end of every postBatch, regardless of success.
+    // cleared at the end of every postVerifyAndExecuteOrSaveExecutionsFromBatch, regardless of success.
     // TODO: promote to real `transient` once Solidity supports transient reference types
     //       with nested dynamic arrays — until then, we rely on manual `delete` at the
-    //       end of every postBatch plus SSTORE refunds from zeroing the slots.
+    //       end of every postVerifyAndExecuteOrSaveExecutionsFromBatch plus SSTORE refunds from zeroing the slots.
     ExecutionEntry[] public _transientExecutions;
     LookupCall[] public _transientLookupCalls;
 
@@ -146,12 +153,12 @@ contract Rollups is ICrossChainManager {
     ///      itself is what flags "inside a transient batch" for `_currentEntryStorage()`
     ///      and `_consumeAndExecute`; this variable just tracks progress. Transient so it
     ///      resets between transactions automatically, and explicitly reset at the end
-    ///      of every postBatch.
+    ///      of every postVerifyAndExecuteOrSaveExecutionsFromBatch.
     uint256 transient _transientExecutionIndex;
 
     // No dedicated `_inPostBatch` flag — `_transientExecutions.length != 0` already
     // identifies the dangerous re-entry window (from `_loadTransient` through cleanup).
-    // Steps 1-3 of `postBatch` (validate, verify-STATICCALL, mark-verified) have no
+    // Steps 1-3 of `postVerifyAndExecuteOrSaveExecutionsFromBatch` (validate, verify-STATICCALL, mark-verified) have no
     // external calls, and step 7 (publish) has no external calls either, so neither
     // needs guarding.
 
@@ -172,7 +179,7 @@ contract Rollups is ICrossChainManager {
     /// @notice Transient rolling hash accumulating tagged events across the entire entry
     bytes32 transient _rollingHash;
 
-    /// @notice 1-indexed global call counter and cursor into entry.calls[]
+    /// @notice 1-indexed global call counter and cursor into entry.L2ToL1Calls[]
     /// @dev Also replaces _insideExecution: _currentCallNumber != 0 means inside execution
     uint256 transient _currentCallNumber;
 
@@ -182,11 +189,6 @@ contract Rollups is ICrossChainManager {
 
     /// @notice Emitted when a new rollup is created
     event RollupCreated(uint256 indexed rollupId, address indexed rollupContract, bytes32 initialState);
-
-    /// @notice Emitted when a rollup's manager contract is swapped
-    event RollupContractChanged(
-        uint256 indexed rollupId, address indexed previousContract, address indexed newContract
-    );
 
     /// @notice Emitted when a rollup state is updated (only via the registered rollupContract)
     event StateUpdated(uint256 indexed rollupId, bytes32 newStateRoot);
@@ -210,8 +212,8 @@ contract Rollups is ICrossChainManager {
     /// @notice Emitted when a precomputed L2 transaction is executed
     event L2TXExecuted(uint256 indexed rollupId, uint256 indexed cursor);
 
-    /// @notice Emitted when a batch is posted via postBatch
-    event BatchPosted(uint256 indexed subBatchCount);
+    /// @notice Emitted when a batch is posted, carrying the number of rollups verified
+    event BatchPosted(uint256 indexed rollupCount);
 
     /// @notice Emitted after each call completes in _processNCalls
     /// @dev Not emitted for calls inside a revertSpan (those events are rolled back by the revert)
@@ -230,7 +232,7 @@ contract Rollups is ICrossChainManager {
     /// @notice Emitted after a revert span is processed via executeInContextAndRevert
     event RevertSpanExecuted(uint256 indexed entryIndex, uint256 startCallNumber, uint256 span);
 
-    /// @notice Emitted when an immediate entry's `_applyAndExecute` reverts during postBatch
+    /// @notice Emitted when an immediate entry's `_applyAndExecute` reverts during postVerifyAndExecuteOrSaveExecutionsFromBatch
     ///         step 4. The entry's state changes are rolled back; the cursor advances and the
     ///         loop continues with the next immediate entry. `revertData` carries the inner
     ///         revert payload (custom error or message) for off-chain debugging.
@@ -239,8 +241,8 @@ contract Rollups is ICrossChainManager {
     /// @notice Error when proof verification fails
     error InvalidProof();
 
-    /// @notice Reverts when `postBatch` is re-entered (e.g., via the meta hook calling back
-    ///         into `postBatch` for a disjoint rollup set, which would otherwise corrupt the
+    /// @notice Reverts when `postVerifyAndExecuteOrSaveExecutionsFromBatch` is re-entered (e.g., via the meta hook calling back
+    ///         into `postVerifyAndExecuteOrSaveExecutionsFromBatch` for a disjoint rollup set, which would otherwise corrupt the
     ///         shared transient tables)
     error PostBatchReentry();
 
@@ -256,11 +258,11 @@ contract Rollups is ICrossChainManager {
     /// @notice Error when execution is not found or crossChainCallHash doesn't match next entry
     error ExecutionNotFound();
 
-    /// @notice Error when a second `postBatch` tries to verify a rollup already verified this block
+    /// @notice Error when a second `postVerifyAndExecuteOrSaveExecutionsFromBatch` tries to verify a rollup already verified this block
     error RollupAlreadyVerifiedThisBlock(uint256 rollupId);
 
-    /// @notice Error when an owner-escape path on the manager (setStateRoot / setRollupContract)
-    ///         is invoked in the same block a `postBatch` already touched the rollup
+    /// @notice Error when the manager's `setStateRoot` escape hatch is invoked in the same
+    ///         block a `postVerifyAndExecuteOrSaveExecutionsFromBatch` already touched the rollup
     /// @dev Conservative gate: once a verified state transition lands in block N, the manager
     ///      must wait until block N+1 to escape-mutate. Avoids invalidating queued entries'
     ///      `currentState` checks and prevents PS-set / threshold mutation from racing the meta hook.
@@ -299,34 +301,34 @@ contract Rollups is ICrossChainManager {
     /// @notice Error when executeL2TX is called while already inside a cross-chain execution
     error L2TXNotAllowedDuringExecution();
 
-    /// @notice Error when `transientCount` passed to postBatch exceeds the flattened entry count
+    /// @notice Error when `transientExecutionEntryCount` exceeds the entry count
     error TransientCountExceedsEntries();
 
-    /// @notice Error when `transientLookupCallCount` exceeds the flattened lookup call count
+    /// @notice Error when `transientLookupCallCount` exceeds the lookup call count
     error TransientLookupCallCountExceedsLookupCalls();
 
-    /// @notice Error when sub-batch validation fails for malformed inputs
+    /// @notice Error when batch validation fails for malformed inputs
     error InvalidProofSystemConfig();
 
-    /// @notice Error when duplicate / unsorted proof systems are submitted in a single sub-batch
+    /// @notice Error when duplicate / unsorted proof systems are submitted in the batch
     error DuplicateProofSystem(address proofSystem);
 
     /// @notice Error when an entry's destinationRollupId, a state delta's rollupId, or a
-    ///         lookup call's destinationRollupId references a rollup not in the sub-batch
+    ///         lookup call's destinationRollupId references a rollup not in the batch
     error RollupNotInBatch(uint256 rollupId);
 
     // ──────────────────────────────────────────────
     //  Rollup creation
     // ──────────────────────────────────────────────
 
-    /// @notice Registers a pre-deployed `IRollup`-conforming manager contract as a new rollup
+    /// @notice Registers a pre-deployed `IRollupContract`-conforming manager contract as a new rollup
     /// @dev The caller deploys the manager (e.g. our reference `Rollup.sol`, or a custom
     ///      multisig / governance contract) with the desired proof systems / threshold /
     ///      whatever ownership model it chooses baked in, then registers it here. Registry
     ///      assigns a fresh rollupId, stores the initial state root, and indexes the manager
     ///      for reverse-lookup. The registry makes no assumption about how the manager
     ///      handles ownership — that's entirely the manager's concern.
-    /// @param rollupContract Address of the pre-deployed `IRollup` contract
+    /// @param rollupContract Address of the pre-deployed `IRollupContract` contract
     /// @param initialState Initial state root for this rollup
     /// @return rollupId Newly assigned rollup ID
     function createRollup(address rollupContract, bytes32 initialState) external returns (uint256 rollupId) {
@@ -338,7 +340,7 @@ contract Rollups is ICrossChainManager {
         // One-shot callback informing the manager of its rollupId. Manager must accept this
         // call only from the registry and only when not already initialized (otherwise reuse
         // of an already-registered manager would silently take over a different rollupId).
-        IRollup(rollupContract).rollupContractRegistered(rollupId);
+        IRollupContract(rollupContract).rollupContractRegistered(rollupId);
 
         emit RollupCreated(rollupId, rollupContract, initialState);
     }
@@ -347,100 +349,85 @@ contract Rollups is ICrossChainManager {
     //  Batch posting & execution table (multi-prover)
     // ──────────────────────────────────────────────
 
-    /// @notice Posts a batch composed of one or more sub-batches, each attested by ≥ threshold proof systems
+    /// @notice Posts a single proof-system batch attested by ≥ threshold proof systems per rollup
     /// @dev Flow:
-    ///      1. Per-sub-batch structural validation (sorting, disjointness, registration,
-    ///         destination membership, transient bounds). NO external calls.
-    ///      2. Atomic verification: per sub-batch, fetch vkMatrix from the manager (which
-    ///         enforces its own threshold) and verify each proof. ALL must verify before any
-    ///         state mutation — atomicity is what makes `crossProofSystemInteractions`
-    ///         load-bearing across PSes. These external calls are `view` (STATICCALL), so
-    ///         no reentrancy concern.
+    ///      1. Structural validation (sorting, registration, destination membership,
+    ///         transient bounds, per-rollup PS-index ranges). NO external calls.
+    ///      2. Atomic verification: fetch the vkMatrix per rollup (each manager enforces its
+    ///         own threshold against the rollup's chosen PS subset) and verify every proof.
+    ///         ALL must verify before any state mutation — atomicity is what makes
+    ///         `crossProofSystemInteractions` load-bearing across PSes. These external calls
+    ///         are `view` (STATICCALL), so no reentrancy concern.
     ///      3. Mark every touched rollup as verified-this-block. Sets the once-per-block-per-rollup
-    ///         invariant AND the read gate for `executeCrossChainCall` / `executeL2TX` (which
+    ///         invariant AND the read gate for `executeL1ToL2Call` / `executeL2TX` (which
     ///         require `lastVerifiedBlock(rid) == block.number`). Done before the meta hook
     ///         (non-view CALL) so the hook + later proxy calls can read from the queues.
-    ///      4. Build the transient stream by concatenating each sub-batch's leading
-    ///         `batch.transientCount` entries (and `batch.transientLookupCallCount` static
-    ///         calls) in sub-batch order. The combined stream lives in `_transientExecutions`
-    ///         / `_transientLookupCalls` and is consumed via a single global cursor.
-    ///      5. Drain the leading run of transient entries whose `crossChainCallHash == 0` inline
+    ///      4. Build the transient stream from `entries[0..transientExecutionEntryCount)`
+    ///         (and `l1ToL2lookupCalls[0..transientLookupCallCount)`). The stream lives in
+    ///         `_transientExecutions` / `_transientLookupCalls` and is consumed via a single
+    ///         global cursor.
+    ///      5. Drain the leading run of transient entries whose `proxyEntryHash == 0` inline
     ///         (pure L2 transactions + L2 transactions that touch L1). These have no source
     ///         action to match so they cannot be driven by the meta hook — the only place
-    ///         they can be consumed during postBatch is here. Each entry is dispatched via
-    ///         a `try/catch` self-call (`attemptApplyImmediate`); if `_applyAndExecute`
-    ///         reverts, the entry's state mutations roll back, an `ImmediateEntrySkipped`
-    ///         event is emitted, and the loop continues with the next entry. The cursor
-    ///         advance happens outside the try frame so it survives.
+    ///         they can be consumed is here. Each entry is dispatched via a `try/catch`
+    ///         self-call (`attemptApplyImmediate`); if `_applyAndExecute` reverts, the
+    ///         entry's state mutations roll back, an `ImmediateEntrySkipped` event is
+    ///         emitted, and the loop continues with the next entry.
     ///      6. If `msg.sender` is a contract, invoke its `IMetaCrossChainReceiver` hook so it
     ///         can drive the rest of the transient-backed entries via cross-chain proxy calls
     ///         within the same transaction.
     ///      7. Clean up the transient tables (whatever the hook consumed and whatever it
     ///         didn't). Anything left unconsumed is dropped here.
-    ///      8. Publish each sub-batch's remainder (entries past its own `transientCount`)
-    ///         into per-rollup queues keyed by each entry's `destinationRollupId`. Done
+    ///      8. Publish the remainder (entries past `transientExecutionEntryCount`) into
+    ///         per-rollup queues keyed by each entry's `destinationRollupId`. Done
     ///         unconditionally — entries are content-addressed by `StateDelta.currentState`,
     ///         so any entry whose preconditions were dropped with the transient leftover
-    ///         simply fails at consumption. A sub-batch with `transientCount == 0`
-    ///         contributes nothing to the transient stream and all its entries flow straight
-    ///         into the per-rollup queues here.
-    /// @param batches Array of proof-system groups (rollupIds disjoint across sub-batches);
-    ///                each carries its own `transientCount` / `transientLookupCallCount`
-    function postBatch(ProofSystemBatch[] calldata batches) external {
+    ///         simply fails at consumption.
+    /// @param batch The proof-system batch carrying entries, lookup calls, per-rollup PS
+    ///        subsets, proofs, and transient prefix bounds
+    function postVerifyAndExecuteOrSaveExecutionsFromBatch(ProofSystemBatchPerVerificationEntries calldata batch) external {
         // Reentrancy guard. Per-rollup `lastVerifiedBlock` blocks same-rollup re-entry, but a
-        // disjoint-rollup nested `postBatch` (e.g., from the meta hook) would otherwise share
-        // the same `_transientExecutions` / `_transientLookupCalls` storage and corrupt them.
+        // disjoint-rollup nested call (e.g., from the meta hook) would otherwise share the
+        // same `_transientExecutions` / `_transientLookupCalls` storage and corrupt them.
         // `_transientExecutions.length != 0` is true from `_loadTransient` through cleanup,
         // covering the entire window where a meta-hook callback could reach back here.
         // `_insideExecution()` is NOT sufficient — it's false during the meta hook window
         // (between proxy calls), missing the most common reentry path.
         if (_transientExecutions.length != 0) revert PostBatchReentry();
 
-        if (batches.length == 0) revert InvalidProofSystemConfig();
-
         // 1. Structural validation, NO external calls. Catches malformed input and ensures
         //    every rollup is registered (rollupContract != 0) before we touch its manager.
-        for (uint256 b = 0; b < batches.length; b++) {
-            _validateStructure(batches[b]);
-        }
+        _validateStructure(batch);
 
-        // 2. Per-sub-batch verification — fetch the vkMatrix ONCE per rollup, then verify
-        //    every proof in that sub-batch using the cached matrix. Each manager enforces
-        //    BOTH threshold (`proofSystems.length >= threshold`) AND per-PS membership
-        //    (every input PS has a non-zero vkey for this rollup) inside
-        //    `getVkeysFromProofSystems` — reverts on either failure, so the matrix is
-        //    uniformly non-zero on success. Single combined loop keeps the matrix scoped
-        //    to one iteration so we don't allocate `bytes32[][][]` across the whole batch.
+        // 2. Per-rollup vk fetch + per-PS verification. Each manager enforces BOTH threshold
+        //    (`proofSystemIndex.length >= threshold`) AND per-PS membership (every resolved PS
+        //    address has a non-zero vkey for this rollup) inside `checkProofSystemsAndGetVkeys`
+        //    — reverts on either failure, so the matrix is uniformly non-zero on success.
         //
-        //    Reentrancy: both `IRollup.getVkeysFromProofSystems` and `IProofSystem.verify`
+        //    Reentrancy: both `IRollupContract.checkProofSystemsAndGetVkeys` and `IProofSystem.verify`
         //    are `view` → dispatched via STATICCALL by the compiler. State mutations inside
         //    a STATICCALL frame (including nested calls) revert at the EVM level, so a
-        //    malicious manager / verifier cannot reenter `postBatch` (state-mutating). Safe
-        //    to perform these external calls before `_markVerifiedThisBlock`.
-        for (uint256 b = 0; b < batches.length; b++) {
-            bytes32[][] memory vkMatrix = _fetchVkMatrix(batches[b]);
-            _verifyProofSystemBatch(batches[b], vkMatrix);
-        }
+        //    malicious manager / verifier cannot reenter (state-mutating). Safe to perform
+        //    these external calls before `_markVerifiedThisBlock`.
+        bytes32[][] memory vkMatrix = _fetchVkMatrix(batch);
+        _verifyProofSystemBatch(batch, vkMatrix);
 
         // 3. Mark all touched rollups as verified-this-block. Sets the once-per-block-per-rollup
-        //    invariant AND the read gate for `executeCrossChainCall` / `executeL2TX` (which
+        //    invariant AND the read gate for `executeL1ToL2Call` / `executeL2TX` (which
         //    require `lastVerifiedBlock(rid) == block.number`). Done before the immediate-entry
         //    `_processNCalls` (which calls into proxies via non-view CALL — those CAN reenter,
         //    so the lastVerifiedBlock guard is what they hit).
-        for (uint256 b = 0; b < batches.length; b++) {
-            uint256[] calldata rids = batches[b].rollupIds;
-            for (uint256 i = 0; i < rids.length; i++) {
-                _markVerifiedThisBlock(rids[i]);
-            }
+        for (uint256 r = 0; r < batch.rollupIdsWithProofSystems.length; r++) {
+            _markVerifiedThisBlock(batch.rollupIdsWithProofSystems[r].rollupId);
         }
 
-        // 3. Build the transient stream by concatenating each sub-batch's leading prefix.
-        _loadTransient(batches);
+        // 4. Build the transient stream from the leading prefix.
+        _loadTransient(batch);
 
-        // 4. Drain the leading run of transient entries with `crossChainCallHash == 0` inline.
+        // 5. Drain the leading run of transient entries with `proxyEntryHash == 0` inline.
         //    These are the "pure L2 transactions + L2 transactions that touch L1" entries —
         //    no source action to match, so the only way to consume them is here, before the
-        //    meta hook starts driving non-zero-crossChainCallHash entries via proxy calls. Each runs
+        //    meta hook starts driving non-zero-proxyEntryHash entries via proxy calls. Each runs
         //    its own `_applyAndExecute` cycle (rolling hash / cursors reset per entry).
         //    `etherIn = 0` because these entries aren't driven by an external value transfer.
         //
@@ -455,7 +442,7 @@ contract Rollups is ICrossChainManager {
         //    cascade naturally drops dependent work without needing a global abort.
         while (
             _transientExecutionIndex < _transientExecutions.length
-                && _transientExecutions[_transientExecutionIndex].crossChainCallHash == bytes32(0)
+                && _transientExecutions[_transientExecutionIndex].proxyEntryHash == bytes32(0)
         ) {
             uint256 idx = _transientExecutionIndex;
             try this.attemptApplyImmediate(idx) {}
@@ -465,162 +452,184 @@ contract Rollups is ICrossChainManager {
             _transientExecutionIndex = idx + 1;
         }
 
-        // 5. Meta hook — caller drives the rest of the transient entries via proxy calls.
+        // 6. Meta hook — caller drives the rest of the transient entries via proxy calls.
         if (_transientExecutionIndex < _transientExecutions.length && msg.sender.code.length > 0) {
             IMetaCrossChainReceiver(msg.sender).executeMetaCrossChainTransactions();
         }
 
-        // 6. Cleanup transient tables (SSTORE refunds; nothing leaks into next tx). Done
+        // 7. Cleanup transient tables (SSTORE refunds; nothing leaks into next tx). Done
         //    BEFORE the deferred publish so that any subsequent reads during publish see a
         //    clean transient surface, and storage writes happen in a single committed phase.
         delete _transientExecutions;
         delete _transientLookupCalls;
         _transientExecutionIndex = 0;
 
-        // 7. Deferred publish — push each sub-batch's remainder (entries past its own
-        //    `transientCount`) into per-rollup queues keyed by `destinationRollupId`.
-        //    Done unconditionally even if the meta hook didn't drain the transient stream:
-        //    every entry is content-addressed via `StateDelta.currentState`, so any entry
-        //    whose preconditions were lost with the dropped transient leftover will simply
-        //    fail its `StateRootMismatch` check at consumption time. Publishing regardless
-        //    means a hook that consumed nothing still leaves the deferred queue usable.
-        _publishRemainder(batches);
+        // 8. Deferred publish — push the remainder (entries past `transientExecutionEntryCount`)
+        //    into per-rollup queues keyed by `destinationRollupId`. Done unconditionally even
+        //    if the meta hook didn't drain the transient stream: every entry is content-
+        //    addressed via `StateDelta.currentState`, so any entry whose preconditions were
+        //    lost with the dropped transient leftover will simply fail its `StateRootMismatch`
+        //    check at consumption time. Publishing regardless means a hook that consumed
+        //    nothing still leaves the deferred queue usable.
+        _publishRemainder(batch);
 
-        emit BatchPosted(batches.length);
+        emit BatchPosted(batch.rollupIdsWithProofSystems.length);
     }
 
     // ──────────────────────────────────────────────
-    //  postBatch internals
+    //  postVerifyAndExecuteOrSaveExecutionsFromBatch internals
     // ──────────────────────────────────────────────
 
-    /// @notice Structural validation of a sub-batch — no external calls, no vkey reads.
-    /// @dev Verifies sorting, registration of rollups + PSes, transient bounds, and entry /
-    ///      lookup-call `destinationRollupId` membership. Cross-sub-batch disjointness is
-    ///      NOT checked here — it's enforced for free by `_markVerifiedThisBlock` at step 3.
-    function _validateStructure(ProofSystemBatch calldata batch) internal view {
-        if (batch.proofSystems.length == 0) revert InvalidProofSystemConfig();
-        if (batch.proofSystems.length != batch.proof.length) revert InvalidProofSystemConfig();
-        if (batch.rollupIds.length == 0) revert InvalidProofSystemConfig();
-
-        // rollupIds strictly increasing within this sub-batch (catches same-rid-twice in one
-        // batch and address(0) duplicates). Each rollup must be registered (rollupContract != 0).
-        //
-        // Cross-sub-batch disjointness is NOT checked here — it falls out for free in step 3
-        // (`_markVerifiedThisBlock`): a rollup that appears in two sub-batches gets marked
-        // twice and the second call reverts `RollupAlreadyVerifiedThisBlock(rid)`. That's
-        // O(rollups) instead of the O(rollups × sub-batches) scan we'd otherwise do here.
-        uint256 prevRid = MAINNET_ROLLUP_ID;
-        for (uint256 i = 0; i < batch.rollupIds.length; i++) {
-            uint256 rid = batch.rollupIds[i];
-            if (rid <= prevRid) revert InvalidProofSystemConfig();
-            if (rollups[rid].rollupContract == address(0)) revert InvalidProofSystemConfig();
-            prevRid = rid;
-        }
+    /// @notice Structural validation — no external calls, no vkey reads.
+    /// @dev Verifies sorting, registration of rollups + PSes, transient bounds, entry /
+    ///      lookup-call `destinationRollupId` membership, and per-rollup PS-index ranges.
+    function _validateStructure(ProofSystemBatchPerVerificationEntries calldata batch) internal view {
+        uint256 psLen = batch.proofSystems.length;
+        if (psLen == 0) revert InvalidProofSystemConfig();
+        if (psLen != batch.proofs.length) revert InvalidProofSystemConfig();
+        if (batch.rollupIdsWithProofSystems.length == 0) revert InvalidProofSystemConfig();
 
         // proofSystems strictly increasing by address (rejects address(0) and duplicates).
         // No central PS registry — each rollup's manager defines its own allowed set via the
-        // vkey map. If a PS is not in any rollup's allowed set in this group, it returns
-        // bytes32(0) for that rollup, doesn't contribute to the manager's threshold count,
-        // and just costs the orchestrator gas during `IProofSystem.verify`.
+        // vkey map. The per-rollup `proofSystemIndex[]` then picks the SUBSET of the global
+        // list that the rollup accepts; PSes outside any rollup's subset still cost the
+        // orchestrator a `verify` call but contribute to no rollup's threshold.
         address prevPs = address(0);
-        for (uint256 k = 0; k < batch.proofSystems.length; k++) {
+        for (uint256 k = 0; k < psLen; k++) {
             address ps = batch.proofSystems[k];
             if (uint160(ps) <= uint160(prevPs)) revert DuplicateProofSystem(ps);
             prevPs = ps;
         }
 
-        // Every entry's destinationRollupId AND every entry's state delta rollupIds must
-        // belong to this sub-batch's rollupIds. The destination check is what prevents an
-        // adversarial prover from routing an entry into a different sub-batch's queue
-        // during `_publishRemainder`. Same constraint for lookup calls.
+        // Per-rollup checks: rollupIds strictly increasing (catches same-rid-twice and
+        // rid==0/MAINNET), each rollup registered (rollupContract != 0), and each rollup's
+        // proofSystemIndex[] strictly increasing within `[0, psLen)` (rejects duplicates and
+        // out-of-range indices). The strictly-increasing PS-index check makes the on-chain
+        // resolution to addresses unique and lets the manager rely on de-duplicated input.
+        uint256 prevRid = MAINNET_ROLLUP_ID;
+        for (uint256 r = 0; r < batch.rollupIdsWithProofSystems.length; r++) {
+            RollupIdWithProofSystems calldata rps = batch.rollupIdsWithProofSystems[r];
+            if (rps.rollupId <= prevRid) revert InvalidProofSystemConfig();
+            if (rollups[rps.rollupId].rollupContract == address(0)) revert InvalidProofSystemConfig();
+            prevRid = rps.rollupId;
+
+            uint64[] calldata indices = rps.proofSystemIndex;
+            if (indices.length == 0) revert InvalidProofSystemConfig();
+            // Use a 1-indexed sentinel so the first iteration's `idx <= prev` works against 0.
+            uint256 prevIdx;
+            for (uint256 j = 0; j < indices.length; j++) {
+                uint256 idx = uint256(indices[j]);
+                if (idx >= psLen) revert InvalidProofSystemConfig();
+                if (j > 0 && idx <= prevIdx) revert InvalidProofSystemConfig();
+                prevIdx = idx;
+            }
+        }
+
+        // Every entry's destinationRollupId AND every state delta's rollupId must belong to
+        // the batch. The destination check is what prevents an adversarial prover from
+        // routing an entry into a non-participating rollup's queue during `_publishRemainder`.
+        // Same constraint for lookup calls.
         for (uint256 i = 0; i < batch.entries.length; i++) {
             ExecutionEntry calldata entry = batch.entries[i];
-            if (!_containsRollup(batch.rollupIds, entry.destinationRollupId)) {
+            if (!_containsRollupInBatch(batch, entry.destinationRollupId)) {
                 revert RollupNotInBatch(entry.destinationRollupId);
             }
             StateDelta[] calldata deltas = entry.stateDeltas;
             for (uint256 j = 0; j < deltas.length; j++) {
-                if (!_containsRollup(batch.rollupIds, deltas[j].rollupId)) {
+                if (!_containsRollupInBatch(batch, deltas[j].rollupId)) {
                     revert RollupNotInBatch(deltas[j].rollupId);
                 }
             }
         }
-        for (uint256 i = 0; i < batch.lookupCalls.length; i++) {
-            if (!_containsRollup(batch.rollupIds, batch.lookupCalls[i].destinationRollupId)) {
-                revert RollupNotInBatch(batch.lookupCalls[i].destinationRollupId);
+        for (uint256 i = 0; i < batch.l1ToL2lookupCalls.length; i++) {
+            if (!_containsRollupInBatch(batch, batch.l1ToL2lookupCalls[i].destinationRollupId)) {
+                revert RollupNotInBatch(batch.l1ToL2lookupCalls[i].destinationRollupId);
             }
         }
 
-        // Per-sub-batch transient bounds.
-        if (batch.transientCount > batch.entries.length) revert TransientCountExceedsEntries();
-        if (batch.transientLookupCallCount > batch.lookupCalls.length) {
+        // Transient prefix bounds.
+        if (batch.transientExecutionEntryCount > batch.entries.length) revert TransientCountExceedsEntries();
+        if (batch.transientLookupCallCount > batch.l1ToL2lookupCalls.length) {
             revert TransientLookupCallCountExceedsLookupCalls();
         }
     }
 
-    /// @notice Fetches the (rollupIds × proofSystems) vkey matrix for a sub-batch — one
-    ///         external call to `getVkeysFromProofSystems` per rollup. The manager enforces
-    ///         its own threshold internally and reverts if not met; on success, the registry
-    ///         trusts the returned vkeys. Single fetch reused across the relevance check and
-    ///         the publicInputsHash.
-    /// @dev Called AFTER `_markVerifiedThisBlock`, so reentry into `postBatch` for the same
-    ///      rollups is blocked by `RollupAlreadyVerifiedThisBlock`.
-    function _fetchVkMatrix(ProofSystemBatch calldata batch) internal view returns (bytes32[][] memory vkMatrix) {
-        vkMatrix = new bytes32[][](batch.rollupIds.length);
-        for (uint256 r = 0; r < batch.rollupIds.length; r++) {
-            vkMatrix[r] =
-                IRollup(rollups[batch.rollupIds[r]].rollupContract).getVkeysFromProofSystems(batch.proofSystems);
-            // Manager must return exactly one vkey per proof system. Without this, a manager
-            // returning a short array would OOB-panic at `vkMatrix[r][k]` in
-            // `_verifyProofSystemBatch`; a long array would silently ignore tail entries.
-            if (vkMatrix[r].length != batch.proofSystems.length) revert InvalidProofSystemConfig();
+    /// @notice Fetches the (rollup × chosen-PS-subset) vkey matrix — one external call to
+    ///         `checkProofSystemsAndGetVkeys` per rollup, passing only the rollup's chosen
+    ///         PS subset (resolved from indices into the batch's global `proofSystems[]`).
+    ///         The manager enforces its own threshold against `subset.length` and reverts if
+    ///         any subset entry isn't an allowed PS for that rollup.
+    /// @dev Returns a JAGGED matrix: `vkMatrix[r].length == proofSystemIndex[r].length`. The
+    ///      element at `vkMatrix[r][j]` is the vkey of `proofSystems[proofSystemIndex[r][j]]`
+    ///      for rollup r. `_verifyProofSystemBatch` projects this jagged matrix into per-PS
+    ///      vkey vectors when building each PS's publicInputsHash.
+    function _fetchVkMatrix(ProofSystemBatchPerVerificationEntries calldata batch)
+        internal
+        view
+        returns (bytes32[][] memory vkMatrix)
+    {
+        vkMatrix = new bytes32[][](batch.rollupIdsWithProofSystems.length);
+        for (uint256 r = 0; r < batch.rollupIdsWithProofSystems.length; r++) {
+            RollupIdWithProofSystems calldata rps = batch.rollupIdsWithProofSystems[r];
+            uint64[] calldata indices = rps.proofSystemIndex;
+
+            // Resolve indices into the batch's global PS list to PS addresses. Indices were
+            // validated as in-range and strictly increasing in `_validateStructure`, so the
+            // resolved subset is itself strictly increasing — same invariant the manager's
+            // `checkProofSystemsAndGetVkeys` relies on for its own membership / dedup logic.
+            address[] memory subset = new address[](indices.length);
+            for (uint256 j = 0; j < indices.length; j++) {
+                subset[j] = batch.proofSystems[uint256(indices[j])];
+            }
+
+            vkMatrix[r] = IRollupContract(rollups[rps.rollupId].rollupContract).checkProofSystemsAndGetVkeys(subset);
+            // Manager must return exactly one vkey per resolved PS. Without this, a manager
+            // returning a short array would OOB-panic when projected into per-PS vkey vectors;
+            // a long array would silently ignore tail entries.
+            if (vkMatrix[r].length != indices.length) revert InvalidProofSystemConfig();
         }
     }
 
-    /// @notice Builds per-PS publicInputsHash and verifies every proof in a sub-batch
-    /// @dev Uses the cached `vkMatrix` from `_fetchVkMatrix` — same vkeys the threshold gate
-    ///      counted against, so a malicious manager cannot return different rows across calls.
-    function _verifyProofSystemBatch(ProofSystemBatch calldata batch, bytes32[][] memory vkMatrix) internal view {
+    /// @notice Builds per-PS publicInputsHash and verifies every proof in the batch
+    /// @dev Two-stage shape:
+    ///        sharedPublicInput = H(entryHashes, lookupCallHashes, blobHashes, H(callData),
+    ///                              crossProofSystemInteractions)
+    ///      For each PS k we walk the rollupIdsWithProofSystems table in canonical order;
+    ///      every rollup that lists k in its `proofSystemIndex[]` folds into a per-PS
+    ///      rolling accumulator one rollup at a time:
+    ///        acc_k = bytes32(0)
+    ///        for each rollup r with k ∈ proofSystemIndex[r]:
+    ///          acc_k = H(acc_k, rollupId_r, vkMatrix[r][j], blockHash_r, timestamp_r)
+    ///      Then `publicInputsHash[k] = H(sharedPublicInput, acc_k)`. (blockHash, timestamp)
+    ///      are fetched ONCE per rollup via `getTimestampAndBlockHash` ahead of the per-PS
+    ///      loop, intentionally OUTSIDE sharedPublicInput so they can be rollup-specific.
+    function _verifyProofSystemBatch(
+        ProofSystemBatchPerVerificationEntries calldata batch,
+        bytes32[][] memory vkMatrix
+    ) internal view {
         // Selected blob hashes (indexed into the tx-level blob set)
         bytes32[] memory blobHashes = new bytes32[](batch.blobIndices.length);
         for (uint256 i = 0; i < batch.blobIndices.length; i++) {
             blobHashes[i] = blobhash(batch.blobIndices[i]);
         }
 
-        // Per-entry hash binds the FULL entry content: stateDeltas, crossChainCallHash,
-        // destinationRollupId, calls[], nestedActions[], callCount, returnData, failed,
-        // rollingHash. Hashing the whole struct prevents an orchestrator from swapping
-        // call/nestedAction/returnData/failed at execution time without invalidating the
-        // proof — the rolling hash alone binds only OBSERVED call behavior (success +
-        // retData), not the call inputs (target/value/data) that the on-chain code reads
-        // out of storage at execution time.
+        // Per-entry hash binds the FULL entry content: stateDeltas, proxyEntryHash,
+        // destinationRollupId, L2ToL1Calls[], nestedActions[], callCount, returnData,
+        // rollingHash. Prevents an orchestrator from swapping call/nestedAction/returnData
+        // at execution time without invalidating the proof.
         bytes32[] memory entryHashes = new bytes32[](batch.entries.length);
         for (uint256 i = 0; i < batch.entries.length; i++) {
             entryHashes[i] = keccak256(abi.encode(batch.entries[i]));
         }
 
-        // Per-lookup-call hash, same rationale: a `LookupCall` with empty `calls[]` has only
-        // its `returnData` / `failed` validated by content equality at lookup time, so without
-        // a hash binding here the orchestrator could swap returnData arbitrarily. Hashing the
-        // whole struct (crossChainCallHash, destinationRollupId, returnData, failed, stateRoot,
-        // callNumber, lastNestedActionConsumed, calls[], rollingHash) closes that gap.
-        bytes32[] memory lookupCallHashes = new bytes32[](batch.lookupCalls.length);
-        for (uint256 i = 0; i < batch.lookupCalls.length; i++) {
-            lookupCallHashes[i] = keccak256(abi.encode(batch.lookupCalls[i]));
+        // Per-lookup-call hash, same rationale.
+        bytes32[] memory lookupCallHashes = new bytes32[](batch.l1ToL2lookupCalls.length);
+        for (uint256 i = 0; i < batch.l1ToL2lookupCalls.length; i++) {
+            lookupCallHashes[i] = keccak256(abi.encode(batch.l1ToL2lookupCalls[i]));
         }
 
-        // Two-stage public inputs hash:
-        //   sharedPublicInput = H(prevBlockhash, timestamp, rollupIds, entryHashes,
-        //                  lookupCallHashes, blobHashes, H(callData), crossProofSystemInteractions)
-        //   publicInputsHash[k] = H(sharedPublicInput, rollupVks[k])
-        // Stage split keeps the per-PS hash shallow (only two args) so it fits in the EVM
-        // stack under via-IR. Commitment is equivalent — every input is still bound, just
-        // through a one-extra-keccak path that off-chain provers must mirror.
         bytes32 sharedPublicInput = keccak256(
             abi.encodePacked(
-                blockhash(block.number - 1),
-                block.timestamp,
-                abi.encode(batch.rollupIds),
                 abi.encode(entryHashes),
                 abi.encode(lookupCallHashes),
                 abi.encode(blobHashes),
@@ -629,74 +638,94 @@ contract Rollups is ICrossChainManager {
             )
         );
 
-        // Per-PS verification — each PS gets its own publicInputsHash because rollupVks
-        // are per-(rid, ps). vkMatrix was fetched once by `_fetchVkMatrix` and reused.
+        // Fetch (timestamp, blockHash) for every rollup ONCE — reused across all PS loops
+        // below. Both reads are `view` (STATICCALL) so a malicious manager cannot reenter.
+        uint256 rollupCount = batch.rollupIdsWithProofSystems.length;
+        uint256[] memory timestamps = new uint256[](rollupCount);
+        bytes32[] memory blockHashes = new bytes32[](rollupCount);
+        for (uint256 r = 0; r < rollupCount; r++) {
+            (timestamps[r], blockHashes[r]) = IRollupContract(
+                rollups[batch.rollupIdsWithProofSystems[r].rollupId].rollupContract
+            ).getTimestampAndBlockHash();
+        }
+
+        // Per-PS verification — for each PS k, walk attesting rollups in canonical order
+        // (rollupId-ascending, the order the batch enforces) and fold each rollup's
+        // (rollupId, vkey_for_PS_k, blockHash, timestamp) into a rolling accumulator. Off-
+        // chain provers MUST mirror this incremental scheme so the on-chain rebuild matches.
         for (uint256 k = 0; k < batch.proofSystems.length; k++) {
-            bytes32[] memory rollupVks = new bytes32[](batch.rollupIds.length);
-            for (uint256 r = 0; r < batch.rollupIds.length; r++) {
-                rollupVks[r] = vkMatrix[r][k];
+            bytes32 acc = bytes32(0);
+            for (uint256 r = 0; r < rollupCount; r++) {
+                RollupIdWithProofSystems calldata rps = batch.rollupIdsWithProofSystems[r];
+                uint256 j = _findIndexPosition(rps.proofSystemIndex, k);
+                if (j == type(uint256).max) continue;
+                acc = keccak256(abi.encode(acc, rps.rollupId, vkMatrix[r][j], blockHashes[r], timestamps[r]));
             }
 
-            bytes32 publicInputsHash = keccak256(abi.encodePacked(sharedPublicInput, abi.encode(rollupVks)));
+            bytes32 publicInputsHash = keccak256(abi.encodePacked(sharedPublicInput, acc));
 
-            if (!IProofSystem(batch.proofSystems[k]).verify(batch.proof[k], publicInputsHash)) {
+            if (!IProofSystem(batch.proofSystems[k]).verify(batch.proofs[k], publicInputsHash)) {
                 revert InvalidProof();
             }
         }
     }
 
-    /// @notice Sets `lastVerifiedBlock = block.number` for `rid` and rejects double-verification
-    /// @dev Lazy reset: a stale `lastVerifiedBlock < block.number` means the queue/cursor are
-    ///      considered empty — overwrite them on first touch this block.
-    function _markVerifiedThisBlock(uint256 rid) internal {
-        RollupVerification storage rec = verificationByRollup[rid];
-        if (rec.lastVerifiedBlock == block.number) revert RollupAlreadyVerifiedThisBlock(rid);
-        rec.lastVerifiedBlock = block.number;
-        // Lazy queue reset — clear stale persistent state from prior blocks.
-        if (rec.queue.length != 0) delete rec.queue;
-        if (rec.lookupQueue.length != 0) delete rec.lookupQueue;
-        rec.cursor = 0;
+    /// @notice Returns the position of `target` in a strictly-increasing `uint64[]`, or
+    ///         `type(uint256).max` if not present. Strictly-increasing invariant is enforced
+    ///         in `_validateStructure`, so binary search is safe.
+    function _findIndexPosition(uint64[] calldata sortedIndices, uint256 target) internal pure returns (uint256) {
+        uint256 lo = 0;
+        uint256 hi = sortedIndices.length;
+        while (lo < hi) {
+            uint256 mid = (lo + hi) >> 1;
+            uint256 v = uint256(sortedIndices[mid]);
+            if (v == target) return mid;
+            if (v < target) lo = mid + 1;
+            else hi = mid;
+        }
+        return type(uint256).max;
     }
 
-    /// @notice Builds the transient stream by concatenating each sub-batch's leading prefix
-    /// @dev Each sub-batch contributes its first `batch.transientCount` entries and first
-    ///      `batch.transientLookupCallCount` lookup calls. The bounds are validated in
-    ///      `_validateProofSystemBatch` so we don't need to re-check here.
-    function _loadTransient(ProofSystemBatch[] calldata batches) internal {
-        for (uint256 b = 0; b < batches.length; b++) {
-            ProofSystemBatch calldata batch = batches[b];
-            for (uint256 i = 0; i < batch.transientCount; i++) {
-                _transientExecutions.push(batch.entries[i]);
-            }
-            for (uint256 i = 0; i < batch.transientLookupCallCount; i++) {
-                _transientLookupCalls.push(batch.lookupCalls[i]);
-            }
+    /// @notice Marks `rid` as verified this block. Multiple verifications per rollup per
+    ///         block are allowed — subsequent calls in the same block append to the existing
+    ///         queue without resetting the cursor, so already-published entries remain
+    ///         consumable.
+    /// @dev Lazy reset: only on the FIRST touch this block (i.e., `lastVerifiedBlock <
+    ///      block.number`) do we wipe the queue and zero the cursor. On a same-block re-touch
+    ///      we leave the queue / lookupQueue / cursor alone; `_publishRemainder` will push
+    ///      additional entries onto the existing queue.
+    function _markVerifiedThisBlock(uint256 rid) internal {
+        RollupVerification storage rec = verificationByRollup[rid];
+        if (rec.lastVerifiedBlock != block.number) {
+            rec.lastVerifiedBlock = block.number;
+            // First touch this block — clear stale persistent state from prior blocks.
+            if (rec.queue.length != 0) delete rec.queue;
+            if (rec.lookupQueue.length != 0) delete rec.lookupQueue;
+            rec.cursor = 0;
         }
     }
 
-    /// @notice Publishes each sub-batch's remainder (entries past its own transientCount)
+    /// @notice Builds the transient stream from the batch's leading prefix
+    /// @dev The bounds are validated in `_validateStructure` so we don't re-check here.
+    function _loadTransient(ProofSystemBatchPerVerificationEntries calldata batch) internal {
+        for (uint256 i = 0; i < batch.transientExecutionEntryCount; i++) {
+            _transientExecutions.push(batch.entries[i]);
+        }
+        for (uint256 i = 0; i < batch.transientLookupCallCount; i++) {
+            _transientLookupCalls.push(batch.l1ToL2lookupCalls[i]);
+        }
+    }
+
+    /// @notice Publishes the batch remainder (entries past `transientExecutionEntryCount`)
     ///         into per-rollup queues keyed by `destinationRollupId`
-    /// @dev TODO: gas optimization opportunity — when the meta hook left some transient
-    ///      entries unconsumed (i.e., `_transientExecutionIndex < _transientExecutions.length`),
-    ///      every persistent remainder entry whose preconditions depended on a dropped
-    ///      transient sibling will fail its `StateRootMismatch` check at consumption time.
-    ///      We could detect this case and skip pushing those doomed entries, saving the
-    ///      SSTOREs. The detection isn't free (we'd need to track per-sub-batch consumption
-    ///      OR walk forward from `_transientExecutionIndex` mapping back to sub-batch
-    ///      boundaries) so it's only a win if hooks frequently leave entries unconsumed,
-    ///      which we don't expect in normal operation. Punted until profiling shows it
-    ///      matters.
-    function _publishRemainder(ProofSystemBatch[] calldata batches) internal {
-        for (uint256 b = 0; b < batches.length; b++) {
-            ProofSystemBatch calldata batch = batches[b];
-            for (uint256 i = batch.transientCount; i < batch.entries.length; i++) {
-                uint256 destRid = batch.entries[i].destinationRollupId;
-                verificationByRollup[destRid].queue.push(batch.entries[i]);
-            }
-            for (uint256 i = batch.transientLookupCallCount; i < batch.lookupCalls.length; i++) {
-                uint256 destRid = batch.lookupCalls[i].destinationRollupId;
-                verificationByRollup[destRid].lookupQueue.push(batch.lookupCalls[i]);
-            }
+    function _publishRemainder(ProofSystemBatchPerVerificationEntries calldata batch) internal {
+        for (uint256 i = batch.transientExecutionEntryCount; i < batch.entries.length; i++) {
+            uint256 destRid = batch.entries[i].destinationRollupId;
+            verificationByRollup[destRid].queue.push(batch.entries[i]);
+        }
+        for (uint256 i = batch.transientLookupCallCount; i < batch.l1ToL2lookupCalls.length; i++) {
+            uint256 destRid = batch.l1ToL2lookupCalls[i].destinationRollupId;
+            verificationByRollup[destRid].lookupQueue.push(batch.l1ToL2lookupCalls[i]);
         }
     }
 
@@ -708,11 +737,12 @@ contract Rollups is ICrossChainManager {
     /// @param sourceAddress The original caller address (msg.sender as seen by the proxy)
     /// @param callData The original calldata sent to the proxy
     /// @return result The return data from the execution
-    function executeCrossChainCall(address sourceAddress, bytes calldata callData)
+    function executeL1ToL2Call(address sourceAddress, bytes calldata callData)
         external
         payable
         returns (bytes memory result)
     {
+        // Only PROXY
         ProxyInfo storage proxyInfo = authorizedProxies[msg.sender];
         if (proxyInfo.originalAddress == address(0)) revert UnauthorizedProxy();
 
@@ -748,6 +778,7 @@ contract Rollups is ICrossChainManager {
         if (verificationByRollup[rollupId].lastVerifiedBlock != block.number) {
             revert ExecutionNotInCurrentBlock(rollupId);
         }
+
         if (_insideExecution()) revert L2TXNotAllowedDuringExecution();
 
         emit L2TXExecuted(rollupId, verificationByRollup[rollupId].cursor);
@@ -771,12 +802,12 @@ contract Rollups is ICrossChainManager {
         }
     }
 
-    /// @notice Consumes the next nested action, or replays a pre-computed reverting
-    ///         lookup call when no NestedAction matches.
+    /// @notice Consumes the next ExpectedL1ToL2Call entry, or replays a pre-computed
+    ///         reverting lookup call when no entry matches.
     /// @dev Routing rules:
-    ///      1. NestedAction at `_lastNestedActionConsumed` matches `crossChainCallHash` → consume
-    ///         (the speculative `++` bump is what commits, hash NESTED_BEGIN/END, return
-    ///         cached returnData).
+    ///      1. ExpectedL1ToL2Call at `_lastNestedActionConsumed` matches `crossChainCallHash`
+    ///         → consume (the speculative `++` bump is what commits, hash NESTED_BEGIN/END,
+    ///         return cached returnData).
     ///      2. Otherwise scan `_transientLookupCalls` then the destination rollup's
     ///         `lookupQueue` for a `failed=true` entry keyed by
     ///         (crossChainCallHash, _currentCallNumber, idx) where `idx` is the pre-bump cursor
@@ -785,8 +816,9 @@ contract Rollups is ICrossChainManager {
     ///      3. No match → revert `ExecutionNotFound`.
     ///
     ///      Why fall back only on `failed=true`: a successful reentrant call in a normal CALL
-    ///      frame is expressed as a NestedAction; a successful read-only call is in a STATICCALL
-    ///      frame and routed to `staticCallLookup` instead. A lookup-call hit on this path only
+    ///      frame is expressed as an ExpectedL1ToL2Call entry; a successful read-only call
+    ///      is in a STATICCALL frame and routed to `staticCallLookup` instead. A lookup-call
+    ///      hit on this path only
     ///      makes sense when the caller has try/catch and expects a revert. The fallback
     ///      sidesteps the transient-rollback issue: a successful match's bump persists; every
     ///      other path reverts and the bump rolls back with it.
@@ -794,9 +826,9 @@ contract Rollups is ICrossChainManager {
         ExecutionEntry storage entry = _currentEntryStorage();
         uint256 idx = _lastNestedActionConsumed++;
 
-        // 1. NestedAction priority
-        if (idx < entry.nestedActions.length && entry.nestedActions[idx].crossChainCallHash == crossChainCallHash) {
-            NestedAction storage nested = entry.nestedActions[idx];
+        // 1. ExpectedL1ToL2Call priority
+        if (idx < entry.expectedL1ToL2Calls.length && entry.expectedL1ToL2Calls[idx].crossChainCallHash == crossChainCallHash) {
+            ExpectedL1ToL2Call storage nested = entry.expectedL1ToL2Calls[idx];
             uint256 nestedNumber = idx + 1;
             emit NestedActionConsumed(_currentEntryIndex, nestedNumber, crossChainCallHash, nested.callCount);
             _rollingHashNestedBegin(nestedNumber);
@@ -837,7 +869,7 @@ contract Rollups is ICrossChainManager {
 
     /// @notice Consumes the next execution entry, applies state deltas, executes calls, and verifies rolling hash
     /// @dev Consults the transient table first ("always look for transient calls before storage calls").
-    ///      While a postBatch call is running, `_transientExecutions` is non-empty and ALL consumption
+    ///      While a postVerifyAndExecuteOrSaveExecutionsFromBatch call is running, `_transientExecutions` is non-empty and ALL consumption
     ///      is routed through it via a global cursor — entries are NOT popped, only `_transientExecutionIndex`
     ///      advances. Running past the end inside a transient batch is treated as a hard `ExecutionNotFound`
     ///      (not a fall-through): the proof sized the batch and the hook trying to consume more than that
@@ -845,7 +877,7 @@ contract Rollups is ICrossChainManager {
     ///      to `verificationByRollup[destRid].queue` with that rollup's own cursor — `destinationRollupId`
     ///      doesn't need a separate consistency check because (a) the proof bound it into the entry hash,
     ///      and (b) the crossChainCallHash preimage already commits to the target rollup, so a mismatch falls
-    ///      through to the `entry.crossChainCallHash != crossChainCallHash` revert below.
+    ///      through to the `entry.proxyEntryHash != crossChainCallHash` revert below.
     /// @param destRid The destination rollup whose queue / transient slot to consume from
     /// @param crossChainCallHash The expected action input hash for the next entry
     /// @param etherIn The ETH value received (msg.value) for ether accounting
@@ -870,7 +902,7 @@ contract Rollups is ICrossChainManager {
             _currentEntryRollupId = destRid;
         }
 
-        if (entry.crossChainCallHash != crossChainCallHash) revert ExecutionNotFound();
+        if (entry.proxyEntryHash != crossChainCallHash) revert ExecutionNotFound();
 
         emit ExecutionConsumed(crossChainCallHash, destRid, idx);
 
@@ -894,15 +926,15 @@ contract Rollups is ICrossChainManager {
 
         ExecutionEntry storage entry = _currentEntryStorage();
         if (_rollingHash != rollingHash) revert RollingHashMismatch();
-        if (_currentCallNumber != entry.calls.length) revert UnconsumedCalls();
-        if (_lastNestedActionConsumed != entry.nestedActions.length) revert UnconsumedNestedActions();
+        if (_currentCallNumber != entry.L2ToL1Calls.length) revert UnconsumedCalls();
+        if (_lastNestedActionConsumed != entry.expectedL1ToL2Calls.length) revert UnconsumedNestedActions();
         if (totalEtherDelta != etherIn - etherOut) revert EtherDeltaMismatch();
 
         emit EntryExecuted(_currentEntryIndex, _rollingHash, _currentCallNumber, _lastNestedActionConsumed);
         _currentCallNumber = 0; // resets _insideExecution()
     }
 
-    /// @notice Processes N calls from the flat entry.calls[] array
+    /// @notice Processes N calls from the flat entry.L2ToL1Calls[] array
     /// @param count Number of iterations to process
     /// @return etherOut Total ETH sent in successful (non-reverted) calls. Local var (not
     ///         transient) so revertSpan rollbacks don't affect the outer accumulator — the
@@ -912,10 +944,10 @@ contract Rollups is ICrossChainManager {
         ExecutionEntry storage entry = _currentEntryStorage();
         uint256 processed = 0;
         while (processed < count) {
-            uint256 revertSpan = entry.calls[_currentCallNumber].revertSpan;
+            uint256 revertSpan = entry.L2ToL1Calls[_currentCallNumber].revertSpan;
 
             if (revertSpan == 0) {
-                CrossChainCall memory cc = entry.calls[_currentCallNumber];
+                L2ToL1Call memory cc = entry.L2ToL1Calls[_currentCallNumber];
                 _currentCallNumber++;
 
                 _rollingHashCallBegin(_currentCallNumber);
@@ -938,14 +970,14 @@ contract Rollups is ICrossChainManager {
                 processed++;
             } else {
                 uint256 savedCallNumber = _currentCallNumber;
-                entry.calls[_currentCallNumber].revertSpan = 0;
+                entry.L2ToL1Calls[_currentCallNumber].revertSpan = 0;
 
                 try this.executeInContextAndRevert(revertSpan) {}
                 catch (bytes memory revertData) {
                     (_rollingHash, _lastNestedActionConsumed, _currentCallNumber) = _decodeContextResult(revertData);
                 }
 
-                entry.calls[savedCallNumber].revertSpan = revertSpan;
+                entry.L2ToL1Calls[savedCallNumber].revertSpan = revertSpan;
                 emit RevertSpanExecuted(_currentEntryIndex, savedCallNumber, revertSpan);
                 processed += revertSpan;
             }
@@ -960,15 +992,15 @@ contract Rollups is ICrossChainManager {
     }
 
     /// @notice Self-call wrapper that runs `_applyAndExecute` for one immediate entry
-    ///         in an isolated frame. Used by `postBatch` step 4 to make immediate-entry
+    ///         in an isolated frame. Used by `postVerifyAndExecuteOrSaveExecutionsFromBatch` step 4 to make immediate-entry
     ///         execution revertible: if this frame reverts, the surrounding `try/catch`
-    ///         in postBatch catches and skips to the next entry instead of aborting the
+    ///         in postVerifyAndExecuteOrSaveExecutionsFromBatch catches and skips to the next entry instead of aborting the
     ///         whole batch. Unlike `executeInContextAndRevert`, this propagates the inner
     ///         result — succeeds when `_applyAndExecute` succeeds, reverts when it reverts.
     /// @dev Sets `_currentEntryIndex` / `_currentEntryRollupId` here so transient state for
     ///      the entry being processed is set within the same frame as `_applyAndExecute`.
     ///      On revert those writes roll back too, which is fine — the next iteration sets
-    ///      them fresh. The cursor advance in postBatch happens OUTSIDE this frame.
+    ///      them fresh. The cursor advance in postVerifyAndExecuteOrSaveExecutionsFromBatch happens OUTSIDE this frame.
     function attemptApplyImmediate(uint256 transientIdx) public {
         if (msg.sender != address(this)) revert NotSelf();
         ExecutionEntry storage entry = _transientExecutions[transientIdx];
@@ -1053,7 +1085,7 @@ contract Rollups is ICrossChainManager {
 
     /// @notice Owner escape hatch for setting the state root directly. Callable only by the
     ///         registered manager contract for `rollupId`. Locked out for the rest of the block
-    ///         once any postBatch has touched this rollup (see `RollupBatchActiveThisBlock`).
+    ///         once any postVerifyAndExecuteOrSaveExecutionsFromBatch has touched this rollup (see `RollupBatchActiveThisBlock`).
     function setStateRoot(uint256 rollupId, bytes32 newStateRoot) external {
         if (msg.sender != rollups[rollupId].rollupContract) revert NotRollupContract();
         if (verificationByRollup[rollupId].lastVerifiedBlock == block.number) {
@@ -1063,22 +1095,6 @@ contract Rollups is ICrossChainManager {
         emit StateUpdated(rollupId, newStateRoot);
     }
 
-    /// @notice Swap the manager contract for `rollupId`. Callable only by the current manager.
-    /// @dev The OLD manager calls this to hand off authority. The new contract receives the
-    ///      `rollupContractRegistered(rollupId)` callback so it learns its id; subsequent callbacks from
-    ///      it pass the same id back. Locked out for the rest of the block once any postBatch
-    ///      has touched this rollup. The registry makes no assumption about ownership inside
-    ///      `newContract` — handoff legitimacy is the OLD manager's responsibility.
-    function setRollupContract(uint256 rollupId, address newContract) external {
-        if (msg.sender != rollups[rollupId].rollupContract) revert NotRollupContract();
-        if (newContract == address(0) || newContract == address(this)) revert InvalidRollupContract();
-
-        rollups[rollupId].rollupContract = newContract;
-        IRollup(newContract).rollupContractRegistered(rollupId);
-
-        emit RollupContractChanged(rollupId, msg.sender, newContract);
-    }
-
     // ──────────────────────────────────────────────
     //  Lookup call lookup
     // ──────────────────────────────────────────────
@@ -1086,12 +1102,12 @@ contract Rollups is ICrossChainManager {
     /// @notice Looks up a pre-computed lookup call result, scanning the transient table
     ///         first then the destination rollup's static queue
     /// @dev Matches by crossChainCallHash + current call number + last nested action consumed.
-    ///      Consults `_transientLookupCalls` first (populated only while a postBatch is
+    ///      Consults `_transientLookupCalls` first (populated only while a postVerifyAndExecuteOrSaveExecutionsFromBatch is
     ///      executing its transient prefix) and falls through to the per-rollup
     ///      `lookupQueue` keyed by `proxyInfo.originalRollupId`. tload works in static
     ///      context, so the transient tracking variables used to compute the match keys
     ///      are readable.
-    /// @dev TODO (perf): if a sub-batch has many lookup calls, the linear scan is O(n).
+    /// @dev TODO (perf): if the batch has many lookup calls, the linear scan is O(n).
     ///      Idea: have the orchestrator sort `lookupCalls[]` by a derived key (e.g., the
     ///      lookup tuple `keccak256(crossChainCallHash, callNumber, lastNestedActionConsumed)`,
     ///      treated as a `uint256`) so on-chain we can binary-search → O(log n). Same
@@ -1153,9 +1169,9 @@ contract Rollups is ICrossChainManager {
     }
 
     /// @notice Executes calls in static context and computes a rolling hash of results
-    function _processNLookupCalls(CrossChainCall[] memory calls) internal view returns (bytes32 computedHash) {
+    function _processNLookupCalls(L2ToL1Call[] memory calls) internal view returns (bytes32 computedHash) {
         for (uint256 i = 0; i < calls.length; i++) {
-            CrossChainCall memory cc = calls[i];
+            L2ToL1Call memory cc = calls[i];
             address sourceProxy = computeCrossChainProxyAddress(cc.sourceAddress, cc.sourceRollupId);
             (bool success, bytes memory retData) =
                 sourceProxy.staticcall(abi.encodeCall(CrossChainProxy.executeOnBehalf, (cc.targetAddress, cc.data)));
@@ -1216,12 +1232,12 @@ contract Rollups is ICrossChainManager {
     // ──────────────────────────────────────────────
 
     /// @notice Computes the cross-chain call hash from individual fields. Same shape used
-    ///         both when building the hash for a proxy-driven CALL (`executeCrossChainCall`)
+    ///         both when building the hash for a proxy-driven CALL (`executeL1ToL2Call`)
     ///         and for a static lookup (`staticCallLookup`). Public so off-chain tooling can
     ///         call it directly to derive the hash for a planned cross-chain call without
     ///         redoing the abi.encode + keccak off-chain.
     /// @dev Formula: `keccak256(abi.encode(targetRollupId, targetAddress, value, data,
-    ///      sourceAddress, sourceRollupId))`. Field order MUST match `CrossChainCall` field
+    ///      sourceAddress, sourceRollupId))`. Field order MUST match `L2ToL1Call` field
     ///      order plus the source pair appended; reordering would break every on-chain
     ///      hash check and every off-chain tool that pre-computes the hash.
     function computeCrossChainCallHash(
@@ -1239,13 +1255,17 @@ contract Rollups is ICrossChainManager {
         return keccak256(abi.encode(targetRollupId, targetAddress, value, data, sourceAddress, sourceRollupId));
     }
 
-    /// @notice Binary-search membership check in a strictly-increasing array of rollup IDs
-    function _containsRollup(uint256[] calldata sortedRollupIds, uint256 rollupId) internal pure returns (bool) {
+    /// @notice Binary-search membership check on the batch's `rollupIdsWithProofSystems[]`,
+    ///         which is sorted strictly ascending by `.rollupId`.
+    function _containsRollupInBatch(
+        ProofSystemBatchPerVerificationEntries calldata batch,
+        uint256 rollupId
+    ) internal pure returns (bool) {
         uint256 lo = 0;
-        uint256 hi = sortedRollupIds.length;
+        uint256 hi = batch.rollupIdsWithProofSystems.length;
         while (lo < hi) {
             uint256 mid = (lo + hi) >> 1;
-            uint256 v = sortedRollupIds[mid];
+            uint256 v = batch.rollupIdsWithProofSystems[mid].rollupId;
             if (v == rollupId) return true;
             if (v < rollupId) lo = mid + 1;
             else hi = mid;
@@ -1257,7 +1277,7 @@ contract Rollups is ICrossChainManager {
     //  Views
     // ──────────────────────────────────────────────
 
-    /// @notice Last block at which `_rollupId` was verified by a postBatch call
+    /// @notice Last block at which `_rollupId` was verified by a postVerifyAndExecuteOrSaveExecutionsFromBatch call
     function lastVerifiedBlock(uint256 _rollupId) external view returns (uint256) {
         return verificationByRollup[_rollupId].lastVerifiedBlock;
     }

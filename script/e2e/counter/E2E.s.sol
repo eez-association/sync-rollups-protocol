@@ -2,11 +2,11 @@
 pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
-import {Rollups, ProofSystemBatch} from "../../../src/Rollups.sol";
+import {EEZ, ProofSystemBatchPerVerificationEntries} from "../../../src/EEZ.sol";
 import {
     StateDelta,
-    CrossChainCall,
-    NestedAction,
+    L2ToL1Call,
+    ExpectedL1ToL2Call,
     ExecutionEntry,
     LookupCall
 } from "../../../src/ICrossChainManager.sol";
@@ -18,10 +18,10 @@ import {crossChainCallHash, noLookupCalls, noNestedActions, noCalls} from "../sh
 //  Counter scenario — L1-starting, simplest case
 //
 //  Flow:
-//    1. postBatch loads ONE deferred L1 entry with precomputed return=uint256(1)
+//    1. postVerifyAndExecuteOrSaveExecutionsFromBatch loads ONE deferred L1 entry with precomputed return=uint256(1)
 //    2. User calls CounterAndProxy.incrementProxy() on L1
 //    3. CounterAndProxy calls CounterProxy (L1 proxy for Counter@L2)
-//    4. Proxy forwards to Rollups.executeCrossChainCall
+//    4. Proxy forwards to EEZ.executeL1ToL2Call
 //    5. Entry consumed, returns abi.encode(1)
 //    6. CounterAndProxy: counter=1, targetCounter=1
 //    7. L2 rollup stateRoot updated via StateDelta (no L2 code runs)
@@ -60,10 +60,10 @@ abstract contract CounterActions {
         entries = new ExecutionEntry[](1);
         entries[0] = ExecutionEntry({
             stateDeltas: deltas,
-            crossChainCallHash: _callHash(counterL2, counterAndProxy),
+            proxyEntryHash: _callHash(counterL2, counterAndProxy),
             destinationRollupId: L2_ROLLUP_ID,
-            calls: noCalls(),
-            nestedActions: noNestedActions(),
+            L2ToL1Calls: noCalls(),
+            expectedL1ToL2Calls: noNestedActions(),
             callCount: 0,
             returnData: abi.encode(uint256(1)),
             rollingHash: bytes32(0)
@@ -71,10 +71,10 @@ abstract contract CounterActions {
     }
 }
 
-/// @notice Batcher: postBatch + incrementProxy in one tx (local mode only).
+/// @notice Batcher: postVerifyAndExecuteOrSaveExecutionsFromBatch + incrementProxy in one tx (local mode only).
 contract Batcher {
     function execute(
-        Rollups rollups,
+        EEZ rollups,
         address proofSystem,
         ExecutionEntry[] calldata entries,
         LookupCall[] calldata lookupCalls,
@@ -88,20 +88,20 @@ contract Batcher {
         rids[0] = L2_ROLLUP_ID;
         bytes[] memory proofs = new bytes[](1);
         proofs[0] = "proof";
-        ProofSystemBatch[] memory batches = new ProofSystemBatch[](1);
-        batches[0] = ProofSystemBatch({
+        ProofSystemBatchPerVerificationEntries[] memory batches = new ProofSystemBatchPerVerificationEntries[](1);
+        batches[0] = ProofSystemBatchPerVerificationEntries({
             proofSystems: psList,
             rollupIds: rids,
             entries: entries,
-            lookupCalls: lookupCalls,
-            transientCount: 0,
+            l1ToL2lookupCalls: lookupCalls,
+            transientExecutionEntryCount: 0,
             transientLookupCallCount: 0,
             blobIndices: new uint256[](0),
             callData: "",
-            proof: proofs,
+            proofs: proofs,
             crossProofSystemInteractions: bytes32(0)
         });
-        rollups.postBatch(batches);
+        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batches);
         cap.incrementProxy();
     }
 }
@@ -130,7 +130,7 @@ contract Deploy is Script {
         address counterL2Addr = vm.envAddress("COUNTER_L2");
 
         vm.startBroadcast();
-        Rollups rollups = Rollups(rollupsAddr);
+        EEZ rollups = EEZ(rollupsAddr);
 
         address counterProxy;
         try rollups.createCrossChainProxy(counterL2Addr, L2_ROLLUP_ID) returns (address p) {
@@ -151,7 +151,7 @@ contract Deploy is Script {
 //  Executes
 // ═══════════════════════════════════════════════════════════════════════
 
-/// @title Execute — local mode: postBatch + incrementProxy via Batcher
+/// @title Execute — local mode: postVerifyAndExecuteOrSaveExecutionsFromBatch + incrementProxy via Batcher
 /// Env: ROLLUPS, COUNTER_L2, COUNTER_AND_PROXY
 contract Execute is Script, CounterActions {
     function run() external {
@@ -163,7 +163,7 @@ contract Execute is Script, CounterActions {
         vm.startBroadcast();
         Batcher batcher = new Batcher();
         batcher.execute(
-            Rollups(rollupsAddr),
+            EEZ(rollupsAddr),
             proofSystemAddr,
             _l1Entries(counterL2Addr, capAddr),
             noLookupCalls(),

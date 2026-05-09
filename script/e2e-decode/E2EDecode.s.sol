@@ -2,10 +2,10 @@
 pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
-import {Rollups, ProofSystemBatch} from "../../src/Rollups.sol";
+import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../src/EEZ.sol";
 import {Rollup} from "../../src/rollupContract/Rollup.sol";
 import {IProofSystem} from "../../src/IProofSystem.sol";
-import {ExecutionEntry, StateDelta, CrossChainCall, NestedAction, LookupCall} from "../../src/ICrossChainManager.sol";
+import {ExecutionEntry, StateDelta, L2ToL1Call, ExpectedL1ToL2Call, LookupCall} from "../../src/ICrossChainManager.sol";
 import {Counter, CounterAndProxy} from "../../test/mocks/CounterContracts.sol";
 
 contract MockProofSystem is IProofSystem {
@@ -14,11 +14,11 @@ contract MockProofSystem is IProofSystem {
     }
 }
 
-/// @notice Helper that executes postBatch + incrementProxy in a single transaction.
-/// @dev Same-block requirement for executeCrossChainCall after postBatch.
+/// @notice Helper that executes postVerifyAndExecuteOrSaveExecutionsFromBatch + incrementProxy in a single transaction.
+/// @dev Same-block requirement for executeL1ToL2Call after postVerifyAndExecuteOrSaveExecutionsFromBatch.
 contract Batcher {
     function execute(
-        Rollups rollups,
+        EEZ rollups,
         address proofSystem,
         uint256 rollupId,
         ExecutionEntry[] calldata entries,
@@ -29,24 +29,27 @@ contract Batcher {
     {
         address[] memory psList = new address[](1);
         psList[0] = proofSystem;
-        uint256[] memory rids = new uint256[](1);
-        rids[0] = rollupId;
         bytes[] memory proofs = new bytes[](1);
         proofs[0] = "proof";
-        ProofSystemBatch[] memory batches = new ProofSystemBatch[](1);
-        batches[0] = ProofSystemBatch({
-            proofSystems: psList,
-            rollupIds: rids,
+
+        uint64[] memory psIdx = new uint64[](1);
+        psIdx[0] = 0;
+        RollupIdWithProofSystems[] memory rps = new RollupIdWithProofSystems[](1);
+        rps[0] = RollupIdWithProofSystems({rollupId: rollupId, proofSystemIndex: psIdx});
+
+        ProofSystemBatchPerVerificationEntries memory batch = ProofSystemBatchPerVerificationEntries({
             entries: entries,
-            lookupCalls: lookupCalls,
-            transientCount: 0,
+            l1ToL2lookupCalls: lookupCalls,
+            transientExecutionEntryCount: 0,
             transientLookupCallCount: 0,
+            proofSystems: psList,
+            rollupIdsWithProofSystems: rps,
+            crossProofSystemInteractions: bytes32(0),
             blobIndices: new uint256[](0),
             callData: "",
-            proof: proofs,
-            crossProofSystemInteractions: bytes32(0)
+            proofs: proofs
         });
-        rollups.postBatch(batches);
+        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
         cap.incrementProxy();
     }
 }
@@ -60,7 +63,7 @@ contract E2EDeploy is Script {
         vm.startBroadcast();
 
         MockProofSystem ps = new MockProofSystem();
-        Rollups rollups = new Rollups();
+        EEZ rollups = new EEZ();
 
         address[] memory psList = new address[](1);
         psList[0] = address(ps);
@@ -88,7 +91,7 @@ contract E2EDeploy is Script {
     }
 }
 
-/// @title E2EExecute -- postBatch + incrementProxy via Batcher (single tx)
+/// @title E2EExecute -- postVerifyAndExecuteOrSaveExecutionsFromBatch + incrementProxy via Batcher (single tx)
 contract E2EExecute is Script {
     function run(address rollupsAddr, address proofSystemAddr, address counterL2Addr, address counterAndProxyAddr)
         external
@@ -97,7 +100,7 @@ contract E2EExecute is Script {
 
         Batcher batcher = new Batcher();
 
-        Rollups rollups = Rollups(rollupsAddr);
+        EEZ rollups = EEZ(rollupsAddr);
         bytes memory incrementCallData = abi.encodeWithSelector(Counter.increment.selector);
 
         // Cross-chain call hash: CounterAndProxy → CounterProxy → counterL2 (rollupId=1).
@@ -123,10 +126,10 @@ contract E2EExecute is Script {
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         entries[0] = ExecutionEntry({
             stateDeltas: stateDeltas,
-            crossChainCallHash: callHash,
+            proxyEntryHash: callHash,
             destinationRollupId: 1,
-            calls: new CrossChainCall[](0),
-            nestedActions: new NestedAction[](0),
+            L2ToL1Calls: new L2ToL1Call[](0),
+            expectedL1ToL2Calls: new ExpectedL1ToL2Call[](0),
             callCount: 0,
             returnData: abi.encode(uint256(1)),
             rollingHash: bytes32(0)

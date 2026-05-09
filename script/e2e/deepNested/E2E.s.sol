@@ -2,11 +2,11 @@
 pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
-import {Rollups, ProofSystemBatch} from "../../../src/Rollups.sol";
+import {EEZ, ProofSystemBatchPerVerificationEntries} from "../../../src/EEZ.sol";
 import {
     StateDelta,
-    CrossChainCall,
-    NestedAction,
+    L2ToL1Call,
+    ExpectedL1ToL2Call,
     ExecutionEntry,
     LookupCall
 } from "../../../src/ICrossChainManager.sol";
@@ -118,8 +118,8 @@ abstract contract DeepNestedActions {
         //           CAP.incrementProxy() via sourceProxy(nestedCaller, MAINNET) — mirrors
         //           _capActionHash (NestedCaller on Mainnet). During this call, CAP calls
         //           counterProxy → triggers _consumeNestedAction(nestedActions[1]).
-        CrossChainCall[] memory calls = new CrossChainCall[](2);
-        calls[0] = CrossChainCall({
+        L2ToL1Call[] memory calls = new L2ToL1Call[](2);
+        calls[0] = L2ToL1Call({
             targetAddress: nestedCaller,
             value: 0,
             data: abi.encodeWithSelector(NestedCaller.callNested.selector),
@@ -127,7 +127,7 @@ abstract contract DeepNestedActions {
             sourceRollupId: MAINNET_ROLLUP_ID,
             revertSpan: 0
         });
-        calls[1] = CrossChainCall({
+        calls[1] = L2ToL1Call({
             targetAddress: cap,
             value: 0,
             data: abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),
@@ -136,19 +136,19 @@ abstract contract DeepNestedActions {
             revertSpan: 0
         });
 
-        NestedAction[] memory nested = new NestedAction[](2);
-        nested[0] = NestedAction({crossChainCallHash: _capActionHash(cap, nestedCaller), callCount: 1, returnData: ""});
-        nested[1] = NestedAction({
+        ExpectedL1ToL2Call[] memory nested = new ExpectedL1ToL2Call[](2);
+        nested[0] = ExpectedL1ToL2Call({crossChainCallHash: _capActionHash(cap, nestedCaller), callCount: 1, returnData: ""});
+        nested[1] = ExpectedL1ToL2Call({
             crossChainCallHash: _counterActionHash(counterL2, cap), callCount: 0, returnData: abi.encode(uint256(1))
         });
 
         entries = new ExecutionEntry[](1);
         entries[0] = ExecutionEntry({
             stateDeltas: deltas,
-            crossChainCallHash: _outerActionHash(nestedCaller, alice),
+            proxyEntryHash: _outerActionHash(nestedCaller, alice),
             destinationRollupId: L2_ROLLUP_ID,
-            calls: calls,
-            nestedActions: nested,
+            L2ToL1Calls: calls,
+            expectedL1ToL2Calls: nested,
             callCount: 1,
             returnData: "",
             rollingHash: _expectedRollingHash()
@@ -171,7 +171,7 @@ contract Deploy is Script {
         address counterL2 = vm.envAddress("COUNTER_L2");
 
         vm.startBroadcast();
-        Rollups rollups = Rollups(rollupsAddr);
+        EEZ rollups = EEZ(rollupsAddr);
 
         // counterProxy: proxy for Counter@L2 on L1
         address counterProxy;
@@ -214,7 +214,7 @@ contract Deploy is Script {
 
 contract Batcher {
     function execute(
-        Rollups rollups,
+        EEZ rollups,
         address proofSystem,
         ExecutionEntry[] calldata entries,
         LookupCall[] calldata lookupCalls,
@@ -228,20 +228,20 @@ contract Batcher {
         rids[0] = L2_ROLLUP_ID;
         bytes[] memory proofs = new bytes[](1);
         proofs[0] = "proof";
-        ProofSystemBatch[] memory batches = new ProofSystemBatch[](1);
-        batches[0] = ProofSystemBatch({
+        ProofSystemBatchPerVerificationEntries[] memory batches = new ProofSystemBatchPerVerificationEntries[](1);
+        batches[0] = ProofSystemBatchPerVerificationEntries({
             proofSystems: psList,
             rollupIds: rids,
             entries: entries,
-            lookupCalls: lookupCalls,
-            transientCount: 0,
+            l1ToL2lookupCalls: lookupCalls,
+            transientExecutionEntryCount: 0,
             transientLookupCallCount: 0,
             blobIndices: new uint256[](0),
             callData: "",
-            proof: proofs,
+            proofs: proofs,
             crossProofSystemInteractions: bytes32(0)
         });
-        rollups.postBatch(batches);
+        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batches);
         (bool ok,) = ncProxy.call(abi.encodeWithSelector(NestedCaller.callNested.selector));
         require(ok, "outer call failed");
     }
@@ -260,7 +260,7 @@ contract Execute is Script, DeepNestedActions {
         Batcher batcher = new Batcher();
 
         batcher.execute(
-            Rollups(rollupsAddr),
+            EEZ(rollupsAddr),
             proofSystemAddr,
             _l1Entries(counterL2, capAddr, ncAddr, address(batcher)),
             noLookupCalls(),

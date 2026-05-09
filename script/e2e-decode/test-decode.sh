@@ -29,13 +29,13 @@ ROLLUPS=$(echo "$DEPLOY_OUTPUT" | grep "ROLLUPS=" | sed 's/.*ROLLUPS=//')
 COUNTER_L2=$(echo "$DEPLOY_OUTPUT" | grep "COUNTER_L2=" | sed 's/.*COUNTER_L2=//')
 COUNTER_AND_PROXY=$(echo "$DEPLOY_OUTPUT" | grep "COUNTER_AND_PROXY=" | sed 's/.*COUNTER_AND_PROXY=//')
 
-echo "Rollups: $ROLLUPS"
+echo "EEZ: $ROLLUPS"
 echo "CounterL2: $COUNTER_L2"
 echo "CounterAndProxy: $COUNTER_AND_PROXY"
 
-# ── 3. postBatch + incrementProxy (same broadcast = same block) ──
+# ── 3. postVerifyAndExecuteOrSaveExecutionsFromBatch + incrementProxy (same broadcast = same block) ──
 echo ""
-echo "====== Execute (postBatch + incrementProxy) ======"
+echo "====== Execute (postVerifyAndExecuteOrSaveExecutionsFromBatch + incrementProxy) ======"
 forge script script/e2e-decode/E2EDecode.s.sol:E2EExecute \
     --rpc-url "$RPC" --broadcast --private-key "$PK" \
     --sig "run(address,address,address)" "$ROLLUPS" "$COUNTER_L2" "$COUNTER_AND_PROXY" 2>&1 \

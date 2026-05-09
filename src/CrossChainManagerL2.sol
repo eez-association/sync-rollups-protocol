@@ -4,8 +4,8 @@ pragma solidity ^0.8.28;
 import {CrossChainProxy} from "./CrossChainProxy.sol";
 import {
     ICrossChainManager,
-    CrossChainCall,
-    NestedAction,
+    L2ToL1Call,
+    ExpectedL1ToL2Call,
     LookupCall,
     ExecutionEntry,
     ProxyInfo
@@ -14,7 +14,7 @@ import {
 /// @title CrossChainManagerL2
 /// @notice L2-side contract for cross-chain execution via pre-computed execution tables
 /// @dev No rollups, no state deltas, no ZK proofs. System address loads execution tables,
-///      which are consumed sequentially via proxy calls (executeCrossChainCall).
+///      which are consumed sequentially via proxy calls (executeL1ToL2Call).
 contract CrossChainManagerL2 is ICrossChainManager {
     /// @notice The rollup ID this L2 belongs to
     uint256 public immutable ROLLUP_ID;
@@ -198,7 +198,7 @@ contract CrossChainManagerL2 is ICrossChainManager {
     /// @param sourceAddress The original caller address (msg.sender as seen by the proxy)
     /// @param callData The original calldata sent to the proxy
     /// @return result The return data from the execution
-    function executeCrossChainCall(address sourceAddress, bytes calldata callData)
+    function executeL1ToL2Call(address sourceAddress, bytes calldata callData)
         external
         payable
         returns (bytes memory result)
@@ -322,17 +322,17 @@ contract CrossChainManagerL2 is ICrossChainManager {
     }
 
     /// @notice Consumes the next nested action, or replays a pre-computed reverting
-    ///         lookup call when no NestedAction matches.
-    /// @dev See L1 Rollups._consumeNestedAction for the full routing rules. L2 has no
+    ///         lookup call when no ExpectedL1ToL2Call matches.
+    /// @dev See L1 EEZ._consumeNestedAction for the full routing rules. L2 has no
     ///      transient lookup-call table, so the fallback only scans persistent `lookupCalls`.
     function _consumeNestedAction(bytes32 crossChainCallHash) internal returns (bytes memory) {
         ExecutionEntry storage entry = executions[_currentEntryIndex];
         uint256 idx = _lastNestedActionConsumed++;
 
-        // 1. NestedAction priority. The `++` above is the commit; if we fall through, every
+        // 1. ExpectedL1ToL2Call priority. The `++` above is the commit; if we fall through, every
         //    fallback path reverts and the EVM rolls the bump back.
         if (idx < entry.nestedActions.length && entry.nestedActions[idx].crossChainCallHash == crossChainCallHash) {
-            NestedAction storage nested = entry.nestedActions[idx];
+            ExpectedL1ToL2Call storage nested = entry.nestedActions[idx];
             uint256 nestedNumber = idx + 1; // 1-indexed
             emit NestedActionConsumed(_currentEntryIndex, nestedNumber, crossChainCallHash, nested.callCount);
             _rollingHash = keccak256(abi.encodePacked(_rollingHash, NESTED_BEGIN, nestedNumber));
@@ -418,7 +418,7 @@ contract CrossChainManagerL2 is ICrossChainManager {
             uint256 revertSpan = entry.calls[_currentCallNumber].revertSpan;
 
             if (revertSpan == 0) {
-                CrossChainCall memory cc = entry.calls[_currentCallNumber];
+                L2ToL1Call memory cc = entry.calls[_currentCallNumber];
                 _currentCallNumber++;
 
                 _rollingHash = keccak256(abi.encodePacked(_rollingHash, CALL_BEGIN, _currentCallNumber));
@@ -511,9 +511,9 @@ contract CrossChainManagerL2 is ICrossChainManager {
     /// @dev All proxies referenced by the calls must already be deployed — cannot CREATE2 in static context.
     ///      No revertSpan handling — all calls execute as-is (revertSpan correctness is verified by the proof).
     ///      Does not use storage or transient variables — only a local rolling hash.
-    function _processNLookupCalls(CrossChainCall[] memory calls) internal view returns (bytes32 computedHash) {
+    function _processNLookupCalls(L2ToL1Call[] memory calls) internal view returns (bytes32 computedHash) {
         for (uint256 i = 0; i < calls.length; i++) {
-            CrossChainCall memory cc = calls[i];
+            L2ToL1Call memory cc = calls[i];
             address sourceProxy = computeCrossChainProxyAddress(cc.sourceAddress, cc.sourceRollupId);
             (bool success, bytes memory retData) =
                 sourceProxy.staticcall(abi.encodeCall(CrossChainProxy.executeOnBehalf, (cc.targetAddress, cc.data)));
@@ -527,7 +527,7 @@ contract CrossChainManagerL2 is ICrossChainManager {
 
     /// @notice Computes the cross-chain call hash from individual fields. Public so off-chain
     ///         tooling can derive the hash for a planned cross-chain call. Same formula as
-    ///         the L1 `Rollups.computeCrossChainCallHash` so a tool that calls one can use
+    ///         the L1 `EEZ.computeCrossChainCallHash` so a tool that calls one can use
     ///         the result against either chain.
     function computeCrossChainCallHash(
         uint256 targetRollupId,

@@ -2,15 +2,15 @@
 pragma solidity ^0.8.28;
 
 import {Test, console} from "forge-std/Test.sol";
-import {Rollups, RollupConfig, ProofSystemBatch} from "../src/Rollups.sol";
+import {EEZ, RollupConfig, ProofSystemBatchPerVerificationEntries} from "../src/EEZ.sol";
 import {Rollup} from "../src/rollupContract/Rollup.sol";
 import {CrossChainManagerL2} from "../src/CrossChainManagerL2.sol";
 import {CrossChainProxy} from "../src/CrossChainProxy.sol";
 import {
     ExecutionEntry,
     StateDelta,
-    CrossChainCall,
-    NestedAction,
+    L2ToL1Call,
+    ExpectedL1ToL2Call,
     LookupCall,
     ProxyInfo
 } from "../src/ICrossChainManager.sol";
@@ -45,9 +45,9 @@ contract IntegrationTest is Test {
     uint8 constant NESTED_END = 4;
 
     // ── L1 contracts ──
-    Rollups public rollups;
+    EEZ public rollups;
     MockProofSystem public ps;
-    Rollup public l2Manager; // per-rollup IRollup manager for L2_ROLLUP_ID
+    Rollup public l2Manager; // per-rollup IRollupContract manager for L2_ROLLUP_ID
 
     // ── L2 contracts ──
     CrossChainManagerL2 public managerL2;
@@ -74,12 +74,12 @@ contract IntegrationTest is Test {
 
     function setUp() public {
         // ── L1 infrastructure ──
-        rollups = new Rollups();
+        rollups = new EEZ();
         ps = new MockProofSystem();
 
         // The contract has no `startingRollupId` constructor arg, so `rollupCounter`
         // starts at 0 and the FIRST registered rollup would receive id 0 = MAINNET.
-        // postBatch validation rejects id 0 (strict-increasing from MAINNET_ROLLUP_ID),
+        // postVerifyAndExecuteOrSaveExecutionsFromBatch validation rejects id 0 (strict-increasing from MAINNET_ROLLUP_ID),
         // so we burn id 0 with a throwaway rollup, then register L2 at id 1.
         {
             address[] memory psList = new address[](1);
@@ -152,23 +152,23 @@ contract IntegrationTest is Test {
         rids[0] = L2_ROLLUP_ID;
         bytes[] memory proofs = new bytes[](1);
         proofs[0] = "proof";
-        ProofSystemBatch[] memory batches = new ProofSystemBatch[](1);
-        batches[0] = ProofSystemBatch({
+        ProofSystemBatchPerVerificationEntries[] memory batches = new ProofSystemBatchPerVerificationEntries[](1);
+        batches[0] = ProofSystemBatchPerVerificationEntries({
             proofSystems: psList,
             rollupIds: rids,
             entries: entries,
-            lookupCalls: lookupCalls,
-            transientCount: transientCount,
+            l1ToL2lookupCalls: lookupCalls,
+            transientExecutionEntryCount: transientCount,
             transientLookupCallCount: transientLookupCallCount,
             blobIndices: new uint256[](0),
             callData: "",
-            proof: proofs,
+            proofs: proofs,
             crossProofSystemInteractions: bytes32(0)
         });
-        rollups.postBatch(batches);
+        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batches);
     }
 
-    /// @notice Computes the action hash the same way executeCrossChainCall does
+    /// @notice Computes the action hash the same way executeL1ToL2Call does
     function _crossChainCallHash(
         uint256 rollupId,
         address destination,
@@ -184,7 +184,7 @@ contract IntegrationTest is Test {
         return keccak256(abi.encode(rollupId, destination, value, data, sourceAddress, sourceRollup));
     }
 
-    /// @notice Creates an empty LookupCall array (used by postBatch and loadExecutionTable)
+    /// @notice Creates an empty LookupCall array (used by postVerifyAndExecuteOrSaveExecutionsFromBatch and loadExecutionTable)
     function _noLookupCalls() internal pure returns (LookupCall[] memory) {
         return new LookupCall[](0);
     }
@@ -195,7 +195,7 @@ contract IntegrationTest is Test {
     //  Call chain:
     //    Alice calls A(CounterAndProxy) on L1
     //    -> A calls B'(proxy for B) on L1
-    //    -> B' triggers Rollups.executeCrossChainCall
+    //    -> B' triggers EEZ.executeL1ToL2Call
     //    -> execution table returns pre-computed result: abi.encode(1)
     //    -> A receives result, sets targetCounter=1, counter=1
     //
@@ -206,7 +206,7 @@ contract IntegrationTest is Test {
     function test_Scenario1_L1CallsL2() public {
         bytes memory incrementCallData = abi.encodeWithSelector(Counter.increment.selector);
 
-        // crossChainCallHash: what executeCrossChainCall builds when A calls B'
+        // proxyEntryHash: what executeL1ToL2Call builds when A calls B'
         // B' proxy: originalAddress=counterL2, originalRollupId=L2_ROLLUP_ID
         // sourceAddress=counterAndProxy (A, msg.sender to B'), sourceRollup=MAINNET
         bytes32 crossChainCallHash = _crossChainCallHash(
@@ -222,16 +222,16 @@ contract IntegrationTest is Test {
                 rollupId: L2_ROLLUP_ID, currentState: keccak256("l2-initial-state"), newState: newState, etherDelta: 0
             });
 
-            CrossChainCall[] memory calls = new CrossChainCall[](0);
-            NestedAction[] memory nestedActions = new NestedAction[](0);
+            L2ToL1Call[] memory calls = new L2ToL1Call[](0);
+            ExpectedL1ToL2Call[] memory nestedActions = new ExpectedL1ToL2Call[](0);
 
             ExecutionEntry[] memory entries = new ExecutionEntry[](1);
             entries[0] = ExecutionEntry({
                 stateDeltas: stateDeltas,
-                crossChainCallHash: crossChainCallHash,
+                proxyEntryHash: crossChainCallHash,
                 destinationRollupId: L2_ROLLUP_ID,
-                calls: calls,
-                nestedActions: nestedActions,
+                L2ToL1Calls: calls,
+                expectedL1ToL2Calls: nestedActions,
                 callCount: 0,
                 returnData: abi.encode(uint256(1)),
                 rollingHash: bytes32(0)
@@ -256,7 +256,7 @@ contract IntegrationTest is Test {
     //  Call chain (reverse of Scenario 1):
     //    Alice calls D(CounterAndProxy) on L2
     //    -> D calls C'(proxy for C) on L2
-    //    -> C' triggers managerL2.executeCrossChainCall
+    //    -> C' triggers managerL2.executeL1ToL2Call
     //    -> execution table returns pre-computed result: abi.encode(1)
     //    -> D receives result, sets targetCounter=1, counter=1
     //
@@ -266,7 +266,7 @@ contract IntegrationTest is Test {
     function test_Scenario2_L2CallsL1() public {
         bytes memory incrementCallData = abi.encodeWithSelector(Counter.increment.selector);
 
-        // crossChainCallHash: what executeCrossChainCall builds when D calls C'
+        // proxyEntryHash: what executeL1ToL2Call builds when D calls C'
         // C' proxy: originalAddress=counterL1, originalRollupId=MAINNET_ROLLUP_ID
         // sourceAddress=counterAndProxyL2 (D, msg.sender to C'), sourceRollup=L2_ROLLUP_ID
         bytes32 crossChainCallHash = _crossChainCallHash(
@@ -276,16 +276,16 @@ contract IntegrationTest is Test {
         // L2 execution table: one entry, no calls
         {
             StateDelta[] memory emptyDeltas = new StateDelta[](0);
-            CrossChainCall[] memory calls = new CrossChainCall[](0);
-            NestedAction[] memory nestedActions = new NestedAction[](0);
+            L2ToL1Call[] memory calls = new L2ToL1Call[](0);
+            ExpectedL1ToL2Call[] memory nestedActions = new ExpectedL1ToL2Call[](0);
 
             ExecutionEntry[] memory entries = new ExecutionEntry[](1);
             entries[0] = ExecutionEntry({
                 stateDeltas: emptyDeltas,
-                crossChainCallHash: crossChainCallHash,
+                proxyEntryHash: crossChainCallHash,
                 destinationRollupId: L2_ROLLUP_ID,
-                calls: calls,
-                nestedActions: nestedActions,
+                L2ToL1Calls: calls,
+                expectedL1ToL2Calls: nestedActions,
                 callCount: 0,
                 returnData: abi.encode(uint256(1)),
                 rollingHash: bytes32(0)
@@ -312,15 +312,15 @@ contract IntegrationTest is Test {
     //
     //  The L2 entry has calls[] that execute A.incrementProxy() via A' proxy.
     //  Inside A.incrementProxy(), A calls B' (L1 proxy for B), which crosses
-    //  into rollups.executeCrossChainCall. This consumes a separate L1 deferred
+    //  into rollups.executeL1ToL2Call. This consumes a separate L1 deferred
     //  entry (not a nestedAction, because it is a different manager).
     //
     //  Flow:
-    //    1. Alice calls A' on L2 -> managerL2.executeCrossChainCall
+    //    1. Alice calls A' on L2 -> managerL2.executeL1ToL2Call
     //    2. L2 entry consumed -> _processNCalls(1)
     //    3. calls[0]: A'.executeOnBehalf(A, incrementProxy)
     //    4. A.incrementProxy() -> A calls B'
-    //    5. B' -> rollups.executeCrossChainCall -> L1 entry consumed -> returns abi.encode(1)
+    //    5. B' -> rollups.executeL1ToL2Call -> L1 entry consumed -> returns abi.encode(1)
     //    6. A: targetCounter=1, counter=1 (updated on-chain, shared single-EVM)
     //    7. L2 rolling hash verified, entry complete
     // ═══════════════════════════════════════════════════════════════════════
@@ -345,16 +345,16 @@ contract IntegrationTest is Test {
                 rollupId: L2_ROLLUP_ID, currentState: keccak256("l2-initial-state"), newState: newState, etherDelta: 0
             });
 
-            CrossChainCall[] memory calls = new CrossChainCall[](0);
-            NestedAction[] memory nestedActions = new NestedAction[](0);
+            L2ToL1Call[] memory calls = new L2ToL1Call[](0);
+            ExpectedL1ToL2Call[] memory nestedActions = new ExpectedL1ToL2Call[](0);
 
             ExecutionEntry[] memory entries = new ExecutionEntry[](1);
             entries[0] = ExecutionEntry({
                 stateDeltas: stateDeltas,
-                crossChainCallHash: l1ActionHash,
+                proxyEntryHash: l1ActionHash,
                 destinationRollupId: L2_ROLLUP_ID,
-                calls: calls,
-                nestedActions: nestedActions,
+                L2ToL1Calls: calls,
+                expectedL1ToL2Calls: nestedActions,
                 callCount: 0,
                 returnData: abi.encode(uint256(1)),
                 rollingHash: bytes32(0)
@@ -378,10 +378,10 @@ contract IntegrationTest is Test {
 
         {
             StateDelta[] memory emptyDeltas = new StateDelta[](0);
-            NestedAction[] memory nestedActions = new NestedAction[](0);
+            ExpectedL1ToL2Call[] memory nestedActions = new ExpectedL1ToL2Call[](0);
 
-            CrossChainCall[] memory calls = new CrossChainCall[](1);
-            calls[0] = CrossChainCall({
+            L2ToL1Call[] memory calls = new L2ToL1Call[](1);
+            calls[0] = L2ToL1Call({
                 targetAddress: address(counterAndProxy), // A
                 value: 0,
                 data: incrementProxyCallData,
@@ -393,10 +393,10 @@ contract IntegrationTest is Test {
             ExecutionEntry[] memory entries = new ExecutionEntry[](1);
             entries[0] = ExecutionEntry({
                 stateDeltas: emptyDeltas,
-                crossChainCallHash: l2ActionHash,
+                proxyEntryHash: l2ActionHash,
                 destinationRollupId: L2_ROLLUP_ID,
-                calls: calls,
-                nestedActions: nestedActions,
+                L2ToL1Calls: calls,
+                expectedL1ToL2Calls: nestedActions,
                 callCount: 1,
                 returnData: "",
                 rollingHash: rollingHash
@@ -430,15 +430,15 @@ contract IntegrationTest is Test {
     //
     //  The L1 entry has calls[] that execute D.incrementProxy() via a proxy.
     //  Inside D.incrementProxy(), D calls C' (L2 proxy for C), which crosses
-    //  into managerL2.executeCrossChainCall. This consumes a separate L2 entry
+    //  into managerL2.executeL1ToL2Call. This consumes a separate L2 entry
     //  (not a nestedAction, because it is a different manager).
     //
     //  Flow:
-    //    1. Alice calls D' on L1 -> rollups.executeCrossChainCall
+    //    1. Alice calls D' on L1 -> rollups.executeL1ToL2Call
     //    2. L1 entry consumed -> _processNCalls(1)
     //    3. calls[0]: proxy.executeOnBehalf(counterAndProxyL2, incrementProxy)
     //    4. D.incrementProxy() -> D calls C'
-    //    5. C' -> managerL2.executeCrossChainCall -> L2 entry consumed -> returns abi.encode(1)
+    //    5. C' -> managerL2.executeL1ToL2Call -> L2 entry consumed -> returns abi.encode(1)
     //    6. D: targetCounter=1, counter=1 (updated on-chain, shared single-EVM)
     //    7. L1 rolling hash verified, entry complete
     // ═══════════════════════════════════════════════════════════════════════
@@ -457,16 +457,16 @@ contract IntegrationTest is Test {
 
         {
             StateDelta[] memory emptyDeltas = new StateDelta[](0);
-            CrossChainCall[] memory calls = new CrossChainCall[](0);
-            NestedAction[] memory nestedActions = new NestedAction[](0);
+            L2ToL1Call[] memory calls = new L2ToL1Call[](0);
+            ExpectedL1ToL2Call[] memory nestedActions = new ExpectedL1ToL2Call[](0);
 
             ExecutionEntry[] memory entries = new ExecutionEntry[](1);
             entries[0] = ExecutionEntry({
                 stateDeltas: emptyDeltas,
-                crossChainCallHash: l2ActionHash,
+                proxyEntryHash: l2ActionHash,
                 destinationRollupId: L2_ROLLUP_ID,
-                calls: calls,
-                nestedActions: nestedActions,
+                L2ToL1Calls: calls,
+                expectedL1ToL2Calls: nestedActions,
                 callCount: 0,
                 returnData: abi.encode(uint256(1)),
                 rollingHash: bytes32(0)
@@ -497,10 +497,10 @@ contract IntegrationTest is Test {
                 rollupId: L2_ROLLUP_ID, currentState: keccak256("l2-initial-state"), newState: s1, etherDelta: 0
             });
 
-            NestedAction[] memory nestedActions = new NestedAction[](0);
+            ExpectedL1ToL2Call[] memory nestedActions = new ExpectedL1ToL2Call[](0);
 
-            CrossChainCall[] memory calls = new CrossChainCall[](1);
-            calls[0] = CrossChainCall({
+            L2ToL1Call[] memory calls = new L2ToL1Call[](1);
+            calls[0] = L2ToL1Call({
                 targetAddress: address(counterAndProxyL2), // D
                 value: 0,
                 data: incrementProxyCallData,
@@ -512,10 +512,10 @@ contract IntegrationTest is Test {
             ExecutionEntry[] memory entries = new ExecutionEntry[](1);
             entries[0] = ExecutionEntry({
                 stateDeltas: stateDeltas,
-                crossChainCallHash: l1ActionHash,
+                proxyEntryHash: l1ActionHash,
                 destinationRollupId: L2_ROLLUP_ID,
-                calls: calls,
-                nestedActions: nestedActions,
+                L2ToL1Calls: calls,
+                expectedL1ToL2Calls: nestedActions,
                 callCount: 1,
                 returnData: "",
                 rollingHash: rollingHash

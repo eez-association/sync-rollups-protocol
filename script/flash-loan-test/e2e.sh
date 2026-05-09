@@ -40,11 +40,11 @@ echo "Anvil L1 running (PID $L1_PID)"
 echo "Anvil L2 running (PID $L2_PID)"
 
 # ══════════════════════════════════════════════
-#  Deploy Rollups on L1
+#  Deploy EEZ on L1
 # ══════════════════════════════════════════════
 echo ""
-echo "====== Deploy Rollups (L1) ======"
-ROLLUPS_OUTPUT=$(forge script "$SCRIPT_DIR/DeployInfra.s.sol:DeployRollupsL1" \
+echo "====== Deploy EEZ (L1) ======"
+ROLLUPS_OUTPUT=$(forge script "$SCRIPT_DIR/DeployInfra.s.sol:DeployEEZL1" \
     --rpc-url "$L1_RPC" --broadcast --private-key "$PK" 2>&1)
 ROLLUPS=$(extract "$ROLLUPS_OUTPUT" "ROLLUPS")
 echo "ROLLUPS=$ROLLUPS"
@@ -109,7 +109,7 @@ L2_BLOCK=$(cast block-number --rpc-url "$L2_RPC")
 echo "L2 execution at block $L2_BLOCK"
 
 # ══════════════════════════════════════════════
-#  Execute L1 phase (postBatch + flash loan in same block)
+#  Execute L1 phase (postVerifyAndExecuteOrSaveExecutionsFromBatch + flash loan in same block)
 # ══════════════════════════════════════════════
 echo ""
 echo "====== Execute L1 Phase ======"

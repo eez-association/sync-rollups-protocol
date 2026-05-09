@@ -15,7 +15,7 @@ struct StateDelta {
 
 /// @notice Represents a cross-chain call within an execution entry
 /// @dev revertSpan > 0 opens an isolated revert context spanning the next revertSpan calls (including this one)
-struct CrossChainCall {
+struct L2ToL1Call {
     address targetAddress;
     uint256 value;
     bytes data;
@@ -30,7 +30,7 @@ struct CrossChainCall {
 /// @dev All nested actions must succeed. Failed calls should use LookupCall instead.
 /// @dev Position in the execution tree (crossChainCall index, nested action index, parent context)
 ///      is folded into the entry-level rolling hash rather than stored as explicit fields.
-struct NestedAction {
+struct ExpectedL1ToL2Call {
     bytes32 crossChainCallHash;
     /// Iterations the nested frame's `_processNCalls` runs over the parent entry's `calls[]`.
     /// Continues advancing the same global `_currentCallNumber` cursor that the outer frame
@@ -41,14 +41,14 @@ struct NestedAction {
 }
 
 /// @notice Represents an execution entry with pre-computed calls and return hash verification
-/// @dev Execution entries always SUCCEED at the top level — `executeCrossChainCall` returns
+/// @dev Execution entries always SUCCEED at the top level — `executeL1ToL2Call` returns
 ///      `entry.returnData` as success. There is no `failed` flag because **a reverting
 ///      top-level call isn't an execution; it's a lookup**. Reverting cross-chain results
 ///      are expressed via `LookupCall { failed: true }` consumed through `staticCallLookup`
 ///      (static-context entry point) or the failed-reentry fallback in `_consumeNestedAction`.
 ///      Naturally-reverting INNER calls inside an entry are still expressible: the proxy
 ///      `.call` returns `(false, retData)` and the rolling hash captures it via `CALL_END`;
-///      the entry's outer `executeCrossChainCall` still returns success with `entry.returnData`.
+///      the entry's outer `executeL1ToL2Call` still returns success with `entry.returnData`.
 ///      See `src/TODO.md` for the design discussion.
 /// @dev `destinationRollupId` is the rollup whose queue this entry is routed to on L1
 ///      (per-rollup queue model). Must match the rollupId derived from the consumer
@@ -67,7 +67,7 @@ struct NestedAction {
 ///        callCount + Σ nestedActions[i].callCount == calls.length
 ///      The on-chain `_currentCallNumber` cursor advances monotonically over `calls[]` —
 ///      there's only one cursor across the whole tree. When a top-level call triggers a
-///      reentrant cross-chain proxy invocation, control re-enters via `executeCrossChainCall`
+///      reentrant cross-chain proxy invocation, control re-enters via `executeL1ToL2Call`
 ///      → `_consumeNestedAction`, which calls `_processNCalls(nestedActions[i].callCount)`
 ///      on the SAME `calls[]` array, advancing the same cursor. Outer iteration resumes
 ///      where the cursor left off after the nested frame returns.
@@ -81,16 +81,16 @@ struct NestedAction {
 ///        `nestedActions[0].callCount = 2` (calls 2, 3 inside the nested frame),
 ///        and `_currentCallNumber == 5` at the end (the `UnconsumedCalls` guard checks this).
 struct ExecutionEntry {
-    StateDelta[] stateDeltas;
-    bytes32 crossChainCallHash;
+    StateDelta[] stateDeltas; // initial state --> Final state
+    bytes32 proxyEntryHash; // hashed call (l1 -> L2) or L2 txs
     uint256 destinationRollupId;
     /// All calls executed by this entry, flat, in execution order. Partitioned between
     /// the entry's outermost frame and any reentrant (nested) frames — see the natspec
     /// above for the `callCount` partition invariant.
-    CrossChainCall[] calls;
-    /// Parallel partition table: each `NestedAction` consumes a slice of `calls[]` during
+    L2ToL1Call[] L2ToL1Calls;
+    /// Parallel partition table: each `ExpectedL1ToL2Call` consumes a slice of `calls[]` during
     /// a reentrant frame. Order matches the order in which reentrant calls fire.
-    NestedAction[] nestedActions;
+    ExpectedL1ToL2Call[] expectedL1ToL2Calls;
     /// Top-level iterations. Together with `nestedActions[i].callCount`, partitions `calls[]`
     /// across the execution tree. See the natspec above.
     uint256 callCount;
@@ -100,7 +100,7 @@ struct ExecutionEntry {
 
 /// @notice Pre-computed result for a lookup call or a call that reverts
 /// @dev Used for read-only calls and for calls whose revert needs to be replayed.
-///      Loaded via postBatch (L1) or loadExecutionTable (L2).
+///      Loaded via postVerifyAndExecuteOrSaveExecutionsFromBatch (L1) or loadExecutionTable (L2).
 ///      All proxies referenced by `calls` must be deployed before staticCallLookup is called.
 struct LookupCall {
     bytes32 crossChainCallHash;
@@ -120,7 +120,7 @@ struct LookupCall {
     uint64 lastNestedActionConsumed;
     /// Optional sub-calls to replay in static context (no `revertSpan` allowed). Empty
     /// `calls[]` means the cached `returnData` / `failed` bypasses any sub-call replay.
-    CrossChainCall[] calls;
+    L2ToL1Call[] calls;
     /// Expected hash of the sub-call results — checked at lookup time when `calls[]` is
     /// non-empty. See `_processNLookupCalls` for the hashing scheme.
     bytes32 rollingHash;
@@ -133,9 +133,9 @@ struct ProxyInfo {
 }
 
 /// @title ICrossChainManager
-/// @notice Interface for cross-chain manager contracts (L1 Rollups and L2 CrossChainManagerL2)
+/// @notice Interface for cross-chain manager contracts (L1 EEZ and L2 CrossChainManagerL2)
 interface ICrossChainManager {
-    function executeCrossChainCall(address sourceAddress, bytes calldata callData)
+    function executeL1ToL2Call(address sourceAddress, bytes calldata callData)
         external
         payable
         returns (bytes memory result);

@@ -34,7 +34,7 @@ contract Bridge {
     //  State
     // ──────────────────────────────────────────────
 
-    /// @notice The cross-chain manager contract (Rollups on L1, CrossChainManagerL2 on L2)
+    /// @notice The cross-chain manager contract (EEZ on L1, CrossChainManagerL2 on L2)
     ICrossChainManager public manager;
 
     /// @notice This chain's rollup ID (0 for L1 mainnet)

@@ -2,12 +2,12 @@
 pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
-import {Rollups, ProofSystemBatch} from "../../src/Rollups.sol";
+import {EEZ, ProofSystemBatchPerVerificationEntries} from "../../src/EEZ.sol";
 import {CrossChainManagerL2} from "../../src/CrossChainManagerL2.sol";
 import {Bridge} from "../../src/periphery/Bridge.sol";
 import {FlashLoan} from "../../src/periphery/defiMock/FlashLoan.sol";
 import {FlashLoanBridgeExecutor} from "../../src/periphery/defiMock/FlashLoanBridgeExecutor.sol";
-import {ExecutionEntry, StateDelta, CrossChainCall, NestedAction, LookupCall} from "../../src/ICrossChainManager.sol";
+import {ExecutionEntry, StateDelta, L2ToL1Call, ExpectedL1ToL2Call, LookupCall} from "../../src/ICrossChainManager.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
@@ -107,16 +107,16 @@ contract ExecuteFlashLoanL2 is Script {
         // Load execution table (3 entries -- no calls[], simple sequential consumption)
         ExecutionEntry[] memory l2Entries = new ExecutionEntry[](3);
         StateDelta[] memory emptyDeltas = new StateDelta[](0);
-        CrossChainCall[] memory noCalls = new CrossChainCall[](0);
-        NestedAction[] memory noNested = new NestedAction[](0);
+        L2ToL1Call[] memory noCalls = new L2ToL1Call[](0);
+        ExpectedL1ToL2Call[] memory noNested = new ExpectedL1ToL2Call[](0);
         LookupCall[] memory noLookupCalls = new LookupCall[](0);
 
         l2Entries[0] = ExecutionEntry({
             stateDeltas: emptyDeltas,
-            crossChainCallHash: actionHash0,
+            proxyEntryHash: actionHash0,
             destinationRollupId: L2_ROLLUP_ID,
-            calls: noCalls,
-            nestedActions: noNested,
+            L2ToL1Calls: noCalls,
+            expectedL1ToL2Calls: noNested,
             callCount: 0,
             returnData: "",
             rollingHash: bytes32(0)
@@ -124,10 +124,10 @@ contract ExecuteFlashLoanL2 is Script {
 
         l2Entries[1] = ExecutionEntry({
             stateDeltas: emptyDeltas,
-            crossChainCallHash: actionHash1,
+            proxyEntryHash: actionHash1,
             destinationRollupId: L2_ROLLUP_ID,
-            calls: noCalls,
-            nestedActions: noNested,
+            L2ToL1Calls: noCalls,
+            expectedL1ToL2Calls: noNested,
             callCount: 0,
             returnData: "",
             rollingHash: bytes32(0)
@@ -135,10 +135,10 @@ contract ExecuteFlashLoanL2 is Script {
 
         l2Entries[2] = ExecutionEntry({
             stateDeltas: emptyDeltas,
-            crossChainCallHash: actionHash2,
+            proxyEntryHash: actionHash2,
             destinationRollupId: L2_ROLLUP_ID,
-            calls: noCalls,
-            nestedActions: noNested,
+            L2ToL1Calls: noCalls,
+            expectedL1ToL2Calls: noNested,
             callCount: 0,
             returnData: "",
             rollingHash: bytes32(0)
@@ -151,12 +151,12 @@ contract ExecuteFlashLoanL2 is Script {
     }
 }
 
-/// @title FlashLoanBatcher -- postBatch + executor.execute() in single tx
+/// @title FlashLoanBatcher -- postVerifyAndExecuteOrSaveExecutionsFromBatch + executor.execute() in single tx
 contract FlashLoanBatcher {
     uint256 constant L2_ROLLUP_ID = 1;
 
     function execute(
-        Rollups rollups,
+        EEZ rollups,
         address proofSystem,
         ExecutionEntry[] calldata entries,
         LookupCall[] calldata lookupCalls,
@@ -170,20 +170,20 @@ contract FlashLoanBatcher {
         rids[0] = L2_ROLLUP_ID;
         bytes[] memory proofs = new bytes[](1);
         proofs[0] = "proof";
-        ProofSystemBatch[] memory batches = new ProofSystemBatch[](1);
-        batches[0] = ProofSystemBatch({
+        ProofSystemBatchPerVerificationEntries[] memory batches = new ProofSystemBatchPerVerificationEntries[](1);
+        batches[0] = ProofSystemBatchPerVerificationEntries({
             proofSystems: psList,
             rollupIds: rids,
             entries: entries,
-            lookupCalls: lookupCalls,
-            transientCount: 0,
+            l1ToL2lookupCalls: lookupCalls,
+            transientExecutionEntryCount: 0,
             transientLookupCallCount: 0,
             blobIndices: new uint256[](0),
             callData: "",
-            proof: proofs,
+            proofs: proofs,
             crossProofSystemInteractions: bytes32(0)
         });
-        rollups.postBatch(batches);
+        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batches);
         executor.execute();
     }
 }
@@ -211,7 +211,7 @@ contract ExecuteFlashLoanL1 is Script {
     )
         external
     {
-        Rollups rollups = Rollups(rollupsAddr);
+        EEZ rollups = EEZ(rollupsAddr);
 
         string memory name = ERC20(token).name();
         string memory symbol = ERC20(token).symbol();
@@ -237,7 +237,7 @@ contract ExecuteFlashLoanL1 is Script {
 
         // ── Compute action hashes ──
 
-        // L1 entry for the forward bridge call (bridgeTokens triggers proxy -> executeCrossChainCall)
+        // L1 entry for the forward bridge call (bridgeTokens triggers proxy -> executeL1ToL2Call)
         // proxy identity: bridgeL1 on L2, sourceAddress = bridgeL1, sourceRollup = MAINNET
         bytes32 callForwardHash = keccak256(
             abi.encode(
@@ -291,18 +291,18 @@ contract ExecuteFlashLoanL1 is Script {
         StateDelta[] memory deltas3 = new StateDelta[](1);
         deltas3[0] = StateDelta({rollupId: L2_ROLLUP_ID, currentState: s2, newState: s3, etherDelta: 0});
 
-        CrossChainCall[] memory noCalls = new CrossChainCall[](0);
-        NestedAction[] memory noNested = new NestedAction[](0);
+        L2ToL1Call[] memory noCalls = new L2ToL1Call[](0);
+        ExpectedL1ToL2Call[] memory noNested = new ExpectedL1ToL2Call[](0);
 
         ExecutionEntry[] memory entries = new ExecutionEntry[](3);
 
         // Entry 0: forward bridge call -- consumed when bridgeTokens triggers proxy
         entries[0] = ExecutionEntry({
             stateDeltas: deltas1,
-            crossChainCallHash: callForwardHash,
+            proxyEntryHash: callForwardHash,
             destinationRollupId: L2_ROLLUP_ID,
-            calls: noCalls,
-            nestedActions: noNested,
+            L2ToL1Calls: noCalls,
+            expectedL1ToL2Calls: noNested,
             callCount: 0,
             returnData: "",
             rollingHash: bytes32(0)
@@ -310,15 +310,15 @@ contract ExecuteFlashLoanL1 is Script {
 
         // Entry 1: claimAndBridgeBack -- consumed when executor calls executorL2Proxy
         // This entry has a nestedAction for the bridge return call (reentrant)
-        NestedAction[] memory nested1 = new NestedAction[](1);
-        nested1[0] = NestedAction({crossChainCallHash: callReturnHash, callCount: 0, returnData: ""});
+        ExpectedL1ToL2Call[] memory nested1 = new ExpectedL1ToL2Call[](1);
+        nested1[0] = ExpectedL1ToL2Call({crossChainCallHash: callReturnHash, callCount: 0, returnData: ""});
 
         entries[1] = ExecutionEntry({
             stateDeltas: deltas2,
-            crossChainCallHash: callClaimHash,
+            proxyEntryHash: callClaimHash,
             destinationRollupId: L2_ROLLUP_ID,
-            calls: noCalls,
-            nestedActions: nested1,
+            L2ToL1Calls: noCalls,
+            expectedL1ToL2Calls: nested1,
             callCount: 0,
             returnData: "",
             rollingHash: _computeRollingHashForNested1()
@@ -327,10 +327,10 @@ contract ExecuteFlashLoanL1 is Script {
         // Entry 2: final state update (L2TX -- crossChainCallHash == 0, consumed via executeL2TX)
         entries[2] = ExecutionEntry({
             stateDeltas: deltas3,
-            crossChainCallHash: bytes32(0),
+            proxyEntryHash: bytes32(0),
             destinationRollupId: L2_ROLLUP_ID,
-            calls: noCalls,
-            nestedActions: noNested,
+            L2ToL1Calls: noCalls,
+            expectedL1ToL2Calls: noNested,
             callCount: 0,
             returnData: "",
             rollingHash: bytes32(0)
@@ -340,7 +340,7 @@ contract ExecuteFlashLoanL1 is Script {
 
         LookupCall[] memory noLookupCalls = new LookupCall[](0);
 
-        // Batcher ensures postBatch + execute happen in the same block
+        // Batcher ensures postVerifyAndExecuteOrSaveExecutionsFromBatch + execute happen in the same block
         FlashLoanBatcher batcher = new FlashLoanBatcher();
         batcher.execute(rollups, proofSystemAddr, entries, noLookupCalls, FlashLoanBridgeExecutor(executorL1));
 

@@ -3,11 +3,11 @@ pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
-import {Rollups} from "../../../src/Rollups.sol";
+import {EEZ} from "../../../src/EEZ.sol";
 import {
     StateDelta,
-    CrossChainCall,
-    NestedAction,
+    L2ToL1Call,
+    ExpectedL1ToL2Call,
     ExecutionEntry,
     LookupCall
 } from "../../../src/ICrossChainManager.sol";
@@ -30,12 +30,12 @@ import {
 //         — innerCall does target.increment() (the reentrant proxy call SUCCEEDS,
 //           consuming nestedActions[0] and bumping the cursor), then innerCall()
 //           wraps up with `revert("inner scope revert")`. The revert rolls back
-//           innerCall()'s frame, including the NestedAction-cursor bump.
+//           innerCall()'s frame, including the ExpectedL1ToL2Call-cursor bump.
 //    b. lastResult = target.increment()
 //         — second reentrant call re-consumes nestedActions[0] from the same
 //           cursor (since the bump was rolled back) and succeeds for real.
 //
-//  Net effect: exactly ONE nested action consumption survives. NestedAction
+//  Net effect: exactly ONE nested action consumption survives. ExpectedL1ToL2Call
 //  is the correct primitive — the reentrant call itself succeeds; only the
 //  Solidity wrapper around it reverts.
 //
@@ -102,8 +102,8 @@ abstract contract RevertContinueL2Actions {
         pure
         returns (ExecutionEntry[] memory entries)
     {
-        CrossChainCall[] memory calls = new CrossChainCall[](1);
-        calls[0] = CrossChainCall({
+        L2ToL1Call[] memory calls = new L2ToL1Call[](1);
+        calls[0] = L2ToL1Call({
             targetAddress: selfCaller,
             value: 0,
             data: abi.encodeWithSelector(SelfCallerWithRevert.execute.selector),
@@ -112,8 +112,8 @@ abstract contract RevertContinueL2Actions {
             revertSpan: 0
         });
 
-        NestedAction[] memory nested = new NestedAction[](1);
-        nested[0] = NestedAction({
+        ExpectedL1ToL2Call[] memory nested = new ExpectedL1ToL2Call[](1);
+        nested[0] = ExpectedL1ToL2Call({
             crossChainCallHash: _innerActionHash(counterL1, selfCaller),
             callCount: 0,
             returnData: abi.encode(uint256(1))
@@ -122,10 +122,10 @@ abstract contract RevertContinueL2Actions {
         entries = new ExecutionEntry[](1);
         entries[0] = ExecutionEntry({
             stateDeltas: new StateDelta[](0),
-            crossChainCallHash: _outerActionHash(selfCaller, alice),
+            proxyEntryHash: _outerActionHash(selfCaller, alice),
             destinationRollupId: L2_ROLLUP_ID,
-            calls: calls,
-            nestedActions: nested,
+            L2ToL1Calls: calls,
+            expectedL1ToL2Calls: nested,
             callCount: 1,
             returnData: "",
             rollingHash: _expectedRollingHash()

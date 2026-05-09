@@ -7,7 +7,7 @@ import {WrappedToken} from "../../src/periphery/WrappedToken.sol";
 import {FlashLoan} from "../../src/periphery/defiMock/FlashLoan.sol";
 import {FlashLoanBridgeExecutor} from "../../src/periphery/defiMock/FlashLoanBridgeExecutor.sol";
 import {FlashLoanersNFT} from "../../src/periphery/defiMock/FlashLoanersNFT.sol";
-import {Rollups} from "../../src/Rollups.sol";
+import {EEZ} from "../../src/EEZ.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {_deployBridge, _computeBridgeAddress} from "../DeployBridge.s.sol";
@@ -133,7 +133,7 @@ contract DeployFlashLoanL1 is Script {
         console.log("Funded flash loan pool with 10k tokens");
 
         // Create proxy for executorL2 on L1
-        address executorL2Proxy = Rollups(rollups).createCrossChainProxy(executorL2, l2RollupId);
+        address executorL2Proxy = EEZ(rollups).createCrossChainProxy(executorL2, l2RollupId);
         console.log("EXECUTOR_L2_PROXY=%s", executorL2Proxy);
 
         // Executor on L1 (orchestrates the full flash loan + cross-chain flow)

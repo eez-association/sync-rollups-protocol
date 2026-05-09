@@ -28,12 +28,12 @@ DEPLOY_OUTPUT=$(forge script script/e2e-decode/E2EBridgeDecode.s.sol:E2EBridgeDe
 ROLLUPS=$(echo "$DEPLOY_OUTPUT" | grep "ROLLUPS=" | sed 's/.*ROLLUPS=//')
 BRIDGE=$(echo "$DEPLOY_OUTPUT" | grep "BRIDGE=" | sed 's/.*BRIDGE=//')
 
-echo "Rollups: $ROLLUPS"
+echo "EEZ: $ROLLUPS"
 echo "Bridge: $BRIDGE"
 
-# ── 3. postBatch + bridgeEther (same broadcast = same block) ──
+# ── 3. postVerifyAndExecuteOrSaveExecutionsFromBatch + bridgeEther (same broadcast = same block) ──
 echo ""
-echo "====== Execute (postBatch + bridgeEther) ======"
+echo "====== Execute (postVerifyAndExecuteOrSaveExecutionsFromBatch + bridgeEther) ======"
 forge script script/e2e-decode/E2EBridgeDecode.s.sol:E2EBridgeExecute \
     --rpc-url "$RPC" --broadcast --private-key "$PK" \
     --sig "run(address,address)" "$ROLLUPS" "$BRIDGE" 2>&1 \

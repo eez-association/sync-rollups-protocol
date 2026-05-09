@@ -5,8 +5,8 @@ import {Script, console} from "forge-std/Script.sol";
 import {Vm} from "forge-std/Vm.sol";
 import {
     StateDelta,
-    CrossChainCall,
-    NestedAction,
+    L2ToL1Call,
+    ExpectedL1ToL2Call,
     ExecutionEntry,
     LookupCall
 } from "../../../src/ICrossChainManager.sol";
@@ -23,12 +23,12 @@ abstract contract VerifyHelpers is Script {
     bytes32 constant SIG_BATCH_POSTED = keccak256("BatchPosted(uint256)");
 
     // ExecutionTableLoaded(ExecutionEntry[] entries) — L2 only.
-    //   ExecutionEntry = (StateDelta[], bytes32, uint256, CrossChainCall[], NestedAction[], uint256, bytes, bytes32)
+    //   ExecutionEntry = (StateDelta[], bytes32, uint256, L2ToL1Call[], ExpectedL1ToL2Call[], uint256, bytes, bytes32)
     //                       deltas        cchHash  destRid  calls            nested            cnt   ret    rollingHash
     //   StateDelta     = (uint256, bytes32, bytes32, int256)
     //                     rid       curr     new      etherDelta
-    //   CrossChainCall = (address, uint256, bytes, address, uint256, uint256)
-    //   NestedAction   = (bytes32, uint256, bytes)
+    //   L2ToL1Call = (address, uint256, bytes, address, uint256, uint256)
+    //   ExpectedL1ToL2Call   = (bytes32, uint256, bytes)
     bytes32 constant SIG_TABLE_LOADED = keccak256(
         "ExecutionTableLoaded(((uint256,bytes32,bytes32,int256)[],bytes32,uint256,(address,uint256,bytes,address,uint256,uint256)[],(bytes32,uint256,bytes)[],uint256,bytes,bytes32)[])"
     );
@@ -87,7 +87,7 @@ abstract contract VerifyHelpers is Script {
             );
         }
         for (uint256 c = 0; c < e.calls.length; c++) {
-            CrossChainCall memory cc = e.calls[c];
+            L2ToL1Call memory cc = e.calls[c];
             console.log(
                 string.concat(
                     "      call[",
@@ -112,7 +112,7 @@ abstract contract VerifyHelpers is Script {
             );
         }
         for (uint256 n = 0; n < e.nestedActions.length; n++) {
-            NestedAction memory na = e.nestedActions[n];
+            ExpectedL1ToL2Call memory na = e.nestedActions[n];
             console.log(
                 string.concat(
                     "      nested[",

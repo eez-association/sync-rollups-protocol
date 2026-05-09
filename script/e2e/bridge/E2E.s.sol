@@ -2,11 +2,11 @@
 pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
-import {Rollups, ProofSystemBatch} from "../../../src/Rollups.sol";
+import {EEZ, ProofSystemBatchPerVerificationEntries} from "../../../src/EEZ.sol";
 import {
     StateDelta,
-    CrossChainCall,
-    NestedAction,
+    L2ToL1Call,
+    ExpectedL1ToL2Call,
     ExecutionEntry,
     LookupCall
 } from "../../../src/ICrossChainManager.sol";
@@ -21,15 +21,15 @@ import {
 } from "../shared/E2EHelpers.sol";
 
 // TODO(post-refactor): this file's `Batcher.execute(rollups, entries, statics, ...)` callsite
-// still uses the legacy 7-arg `postBatch(entries, statics, transientCount, ...)` signature.
-// New API: `postBatch(ProofSystemBatch[] batches)`. The user (or a follow-up pass) must rewrite
-// the Batcher to wrap entries into a `ProofSystemBatch[]` similar to `script/e2e/helloWorld/E2E.s.sol`.
+// still uses the legacy 7-arg `postVerifyAndExecuteOrSaveExecutionsFromBatch(entries, statics, transientCount, ...)` signature.
+// New API: `postVerifyAndExecuteOrSaveExecutionsFromBatch(ProofSystemBatchPerVerificationEntries[] batches)`. The user (or a follow-up pass) must rewrite
+// the Batcher to wrap entries into a `ProofSystemBatchPerVerificationEntries[]` similar to `script/e2e/helloWorld/E2E.s.sol`.
 // Other deltas: `entry.failed` removed, `entry.destinationRollupId` added, `StateDelta.currentState` added.
 
 // ═══════════════════════════════════════════════════════════════════════
 //  Bridge scenario — L1→L2 with ETH value transfer
 //
-//  A user deposits ETH via Rollups proxy targeting a destination on L2.
+//  A user deposits ETH via EEZ proxy targeting a destination on L2.
 //  The entry carries value=1 ether and a StateDelta.etherDelta=+1e18 on L2.
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -76,10 +76,10 @@ abstract contract BridgeActions {
         entries = new ExecutionEntry[](1);
         entries[0] = ExecutionEntry({
             stateDeltas: deltas,
-            crossChainCallHash: actionHash(_callAction(l2Destination, sender)),
+            proxyEntryHash: actionHash(_callAction(l2Destination, sender)),
             destinationRollupId: L2_ROLLUP_ID,
-            calls: noCalls(),
-            nestedActions: noNestedActions(),
+            L2ToL1Calls: noCalls(),
+            expectedL1ToL2Calls: noNestedActions(),
             callCount: 0,
             returnData: "",
             rollingHash: bytes32(0)
@@ -108,7 +108,7 @@ contract Deploy is Script {
         address l2DestAddr = vm.envAddress("L2_DESTINATION");
 
         vm.startBroadcast();
-        Rollups rollups = Rollups(rollupsAddr);
+        EEZ rollups = EEZ(rollupsAddr);
 
         address l2Proxy;
         try rollups.createCrossChainProxy(l2DestAddr, L2_ROLLUP_ID) returns (address p) {
@@ -124,10 +124,10 @@ contract Deploy is Script {
     }
 }
 
-/// @notice Batcher: postBatch + bridge() with value in one tx.
+/// @notice Batcher: postVerifyAndExecuteOrSaveExecutionsFromBatch + bridge() with value in one tx.
 contract Batcher {
     function execute(
-        Rollups rollups,
+        EEZ rollups,
         address proofSystem,
         ExecutionEntry[] calldata entries,
         LookupCall[] calldata lookupCalls,
@@ -142,20 +142,20 @@ contract Batcher {
         rids[0] = L2_ROLLUP_ID;
         bytes[] memory proofs = new bytes[](1);
         proofs[0] = "proof";
-        ProofSystemBatch[] memory batches = new ProofSystemBatch[](1);
-        batches[0] = ProofSystemBatch({
+        ProofSystemBatchPerVerificationEntries[] memory batches = new ProofSystemBatchPerVerificationEntries[](1);
+        batches[0] = ProofSystemBatchPerVerificationEntries({
             proofSystems: psList,
             rollupIds: rids,
             entries: entries,
-            lookupCalls: lookupCalls,
-            transientCount: 0,
+            l1ToL2lookupCalls: lookupCalls,
+            transientExecutionEntryCount: 0,
             transientLookupCallCount: 0,
             blobIndices: new uint256[](0),
             callData: "",
-            proof: proofs,
+            proofs: proofs,
             crossProofSystemInteractions: bytes32(0)
         });
-        rollups.postBatch(batches);
+        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batches);
         sender.bridge{value: msg.value}();
     }
 }
@@ -173,7 +173,7 @@ contract Execute is Script, BridgeActions {
         batcher.execute{
             value: 1 ether
         }(
-            Rollups(rollupsAddr),
+            EEZ(rollupsAddr),
             proofSystemAddr,
             _l1Entries(l2DestAddr, senderAddr),
             noLookupCalls(),
