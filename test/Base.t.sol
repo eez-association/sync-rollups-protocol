@@ -2,7 +2,7 @@
 pragma solidity ^0.8.28;
 
 import {Test, Vm} from "forge-std/Test.sol";
-import {EEZ, RollupConfig, ProofSystemBatchPerVerificationEntries, RollupVerification} from "../src/EEZ.sol";
+import {EEZ, RollupConfig, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems, RollupVerification} from "../src/EEZ.sol";
 import {Rollup} from "../src/rollupContract/Rollup.sol";
 import {IRollupContract} from "../src/rollupContract/IRollup.sol";
 import {IProofSystem} from "../src/IProofSystem.sol";
@@ -157,25 +157,29 @@ abstract contract Base is Test {
     {
         address[] memory psList = new address[](1);
         psList[0] = address(ps);
-        uint256[] memory rids = new uint256[](1);
-        rids[0] = r.id;
         bytes[] memory proofs = new bytes[](1);
         proofs[0] = "proof";
+
+        uint64[] memory psIdx = new uint64[](1);
+        psIdx[0] = 0;
+        RollupIdWithProofSystems[] memory rps = new RollupIdWithProofSystems[](1);
+        rps[0] = RollupIdWithProofSystems({rollupId: r.id, proofSystemIndex: psIdx});
+
         batch = ProofSystemBatchPerVerificationEntries({
-            proofSystems: psList,
-            rollupIds: rids,
             entries: entries,
             l1ToL2lookupCalls: lookupCalls,
             transientExecutionEntryCount: transientCount,
             transientLookupCallCount: transientLookupCallCount,
+            proofSystems: psList,
+            rollupIdsWithProofSystems: rps,
+            crossProofSystemInteractions: bytes32(0),
             blobIndices: new uint256[](0),
             callData: "",
-            proofs: proofs,
-            crossProofSystemInteractions: bytes32(0)
+            proofs: proofs
         });
     }
 
-    /// @notice Wraps a single sub-batch for `r` and calls `rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch`.
+    /// @notice Wraps a single batch for `r` and calls `rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch`.
     function _postBatchOne(
         RollupHandle memory r,
         ExecutionEntry[] memory entries,
@@ -185,16 +189,16 @@ abstract contract Base is Test {
     )
         internal
     {
-        ProofSystemBatchPerVerificationEntries[] memory batches = new ProofSystemBatchPerVerificationEntries[](1);
-        batches[0] = _singleSubBatch(r, entries, lookupCalls, transientCount, transientLookupCallCount);
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batches);
+        ProofSystemBatchPerVerificationEntries memory batch =
+            _singleSubBatch(r, entries, lookupCalls, transientCount, transientLookupCallCount);
+        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
     }
 
     /// @notice Convenience: post a single-rollup batch with no lookup calls. Auto-detects whether
-    ///         the leading entry is immediate (`crossChainCallHash == 0`) and sets
-    ///         `transientCount` accordingly.
+    ///         the leading entry is immediate (`proxyEntryHash == 0`) and sets `transientCount`
+    ///         accordingly.
     function _postBatchAutoTransient(RollupHandle memory r, ExecutionEntry[] memory entries) internal {
-        uint256 tc = (entries.length > 0 && entries[0].crossChainCallHash == bytes32(0)) ? 1 : 0;
+        uint256 tc = (entries.length > 0 && entries[0].proxyEntryHash == bytes32(0)) ? 1 : 0;
         _postBatchOne(r, entries, _emptyLookupCalls(), tc, 0);
     }
 
@@ -218,7 +222,7 @@ abstract contract Base is Test {
         arr = new ExpectedL1ToL2Call[](0);
     }
 
-    /// @notice An immediate entry (`crossChainCallHash == 0`) transitioning `rid` from
+    /// @notice An immediate entry (`proxyEntryHash == 0`) transitioning `rid` from
     ///         `currentState` to `newState`, with no calls.
     function _immediateEntry(uint256 rid, bytes32 currentState, bytes32 newState)
         internal
@@ -228,24 +232,24 @@ abstract contract Base is Test {
         StateDelta[] memory deltas = new StateDelta[](1);
         deltas[0] = StateDelta({rollupId: rid, currentState: currentState, newState: newState, etherDelta: 0});
         entry.stateDeltas = deltas;
-        entry.crossChainCallHash = bytes32(0);
+        entry.proxyEntryHash = bytes32(0);
         entry.destinationRollupId = rid;
-        entry.calls = _emptyCalls();
-        entry.nestedActions = _emptyNested();
+        entry.L2ToL1Calls = _emptyCalls();
+        entry.expectedL1ToL2Calls = _emptyNested();
         entry.callCount = 0;
         entry.returnData = "";
         entry.rollingHash = bytes32(0);
     }
 
-    /// @notice An immediate entry with no state deltas at all (`crossChainCallHash == 0`,
-    ///         empty deltas/calls). Useful for tests that want to verify postVerifyAndExecuteOrSaveExecutionsFromBatch flow
-    ///         without state changes.
+    /// @notice An immediate entry with no state deltas at all (`proxyEntryHash == 0`,
+    ///         empty deltas/calls). Useful for tests that want to verify
+    ///         postVerifyAndExecuteOrSaveExecutionsFromBatch flow without state changes.
     function _emptyImmediateEntry(uint256 rid) internal pure returns (ExecutionEntry memory entry) {
         entry.stateDeltas = new StateDelta[](0);
-        entry.crossChainCallHash = bytes32(0);
+        entry.proxyEntryHash = bytes32(0);
         entry.destinationRollupId = rid;
-        entry.calls = _emptyCalls();
-        entry.nestedActions = _emptyNested();
+        entry.L2ToL1Calls = _emptyCalls();
+        entry.expectedL1ToL2Calls = _emptyNested();
         entry.callCount = 0;
         entry.returnData = "";
         entry.rollingHash = bytes32(0);

@@ -51,7 +51,7 @@ contract CrossChainManagerL2 is ICrossChainManager {
     /// @notice Transient rolling hash accumulating tagged events across the entire entry
     bytes32 transient _rollingHash;
 
-    /// @notice 1-indexed global call counter and cursor into entry.calls[]
+    /// @notice 1-indexed global call counter and cursor into entry.L2ToL1Calls[]
     /// @dev Also replaces _insideExecution: _currentCallNumber != 0 means inside execution
     uint256 transient _currentCallNumber;
 
@@ -282,14 +282,14 @@ contract CrossChainManagerL2 is ICrossChainManager {
         //    expects (entry index 0, fresh rolling hash, call cursor at 0, nested cursor at 0).
         ExecutionEntry storage entry = executions[0];
 
-        // 4. Drive the flat call processor — `entry.calls[0]` is the inbound call,
+        // 4. Drive the flat call processor — `entry.L2ToL1Calls[0]` is the inbound call,
         //    delivered via the source proxy by `_processNCalls`
         _processNCalls(entry.callCount);
 
         // 5. Verify invariants (mirrors `_consumeAndExecute`'s post-checks)
         if (_rollingHash != entry.rollingHash) revert RollingHashMismatch();
-        if (_currentCallNumber != entry.calls.length) revert UnconsumedCalls();
-        if (_lastNestedActionConsumed != entry.nestedActions.length) revert UnconsumedNestedActions();
+        if (_currentCallNumber != entry.L2ToL1Calls.length) revert UnconsumedCalls();
+        if (_lastNestedActionConsumed != entry.expectedL1ToL2Calls.length) revert UnconsumedNestedActions();
 
         emit EntryExecuted(0, _rollingHash, _currentCallNumber, _lastNestedActionConsumed);
         _currentCallNumber = 0; // reset so _insideExecution() returns false
@@ -331,8 +331,8 @@ contract CrossChainManagerL2 is ICrossChainManager {
 
         // 1. ExpectedL1ToL2Call priority. The `++` above is the commit; if we fall through, every
         //    fallback path reverts and the EVM rolls the bump back.
-        if (idx < entry.nestedActions.length && entry.nestedActions[idx].crossChainCallHash == crossChainCallHash) {
-            ExpectedL1ToL2Call storage nested = entry.nestedActions[idx];
+        if (idx < entry.expectedL1ToL2Calls.length && entry.expectedL1ToL2Calls[idx].crossChainCallHash == crossChainCallHash) {
+            ExpectedL1ToL2Call storage nested = entry.expectedL1ToL2Calls[idx];
             uint256 nestedNumber = idx + 1; // 1-indexed
             emit NestedActionConsumed(_currentEntryIndex, nestedNumber, crossChainCallHash, nested.callCount);
             _rollingHash = keccak256(abi.encodePacked(_rollingHash, NESTED_BEGIN, nestedNumber));
@@ -382,7 +382,7 @@ contract CrossChainManagerL2 is ICrossChainManager {
         if (idx >= executions.length) revert ExecutionNotFound();
 
         ExecutionEntry storage entry = executions[idx];
-        if (entry.crossChainCallHash != crossChainCallHash) revert ExecutionNotFound();
+        if (entry.proxyEntryHash != crossChainCallHash) revert ExecutionNotFound();
 
         emit ExecutionConsumed(crossChainCallHash, idx);
 
@@ -394,8 +394,8 @@ contract CrossChainManagerL2 is ICrossChainManager {
         _processNCalls(entry.callCount);
 
         if (_rollingHash != entry.rollingHash) revert RollingHashMismatch();
-        if (_currentCallNumber != entry.calls.length) revert UnconsumedCalls();
-        if (_lastNestedActionConsumed != entry.nestedActions.length) revert UnconsumedNestedActions();
+        if (_currentCallNumber != entry.L2ToL1Calls.length) revert UnconsumedCalls();
+        if (_lastNestedActionConsumed != entry.expectedL1ToL2Calls.length) revert UnconsumedNestedActions();
 
         emit EntryExecuted(idx, _rollingHash, _currentCallNumber, _lastNestedActionConsumed);
         _currentCallNumber = 0; // reset so _insideExecution() returns false
@@ -410,15 +410,15 @@ contract CrossChainManagerL2 is ICrossChainManager {
         revert ContextResult(_rollingHash, _lastNestedActionConsumed, _currentCallNumber);
     }
 
-    /// @notice Processes N calls from the flat entry.calls[] array
+    /// @notice Processes N calls from the flat entry.L2ToL1Calls[] array
     function _processNCalls(uint256 count) internal {
         ExecutionEntry storage entry = executions[_currentEntryIndex];
         uint256 processed = 0;
         while (processed < count) {
-            uint256 revertSpan = entry.calls[_currentCallNumber].revertSpan;
+            uint256 revertSpan = entry.L2ToL1Calls[_currentCallNumber].revertSpan;
 
             if (revertSpan == 0) {
-                L2ToL1Call memory cc = entry.calls[_currentCallNumber];
+                L2ToL1Call memory cc = entry.L2ToL1Calls[_currentCallNumber];
                 _currentCallNumber++;
 
                 _rollingHash = keccak256(abi.encodePacked(_rollingHash, CALL_BEGIN, _currentCallNumber));
@@ -437,14 +437,14 @@ contract CrossChainManagerL2 is ICrossChainManager {
                 processed++;
             } else {
                 uint256 savedCallNumber = _currentCallNumber;
-                entry.calls[_currentCallNumber].revertSpan = 0;
+                entry.L2ToL1Calls[_currentCallNumber].revertSpan = 0;
 
                 try this.executeInContextAndRevert(revertSpan) {}
                 catch (bytes memory revertData) {
                     (_rollingHash, _lastNestedActionConsumed, _currentCallNumber) = _decodeContextResult(revertData);
                 }
 
-                entry.calls[savedCallNumber].revertSpan = revertSpan;
+                entry.L2ToL1Calls[savedCallNumber].revertSpan = revertSpan;
                 emit RevertSpanExecuted(_currentEntryIndex, savedCallNumber, revertSpan);
                 processed += revertSpan;
             }

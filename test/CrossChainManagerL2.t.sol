@@ -115,10 +115,10 @@ contract CrossChainManagerL2Test is Test {
         L2ToL1Call[] memory calls = new L2ToL1Call[](1);
         calls[0] = cc;
         entry.stateDeltas = new StateDelta[](0);
-        entry.crossChainCallHash = crossChainCallHash;
+        entry.proxyEntryHash = crossChainCallHash;
         entry.destinationRollupId = TEST_ROLLUP_ID;
-        entry.calls = calls;
-        entry.nestedActions = new ExpectedL1ToL2Call[](0);
+        entry.L2ToL1Calls = calls;
+        entry.expectedL1ToL2Calls = new ExpectedL1ToL2Call[](0);
         entry.callCount = 1;
         entry.returnData = returnData;
         entry.rollingHash = rollingHash;
@@ -131,10 +131,10 @@ contract CrossChainManagerL2Test is Test {
         returns (ExecutionEntry memory entry)
     {
         entry.stateDeltas = new StateDelta[](0);
-        entry.crossChainCallHash = crossChainCallHash;
+        entry.proxyEntryHash = crossChainCallHash;
         entry.destinationRollupId = TEST_ROLLUP_ID;
-        entry.calls = new L2ToL1Call[](0);
-        entry.nestedActions = new ExpectedL1ToL2Call[](0);
+        entry.L2ToL1Calls = new L2ToL1Call[](0);
+        entry.expectedL1ToL2Calls = new ExpectedL1ToL2Call[](0);
         entry.callCount = 0;
         entry.returnData = returnData;
         entry.rollingHash = bytes32(0);
@@ -472,9 +472,9 @@ contract CrossChainManagerL2Test is Test {
 
         ExecutionEntry memory entry;
         entry.stateDeltas = new StateDelta[](0);
-        entry.crossChainCallHash = crossChainCallHash;
-        entry.calls = calls;
-        entry.nestedActions = new ExpectedL1ToL2Call[](0);
+        entry.proxyEntryHash = crossChainCallHash;
+        entry.L2ToL1Calls = calls;
+        entry.expectedL1ToL2Calls = new ExpectedL1ToL2Call[](0);
         entry.callCount = 1;
         entry.returnData = "";
         entry.rollingHash = rollingHash;
@@ -523,9 +523,9 @@ contract CrossChainManagerL2Test is Test {
 
         ExecutionEntry memory entry;
         entry.stateDeltas = new StateDelta[](0);
-        entry.crossChainCallHash = crossChainCallHash;
-        entry.calls = calls;
-        entry.nestedActions = new ExpectedL1ToL2Call[](0);
+        entry.proxyEntryHash = crossChainCallHash;
+        entry.L2ToL1Calls = calls;
+        entry.expectedL1ToL2Calls = new ExpectedL1ToL2Call[](0);
         entry.callCount = 2;
         entry.returnData = "";
         entry.rollingHash = hash;
@@ -571,9 +571,9 @@ contract CrossChainManagerL2Test is Test {
 
         ExecutionEntry memory entry;
         entry.stateDeltas = new StateDelta[](0);
-        entry.crossChainCallHash = crossChainCallHash;
-        entry.calls = calls;
-        entry.nestedActions = new ExpectedL1ToL2Call[](0);
+        entry.proxyEntryHash = crossChainCallHash;
+        entry.L2ToL1Calls = calls;
+        entry.expectedL1ToL2Calls = new ExpectedL1ToL2Call[](0);
         entry.callCount = 1;
         entry.returnData = "";
         entry.rollingHash = hash;

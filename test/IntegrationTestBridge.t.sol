@@ -2,7 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {Test, console} from "forge-std/Test.sol";
-import {EEZ, RollupConfig, ProofSystemBatchPerVerificationEntries} from "../src/EEZ.sol";
+import {EEZ, RollupConfig, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../src/EEZ.sol";
 import {Rollup} from "../src/rollupContract/Rollup.sol";
 import {CrossChainManagerL2} from "../src/CrossChainManagerL2.sol";
 import {CrossChainProxy} from "../src/CrossChainProxy.sol";
@@ -169,20 +169,28 @@ contract IntegrationTestBridge is Test {
         rids[0] = L2_ROLLUP_ID;
         bytes[] memory proofs = new bytes[](1);
         proofs[0] = "proof";
-        ProofSystemBatchPerVerificationEntries[] memory batches = new ProofSystemBatchPerVerificationEntries[](1);
-        batches[0] = ProofSystemBatchPerVerificationEntries({
-            proofSystems: psList,
-            rollupIds: rids,
+        uint64[] memory psIdx = new uint64[](psList.length);
+        for (uint256 _i = 0; _i < psList.length; _i++) {
+            psIdx[_i] = uint64(_i);
+        }
+        RollupIdWithProofSystems[] memory rps = new RollupIdWithProofSystems[](rids.length);
+        for (uint256 _i = 0; _i < rids.length; _i++) {
+            rps[_i] = RollupIdWithProofSystems({rollupId: rids[_i], proofSystemIndex: psIdx});
+        }
+
+        ProofSystemBatchPerVerificationEntries memory batch = ProofSystemBatchPerVerificationEntries({
             entries: entries,
             l1ToL2lookupCalls: _noLookupCalls(),
             transientExecutionEntryCount: transientCount,
             transientLookupCallCount: 0,
+            proofSystems: psList,
+            rollupIdsWithProofSystems: rps,
+            crossProofSystemInteractions: bytes32(0),
             blobIndices: new uint256[](0),
             callData: "",
-            proofs: proofs,
-            crossProofSystemInteractions: bytes32(0)
+            proofs: proofs
         });
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batches);
+        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -227,7 +235,7 @@ contract IntegrationTestBridge is Test {
 
             ExecutionEntry[] memory entries = new ExecutionEntry[](1);
             entries[0].stateDeltas = stateDeltas;
-            entries[0].crossChainCallHash = l1ActionHash;
+            entries[0].proxyEntryHash = l1ActionHash;
             entries[0].destinationRollupId = L2_ROLLUP_ID;
             // calls[] empty, nestedActions[] empty, callCount=0, returnData="", rollingHash=0
             // (all default zero values)
@@ -286,9 +294,9 @@ contract IntegrationTestBridge is Test {
         {
             ExecutionEntry[] memory entries = new ExecutionEntry[](1);
             entries[0].stateDeltas = new StateDelta[](0);
-            entries[0].crossChainCallHash = l2TriggerHash;
-            entries[0].calls = l2Calls;
-            entries[0].nestedActions = new ExpectedL1ToL2Call[](0);
+            entries[0].proxyEntryHash = l2TriggerHash;
+            entries[0].L2ToL1Calls = l2Calls;
+            entries[0].expectedL1ToL2Calls = new ExpectedL1ToL2Call[](0);
             entries[0].callCount = 1;
             entries[0].returnData = "";
             entries[0].rollingHash = l2RollingHash;
@@ -355,7 +363,7 @@ contract IntegrationTestBridge is Test {
 
             ExecutionEntry[] memory entries = new ExecutionEntry[](1);
             entries[0].stateDeltas = stateDeltas;
-            entries[0].crossChainCallHash = l1ActionHash;
+            entries[0].proxyEntryHash = l1ActionHash;
             entries[0].destinationRollupId = L2_ROLLUP_ID;
 
             _postBatchToL2(entries, 0);
@@ -410,9 +418,9 @@ contract IntegrationTestBridge is Test {
         {
             ExecutionEntry[] memory entries = new ExecutionEntry[](1);
             entries[0].stateDeltas = new StateDelta[](0);
-            entries[0].crossChainCallHash = l2TriggerHash;
-            entries[0].calls = l2Calls;
-            entries[0].nestedActions = new ExpectedL1ToL2Call[](0);
+            entries[0].proxyEntryHash = l2TriggerHash;
+            entries[0].L2ToL1Calls = l2Calls;
+            entries[0].expectedL1ToL2Calls = new ExpectedL1ToL2Call[](0);
             entries[0].callCount = 1;
             entries[0].returnData = "";
             entries[0].rollingHash = l2RollingHash;
@@ -476,7 +484,7 @@ contract IntegrationTestBridge is Test {
 
             ExecutionEntry[] memory entries = new ExecutionEntry[](1);
             entries[0].stateDeltas = stateDeltas;
-            entries[0].crossChainCallHash = fwdActionHash;
+            entries[0].proxyEntryHash = fwdActionHash;
             entries[0].destinationRollupId = L2_ROLLUP_ID;
 
             _postBatchToL2(entries, 0);
@@ -525,9 +533,9 @@ contract IntegrationTestBridge is Test {
         {
             ExecutionEntry[] memory entries = new ExecutionEntry[](1);
             entries[0].stateDeltas = new StateDelta[](0);
-            entries[0].crossChainCallHash = l2FwdTriggerHash;
-            entries[0].calls = fwdL2Calls;
-            entries[0].nestedActions = new ExpectedL1ToL2Call[](0);
+            entries[0].proxyEntryHash = l2FwdTriggerHash;
+            entries[0].L2ToL1Calls = fwdL2Calls;
+            entries[0].expectedL1ToL2Calls = new ExpectedL1ToL2Call[](0);
             entries[0].callCount = 1;
             entries[0].returnData = "";
             entries[0].rollingHash = fwdL2RollingHash;
@@ -570,7 +578,7 @@ contract IntegrationTestBridge is Test {
             ExecutionEntry[] memory entries = new ExecutionEntry[](2);
             // Phase 2 entry: incoming call result
             entries[0].stateDeltas = new StateDelta[](0);
-            entries[0].crossChainCallHash = retActionHash;
+            entries[0].proxyEntryHash = retActionHash;
             // No calls (simple resolution), no rolling hash needed
 
             vm.prank(SYSTEM_ADDRESS);
@@ -647,10 +655,10 @@ contract IntegrationTestBridge is Test {
 
             ExecutionEntry[] memory entries = new ExecutionEntry[](1);
             entries[0].stateDeltas = stateDeltas;
-            entries[0].crossChainCallHash = bytes32(0); // immediate / L2TX
+            entries[0].proxyEntryHash = bytes32(0); // immediate / L2TX
             entries[0].destinationRollupId = L2_ROLLUP_ID;
-            entries[0].calls = retL1Calls;
-            entries[0].nestedActions = new ExpectedL1ToL2Call[](0);
+            entries[0].L2ToL1Calls = retL1Calls;
+            entries[0].expectedL1ToL2Calls = new ExpectedL1ToL2Call[](0);
             entries[0].callCount = 1;
             entries[0].returnData = "";
             entries[0].rollingHash = retRollingHash;

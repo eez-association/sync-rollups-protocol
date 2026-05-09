@@ -2,7 +2,7 @@
 pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
-import {EEZ, ProofSystemBatchPerVerificationEntries} from "../../../src/EEZ.sol";
+import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../../src/EEZ.sol";
 import {
     StateDelta,
     L2ToL1Call,
@@ -88,20 +88,28 @@ contract Batcher {
         rids[0] = L2_ROLLUP_ID;
         bytes[] memory proofs = new bytes[](1);
         proofs[0] = "proof";
-        ProofSystemBatchPerVerificationEntries[] memory batches = new ProofSystemBatchPerVerificationEntries[](1);
-        batches[0] = ProofSystemBatchPerVerificationEntries({
-            proofSystems: psList,
-            rollupIds: rids,
+        uint64[] memory psIdx = new uint64[](psList.length);
+        for (uint256 _i = 0; _i < psList.length; _i++) {
+            psIdx[_i] = uint64(_i);
+        }
+        RollupIdWithProofSystems[] memory rps = new RollupIdWithProofSystems[](rids.length);
+        for (uint256 _i = 0; _i < rids.length; _i++) {
+            rps[_i] = RollupIdWithProofSystems({rollupId: rids[_i], proofSystemIndex: psIdx});
+        }
+
+        ProofSystemBatchPerVerificationEntries memory batch = ProofSystemBatchPerVerificationEntries({
             entries: entries,
             l1ToL2lookupCalls: lookupCalls,
             transientExecutionEntryCount: 0,
             transientLookupCallCount: 0,
+            proofSystems: psList,
+            rollupIdsWithProofSystems: rps,
+            crossProofSystemInteractions: bytes32(0),
             blobIndices: new uint256[](0),
             callData: "",
-            proofs: proofs,
-            crossProofSystemInteractions: bytes32(0)
+            proofs: proofs
         });
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batches);
+        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
         cap.incrementProxy();
     }
 }
@@ -212,7 +220,7 @@ contract ComputeExpected is ComputeExpectedBase, CounterActions {
         ExecutionEntry[] memory l1 = _l1Entries(counterL2Addr, capAddr);
 
         bytes32 l1Hash = _entryHash(l1[0]);
-        bytes32 callHash = l1[0].crossChainCallHash;
+        bytes32 callHash = l1[0].proxyEntryHash;
 
         console.log("EXPECTED_L1_HASHES=[%s]", vm.toString(l1Hash));
         console.log("EXPECTED_L1_CALL_HASHES=[%s]", vm.toString(callHash));
