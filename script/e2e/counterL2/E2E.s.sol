@@ -174,7 +174,7 @@ contract ComputeExpected is ComputeExpectedBase, CounterL2Actions {
         ExecutionEntry[] memory l2 = _l2Entries(counterL1Addr, capAddr);
 
         bytes32 l2Hash = _entryHash(l2[0]);
-        bytes32 callHash = l2[0].crossChainCallHash;
+        bytes32 callHash = l2[0].proxyEntryHash;
 
         console.log("EXPECTED_L2_HASHES=[%s]", vm.toString(l2Hash));
         console.log("EXPECTED_L2_CALL_HASHES=[%s]", vm.toString(callHash));

@@ -3,7 +3,7 @@ pragma solidity ^0.8.28;
 
 import {Test, Vm} from "forge-std/Test.sol";
 import {Base} from "./Base.t.sol";
-import {EEZ, RollupConfig, ProofSystemBatchPerVerificationEntries, RollupVerification} from "../src/EEZ.sol";
+import {EEZ, RollupConfig, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems, RollupVerification} from "../src/EEZ.sol";
 import {Rollup} from "../src/rollupContract/Rollup.sol";
 import {IRollupContract} from "../src/rollupContract/IRollup.sol";
 import {IProofSystem} from "../src/IProofSystem.sol";
@@ -122,25 +122,33 @@ contract EEZTest is Base {
         bytes[] memory proofs = new bytes[](1);
         proofs[0] = "proof";
 
-        ProofSystemBatchPerVerificationEntries[] memory batches = new ProofSystemBatchPerVerificationEntries[](1);
-        batches[0] = ProofSystemBatchPerVerificationEntries({
-            proofSystems: psList,
-            rollupIds: rids,
+        uint64[] memory psIdx = new uint64[](psList.length);
+        for (uint256 _i = 0; _i < psList.length; _i++) {
+            psIdx[_i] = uint64(_i);
+        }
+        RollupIdWithProofSystems[] memory rps = new RollupIdWithProofSystems[](rids.length);
+        for (uint256 _i = 0; _i < rids.length; _i++) {
+            rps[_i] = RollupIdWithProofSystems({rollupId: rids[_i], proofSystemIndex: psIdx});
+        }
+
+        ProofSystemBatchPerVerificationEntries memory batch = ProofSystemBatchPerVerificationEntries({
             entries: entries,
             l1ToL2lookupCalls: lookupCalls,
             transientExecutionEntryCount: transientCount,
             transientLookupCallCount: transientLookupCallCount,
+            proofSystems: psList,
+            rollupIdsWithProofSystems: rps,
+            crossProofSystemInteractions: bytes32(0),
             blobIndices: new uint256[](0),
             callData: "",
-            proofs: proofs,
-            crossProofSystemInteractions: bytes32(0)
+            proofs: proofs
         });
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batches);
+        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
     }
 
     /// @notice Wrap entries into a single-PS batch with `transientCount = 1` when the leading entry is immediate.
     function _postBatch(uint256 rid, ExecutionEntry[] memory entries) internal {
-        uint256 tc = (entries.length > 0 && entries[0].crossChainCallHash == bytes32(0)) ? 1 : 0;
+        uint256 tc = (entries.length > 0 && entries[0].proxyEntryHash == bytes32(0)) ? 1 : 0;
         _postBatchSingle(rid, entries, tc);
     }
 
@@ -256,10 +264,10 @@ contract EEZTest is Base {
 
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         entries[0].stateDeltas = deltas;
-        entries[0].crossChainCallHash = bytes32(0);
+        entries[0].proxyEntryHash = bytes32(0);
         entries[0].destinationRollupId = r1; // any rollup in batch is fine for inline
-        entries[0].calls = new L2ToL1Call[](0);
-        entries[0].nestedActions = new ExpectedL1ToL2Call[](0);
+        entries[0].L2ToL1Calls = new L2ToL1Call[](0);
+        entries[0].expectedL1ToL2Calls = new ExpectedL1ToL2Call[](0);
         entries[0].rollingHash = bytes32(0);
 
         uint256[] memory rids = new uint256[](2);
@@ -281,16 +289,22 @@ contract EEZTest is Base {
         _postBatch(rid, entries);
     }
 
-    function test_PostBatch_SameBlockSameRollupReverts() public {
+    /// @notice Multiple verifications for the same rollup in the same block are now allowed:
+    ///         the second batch picks up where the first left off (state has advanced to s1,
+    ///         the second batch transitions s1 → s2). The once-per-block-per-rollup guard was
+    ///         removed; same-block re-touches just append onto the existing queue without
+    ///         resetting the cursor.
+    function test_PostBatch_SameBlockSameRollupOk() public {
         (uint256 rid,) = _makeRollupLocal(bytes32(0), alice);
         ExecutionEntry[] memory entries1 = new ExecutionEntry[](1);
         entries1[0] = _immediateEntry(rid, bytes32(0), keccak256("s1"));
         _postBatch(rid, entries1);
+        assertEq(_getRollupState(rid), keccak256("s1"));
 
         ExecutionEntry[] memory entries2 = new ExecutionEntry[](1);
         entries2[0] = _immediateEntry(rid, keccak256("s1"), keccak256("s2"));
-        vm.expectRevert(abi.encodeWithSelector(EEZ.RollupAlreadyVerifiedThisBlock.selector, rid));
         _postBatch(rid, entries2);
+        assertEq(_getRollupState(rid), keccak256("s2"));
     }
 
     function test_PostBatch_SameBlockDifferentEEZOk() public {
@@ -316,10 +330,10 @@ contract EEZTest is Base {
         bytes32 ah = _computeActionHash(rid, address(target), 0, cd, address(this), MAINNET_ROLLUP_ID);
         ExecutionEntry[] memory e1 = new ExecutionEntry[](1);
         e1[0].stateDeltas = new StateDelta[](0);
-        e1[0].crossChainCallHash = ah;
+        e1[0].proxyEntryHash = ah;
         e1[0].destinationRollupId = rid;
-        e1[0].calls = new L2ToL1Call[](0);
-        e1[0].nestedActions = new ExpectedL1ToL2Call[](0);
+        e1[0].L2ToL1Calls = new L2ToL1Call[](0);
+        e1[0].expectedL1ToL2Calls = new ExpectedL1ToL2Call[](0);
         e1[0].rollingHash = bytes32(0);
         _postBatchSingle(rid, e1, 0);
         assertEq(rollups.queueLength(rid), 1);
@@ -342,11 +356,11 @@ contract EEZTest is Base {
         assertEq(rollups.lastVerifiedBlock(rid), block.number);
     }
 
-    function test_PostBatch_EmptyBatchesReverts() public {
-        ProofSystemBatchPerVerificationEntries[] memory empty = new ProofSystemBatchPerVerificationEntries[](0);
-        vm.expectRevert(EEZ.InvalidProofSystemConfig.selector);
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(empty);
-    }
+    // NOTE: dropped after refactor — `postVerifyAndExecuteOrSaveExecutionsFromBatch` now
+    // takes a single `ProofSystemBatchPerVerificationEntries`, not an array, so there's no
+    // "empty array" edge case. The empty-batch validation lives inline in
+    // `_validateStructure` (e.g., empty `proofSystems[]` reverts `InvalidProofSystemConfig`)
+    // and is exercised by other tests in this file.
 
     // ──────────────────────────────────────────────
     //  Sub-batch validation
@@ -356,23 +370,32 @@ contract EEZTest is Base {
         (uint256 rid,) = _makeRollupLocal(bytes32(0), alice);
         address[] memory psList = new address[](2);
         psList[0] = address(ps);
-        psList[1] = address(ps); // duplicate
+        psList[1] = address(ps); // duplicate (also unsorted)
         bytes[] memory proofs = new bytes[](2);
         proofs[0] = "p1";
         proofs[1] = "p2";
-        uint256[] memory rids = new uint256[](1);
-        rids[0] = rid;
 
-        ProofSystemBatchPerVerificationEntries[] memory batches = new ProofSystemBatchPerVerificationEntries[](1);
-        batches[0].proofSystems = psList;
-        batches[0].rollupIds = rids;
-        batches[0].entries = new ExecutionEntry[](0);
-        batches[0].lookupCalls = new LookupCall[](0);
-        batches[0].blobIndices = new uint256[](0);
-        batches[0].proof = proofs;
+        uint64[] memory psIdx = new uint64[](2);
+        psIdx[0] = 0;
+        psIdx[1] = 1;
+        RollupIdWithProofSystems[] memory rps = new RollupIdWithProofSystems[](1);
+        rps[0] = RollupIdWithProofSystems({rollupId: rid, proofSystemIndex: psIdx});
+
+        ProofSystemBatchPerVerificationEntries memory batch = ProofSystemBatchPerVerificationEntries({
+            entries: new ExecutionEntry[](0),
+            l1ToL2lookupCalls: new LookupCall[](0),
+            transientExecutionEntryCount: 0,
+            transientLookupCallCount: 0,
+            proofSystems: psList,
+            rollupIdsWithProofSystems: rps,
+            crossProofSystemInteractions: bytes32(0),
+            blobIndices: new uint256[](0),
+            callData: "",
+            proofs: proofs
+        });
 
         vm.expectRevert(abi.encodeWithSelector(EEZ.DuplicateProofSystem.selector, address(ps)));
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batches);
+        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
     }
 
     // NOTE: dropped after refactor:
@@ -395,30 +418,11 @@ contract EEZTest is Base {
         _postBatchSingleMulti(rids, entries, new LookupCall[](0), 0, 0);
     }
 
-    function test_SubBatch_RollupInMultipleSubBatchesReverts() public {
-        (uint256 rid,) = _makeRollupLocal(bytes32(0), alice);
-        address[] memory psList = new address[](1);
-        psList[0] = address(ps);
-        bytes[] memory proofs = new bytes[](1);
-        proofs[0] = "p";
-        uint256[] memory rids = new uint256[](1);
-        rids[0] = rid;
-
-        ProofSystemBatchPerVerificationEntries[] memory batches = new ProofSystemBatchPerVerificationEntries[](2);
-        batches[0].proofSystems = psList;
-        batches[0].rollupIds = rids;
-        batches[0].entries = new ExecutionEntry[](0);
-        batches[0].lookupCalls = new LookupCall[](0);
-        batches[0].blobIndices = new uint256[](0);
-        batches[0].proof = proofs;
-        batches[1] = batches[0];
-        batches[1].proof = proofs;
-
-        // After refactor: cross-batch disjointness is enforced by `_markVerifiedThisBlock`,
-        // which reverts `RollupAlreadyVerifiedThisBlock` on the second mark of any rid.
-        vm.expectRevert(abi.encodeWithSelector(EEZ.RollupAlreadyVerifiedThisBlock.selector, rid));
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batches);
-    }
+    // NOTE: `test_SubBatch_RollupInMultipleSubBatchesReverts` was dropped after the multi-
+    // sub-batch model was collapsed into a single batch and the once-per-block-per-rollup
+    // guard in `_markVerifiedThisBlock` was lifted. See `test_PostBatch_SameBlockSameRollup*`
+    // for the replacement: a rollup can now be verified multiple times within the same block
+    // and entries simply accumulate on its queue.
 
     function test_SubBatch_RollupNotInBatchReverts() public {
         (uint256 r1,) = _makeRollupLocal(bytes32(0), alice);
@@ -428,10 +432,10 @@ contract EEZTest is Base {
         StateDelta[] memory deltas = new StateDelta[](1);
         deltas[0] = StateDelta({rollupId: r2, currentState: bytes32(0), newState: keccak256("x"), etherDelta: 0});
         entries[0].stateDeltas = deltas;
-        entries[0].crossChainCallHash = bytes32(0);
+        entries[0].proxyEntryHash = bytes32(0);
         entries[0].destinationRollupId = r1;
-        entries[0].calls = new L2ToL1Call[](0);
-        entries[0].nestedActions = new ExpectedL1ToL2Call[](0);
+        entries[0].L2ToL1Calls = new L2ToL1Call[](0);
+        entries[0].expectedL1ToL2Calls = new ExpectedL1ToL2Call[](0);
         entries[0].rollingHash = bytes32(0);
 
         vm.expectRevert(abi.encodeWithSelector(EEZ.RollupNotInBatch.selector, r2));
@@ -463,10 +467,10 @@ contract EEZTest is Base {
         StateDelta[] memory deltas = new StateDelta[](1);
         deltas[0] = StateDelta({rollupId: rid, currentState: bytes32(0), newState: keccak256("after"), etherDelta: 0});
         entries[0].stateDeltas = deltas;
-        entries[0].crossChainCallHash = ah;
+        entries[0].proxyEntryHash = ah;
         entries[0].destinationRollupId = rid;
-        entries[0].calls = calls;
-        entries[0].nestedActions = new ExpectedL1ToL2Call[](0);
+        entries[0].L2ToL1Calls = calls;
+        entries[0].expectedL1ToL2Calls = new ExpectedL1ToL2Call[](0);
         entries[0].callCount = 1;
         entries[0].rollingHash = rh;
         _postBatchSingle(rid, entries, 0); // deferred — must consume via proxy
@@ -547,10 +551,10 @@ contract EEZTest is Base {
 
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         entries[0].stateDeltas = deltas;
-        entries[0].crossChainCallHash = bytes32(0);
+        entries[0].proxyEntryHash = bytes32(0);
         entries[0].destinationRollupId = r1;
-        entries[0].calls = new L2ToL1Call[](0);
-        entries[0].nestedActions = new ExpectedL1ToL2Call[](0);
+        entries[0].L2ToL1Calls = new L2ToL1Call[](0);
+        entries[0].expectedL1ToL2Calls = new ExpectedL1ToL2Call[](0);
         entries[0].rollingHash = bytes32(0);
 
         uint256[] memory rids = new uint256[](2);
@@ -570,10 +574,10 @@ contract EEZTest is Base {
             StateDelta({rollupId: rid, currentState: bytes32(0), newState: keccak256("s1"), etherDelta: 1 ether});
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         entries[0].stateDeltas = deltas;
-        entries[0].crossChainCallHash = bytes32(0);
+        entries[0].proxyEntryHash = bytes32(0);
         entries[0].destinationRollupId = rid;
-        entries[0].calls = new L2ToL1Call[](0);
-        entries[0].nestedActions = new ExpectedL1ToL2Call[](0);
+        entries[0].L2ToL1Calls = new L2ToL1Call[](0);
+        entries[0].expectedL1ToL2Calls = new ExpectedL1ToL2Call[](0);
         entries[0].rollingHash = bytes32(0);
         // EtherDeltaMismatch raised inside attemptApplyImmediate → caught → ImmediateEntrySkipped.
         vm.expectEmit(true, false, false, false);
@@ -590,10 +594,10 @@ contract EEZTest is Base {
             StateDelta({rollupId: rid, currentState: bytes32(0), newState: keccak256("s1"), etherDelta: -1 ether});
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         entries[0].stateDeltas = deltas;
-        entries[0].crossChainCallHash = bytes32(0);
+        entries[0].proxyEntryHash = bytes32(0);
         entries[0].destinationRollupId = rid;
-        entries[0].calls = new L2ToL1Call[](0);
-        entries[0].nestedActions = new ExpectedL1ToL2Call[](0);
+        entries[0].L2ToL1Calls = new L2ToL1Call[](0);
+        entries[0].expectedL1ToL2Calls = new ExpectedL1ToL2Call[](0);
         entries[0].rollingHash = bytes32(0);
         // InsufficientRollupBalance raised inside attemptApplyImmediate → caught → ImmediateEntrySkipped.
         vm.expectEmit(true, false, false, false);
@@ -651,31 +655,10 @@ contract EEZTest is Base {
         assertEq(r.verificationKey(address(ps)), newVk);
     }
 
-    function test_SetRollupContract_Handoff() public {
-        (uint256 rid, Rollup r1) = _makeRollupLocal(bytes32(0), alice);
-
-        // Deploy a new manager contract for the same rollup
-        address[] memory psList = new address[](1);
-        psList[0] = address(ps);
-        bytes32[] memory vks = new bytes32[](1);
-        vks[0] = DEFAULT_VK;
-        Rollup r2 = new Rollup(address(rollups), alice, 1, psList, vks);
-
-        // Old contract calls setRollupContract to hand off
-        vm.prank(address(r1));
-        rollups.setRollupContract(rid, address(r2));
-
-        assertEq(_getRollupContract(rid), address(r2));
-        // After handoff, r2 should have learned its rollupId via the rollupContractRegistered callback
-        assertEq(r2.rollupId(), rid);
-
-        // Old contract is de-indexed; calling setStateRoot from it now reverts.
-        // We need a fresh block so the per-rollup `lastVerifiedBlock` doesn't lock out
-        // the call (setRollupContract above didn't touch lastVerifiedBlock — only postVerifyAndExecuteOrSaveExecutionsFromBatch does).
-        vm.prank(alice);
-        vm.expectRevert(EEZ.NotRollupContract.selector);
-        r1.setStateRoot(keccak256("x"));
-    }
+    // NOTE: `test_SetRollupContract_Handoff` was dropped — the registry no longer exposes
+    // a `setRollupContract` handoff path. Once a manager is registered via `createRollup`
+    // it owns that rollupId for the lifetime of the registry. A future replacement (force
+    // inbox / governance handoff) is tracked separately.
 
     // ──────────────────────────────────────────────
     //  Rolling-hash failure modes
@@ -699,10 +682,10 @@ contract EEZTest is Base {
         deltas[0] = StateDelta({rollupId: rid, currentState: bytes32(0), newState: keccak256("s"), etherDelta: 0});
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         entries[0].stateDeltas = deltas;
-        entries[0].crossChainCallHash = ah;
+        entries[0].proxyEntryHash = ah;
         entries[0].destinationRollupId = rid;
-        entries[0].calls = calls;
-        entries[0].nestedActions = new ExpectedL1ToL2Call[](0);
+        entries[0].L2ToL1Calls = calls;
+        entries[0].expectedL1ToL2Calls = new ExpectedL1ToL2Call[](0);
         entries[0].callCount = 1;
         entries[0].rollingHash = bytes32(uint256(0xdead)); // wrong!
         _postBatchSingle(rid, entries, 0);
@@ -729,10 +712,10 @@ contract EEZTest is Base {
         deltas[0] = StateDelta({rollupId: rid, currentState: bytes32(0), newState: keccak256("s"), etherDelta: 0});
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         entries[0].stateDeltas = deltas;
-        entries[0].crossChainCallHash = ah;
+        entries[0].proxyEntryHash = ah;
         entries[0].destinationRollupId = rid;
-        entries[0].calls = calls;
-        entries[0].nestedActions = new ExpectedL1ToL2Call[](0);
+        entries[0].L2ToL1Calls = calls;
+        entries[0].expectedL1ToL2Calls = new ExpectedL1ToL2Call[](0);
         entries[0].callCount = 1; // promise only one call but provide two
         entries[0].rollingHash = _rollingHashSingleCall("");
         _postBatchSingle(rid, entries, 0);

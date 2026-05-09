@@ -37,7 +37,7 @@ abstract contract VerifyHelpers is Script {
     bytes32 constant SIG_CROSSCHAIN_CALL = keccak256("CrossChainCallExecuted(bytes32,address,address,bytes,uint256)");
 
     function _entryHash(ExecutionEntry memory e) internal pure returns (bytes32) {
-        return keccak256(abi.encode(e.crossChainCallHash, e.rollingHash));
+        return keccak256(abi.encode(e.proxyEntryHash, e.rollingHash));
     }
 
     function _shortHash(bytes32 h) internal pure returns (string memory) {
@@ -64,15 +64,15 @@ abstract contract VerifyHelpers is Script {
     }
 
     function _printEntryDetailed(uint256 idx, ExecutionEntry memory e) internal pure {
-        bool immediate = e.crossChainCallHash == bytes32(0);
+        bool immediate = e.proxyEntryHash == bytes32(0);
         console.log(
             "  [%s] %s  crossChainCallHash=%s",
             idx,
             immediate ? "IMMEDIATE" : "DEFERRED",
-            vm.toString(e.crossChainCallHash)
+            vm.toString(e.proxyEntryHash)
         );
         console.log("      rollingHash: %s", vm.toString(e.rollingHash));
-        console.log("      callCount=%s  calls=%s  nested=%s", e.callCount, e.calls.length, e.nestedActions.length);
+        console.log("      callCount=%s  calls=%s  nested=%s", e.callCount, e.L2ToL1Calls.length, e.expectedL1ToL2Calls.length);
         for (uint256 d = 0; d < e.stateDeltas.length; d++) {
             StateDelta memory sd = e.stateDeltas[d];
             console.log(
@@ -86,8 +86,8 @@ abstract contract VerifyHelpers is Script {
                 )
             );
         }
-        for (uint256 c = 0; c < e.calls.length; c++) {
-            L2ToL1Call memory cc = e.calls[c];
+        for (uint256 c = 0; c < e.L2ToL1Calls.length; c++) {
+            L2ToL1Call memory cc = e.L2ToL1Calls[c];
             console.log(
                 string.concat(
                     "      call[",
@@ -111,8 +111,8 @@ abstract contract VerifyHelpers is Script {
                 )
             );
         }
-        for (uint256 n = 0; n < e.nestedActions.length; n++) {
-            ExpectedL1ToL2Call memory na = e.nestedActions[n];
+        for (uint256 n = 0; n < e.expectedL1ToL2Calls.length; n++) {
+            ExpectedL1ToL2Call memory na = e.expectedL1ToL2Calls[n];
             console.log(
                 string.concat(
                     "      nested[",

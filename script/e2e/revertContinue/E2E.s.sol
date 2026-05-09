@@ -2,7 +2,7 @@
 pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
-import {EEZ, ProofSystemBatchPerVerificationEntries} from "../../../src/EEZ.sol";
+import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../../src/EEZ.sol";
 import {
     StateDelta,
     L2ToL1Call,
@@ -205,20 +205,28 @@ contract Batcher {
         rids[0] = L2_ROLLUP_ID;
         bytes[] memory proofs = new bytes[](1);
         proofs[0] = "proof";
-        ProofSystemBatchPerVerificationEntries[] memory batches = new ProofSystemBatchPerVerificationEntries[](1);
-        batches[0] = ProofSystemBatchPerVerificationEntries({
-            proofSystems: psList,
-            rollupIds: rids,
+        uint64[] memory psIdx = new uint64[](psList.length);
+        for (uint256 _i = 0; _i < psList.length; _i++) {
+            psIdx[_i] = uint64(_i);
+        }
+        RollupIdWithProofSystems[] memory rps = new RollupIdWithProofSystems[](rids.length);
+        for (uint256 _i = 0; _i < rids.length; _i++) {
+            rps[_i] = RollupIdWithProofSystems({rollupId: rids[_i], proofSystemIndex: psIdx});
+        }
+
+        ProofSystemBatchPerVerificationEntries memory batch = ProofSystemBatchPerVerificationEntries({
             entries: entries,
             l1ToL2lookupCalls: lookupCalls,
             transientExecutionEntryCount: 0,
             transientLookupCallCount: 0,
+            proofSystems: psList,
+            rollupIdsWithProofSystems: rps,
+            crossProofSystemInteractions: bytes32(0),
             blobIndices: new uint256[](0),
             callData: "",
-            proofs: proofs,
-            crossProofSystemInteractions: bytes32(0)
+            proofs: proofs
         });
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batches);
+        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
         (bool ok,) = selfCallerProxy.call(abi.encodeWithSelector(SelfCallerWithRevert.execute.selector));
         require(ok, "outer call failed");
     }

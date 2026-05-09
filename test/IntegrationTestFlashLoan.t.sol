@@ -2,7 +2,7 @@
 pragma solidity ^0.8.28;
 
 import {Test, console} from "forge-std/Test.sol";
-import {EEZ, RollupConfig, ProofSystemBatchPerVerificationEntries} from "../src/EEZ.sol";
+import {EEZ, RollupConfig, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../src/EEZ.sol";
 import {Rollup} from "../src/rollupContract/Rollup.sol";
 import {CrossChainManagerL2} from "../src/CrossChainManagerL2.sol";
 import {CrossChainProxy} from "../src/CrossChainProxy.sol";
@@ -187,20 +187,28 @@ contract IntegrationTestFlashLoan is Test {
         rids[0] = L2_ROLLUP_ID;
         bytes[] memory proofs = new bytes[](1);
         proofs[0] = "proof";
-        ProofSystemBatchPerVerificationEntries[] memory batches = new ProofSystemBatchPerVerificationEntries[](1);
-        batches[0] = ProofSystemBatchPerVerificationEntries({
-            proofSystems: psList,
-            rollupIds: rids,
+        uint64[] memory psIdx = new uint64[](psList.length);
+        for (uint256 _i = 0; _i < psList.length; _i++) {
+            psIdx[_i] = uint64(_i);
+        }
+        RollupIdWithProofSystems[] memory rps = new RollupIdWithProofSystems[](rids.length);
+        for (uint256 _i = 0; _i < rids.length; _i++) {
+            rps[_i] = RollupIdWithProofSystems({rollupId: rids[_i], proofSystemIndex: psIdx});
+        }
+
+        ProofSystemBatchPerVerificationEntries memory batch = ProofSystemBatchPerVerificationEntries({
             entries: entries,
             l1ToL2lookupCalls: _noLookupCalls(),
             transientExecutionEntryCount: transientCount,
             transientLookupCallCount: 0,
+            proofSystems: psList,
+            rollupIdsWithProofSystems: rps,
+            crossProofSystemInteractions: bytes32(0),
             blobIndices: new uint256[](0),
             callData: "",
-            proofs: proofs,
-            crossProofSystemInteractions: bytes32(0)
+            proofs: proofs
         });
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batches);
+        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
     }
 
     function _noLookupCalls() internal pure returns (LookupCall[] memory) {
@@ -253,7 +261,7 @@ contract IntegrationTestFlashLoan is Test {
 
             ExecutionEntry[] memory entries = new ExecutionEntry[](1);
             entries[0].stateDeltas = stateDeltas;
-            entries[0].crossChainCallHash = phase1L1ActionHash;
+            entries[0].proxyEntryHash = phase1L1ActionHash;
             entries[0].destinationRollupId = L2_ROLLUP_ID;
             // No calls, returnData = "", rollingHash = 0
 
@@ -302,9 +310,9 @@ contract IntegrationTestFlashLoan is Test {
         {
             ExecutionEntry[] memory entries = new ExecutionEntry[](1);
             entries[0].stateDeltas = new StateDelta[](0);
-            entries[0].crossChainCallHash = phase1L2TriggerHash;
-            entries[0].calls = phase1L2Calls;
-            entries[0].nestedActions = new ExpectedL1ToL2Call[](0);
+            entries[0].proxyEntryHash = phase1L2TriggerHash;
+            entries[0].L2ToL1Calls = phase1L2Calls;
+            entries[0].expectedL1ToL2Calls = new ExpectedL1ToL2Call[](0);
             entries[0].callCount = 1;
             entries[0].returnData = "";
             entries[0].rollingHash = phase1L2RollingHash;
@@ -474,7 +482,7 @@ contract IntegrationTestFlashLoan is Test {
         {
             ExecutionEntry[] memory l2Entries = new ExecutionEntry[](1);
             l2Entries[0].stateDeltas = new StateDelta[](0);
-            l2Entries[0].crossChainCallHash = l2Entry0ActionHash;
+            l2Entries[0].proxyEntryHash = l2Entry0ActionHash;
             // No calls, returnData = "", rollingHash = 0
 
             vm.prank(SYSTEM_ADDRESS);
@@ -493,7 +501,7 @@ contract IntegrationTestFlashLoan is Test {
             StateDelta[] memory deltas0 = new StateDelta[](1);
             deltas0[0] = StateDelta({rollupId: L2_ROLLUP_ID, currentState: s1, newState: s2, etherDelta: 0});
             l1Entries[0].stateDeltas = deltas0;
-            l1Entries[0].crossChainCallHash = l1Entry0ActionHash;
+            l1Entries[0].proxyEntryHash = l1Entry0ActionHash;
             l1Entries[0].destinationRollupId = L2_ROLLUP_ID;
             // calls[], nestedActions[], callCount, returnData, rollingHash all default (empty/zero)
 
@@ -501,10 +509,10 @@ contract IntegrationTestFlashLoan is Test {
             StateDelta[] memory deltas1 = new StateDelta[](1);
             deltas1[0] = StateDelta({rollupId: L2_ROLLUP_ID, currentState: s2, newState: s3, etherDelta: 0});
             l1Entries[1].stateDeltas = deltas1;
-            l1Entries[1].crossChainCallHash = l1Entry1ActionHash;
+            l1Entries[1].proxyEntryHash = l1Entry1ActionHash;
             l1Entries[1].destinationRollupId = L2_ROLLUP_ID;
-            l1Entries[1].calls = l1Entry1Calls;
-            l1Entries[1].nestedActions = new ExpectedL1ToL2Call[](0);
+            l1Entries[1].L2ToL1Calls = l1Entry1Calls;
+            l1Entries[1].expectedL1ToL2Calls = new ExpectedL1ToL2Call[](0);
             l1Entries[1].callCount = 2;
             l1Entries[1].returnData = "";
             l1Entries[1].rollingHash = l1Entry1RollingHash;
