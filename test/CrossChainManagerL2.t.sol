@@ -7,8 +7,8 @@ import {CrossChainProxy} from "../src/CrossChainProxy.sol";
 import {
     ExecutionEntry,
     StateDelta,
-    CrossChainCall,
-    NestedAction,
+    L2ToL1Call,
+    ExpectedL1ToL2Call,
     LookupCall,
     ProxyInfo
 } from "../src/ICrossChainManager.sol";
@@ -104,7 +104,7 @@ contract CrossChainManagerL2Test is Test {
     /// @notice Helper to build a simple entry with one call, no nested actions
     function _buildSimpleEntry(
         bytes32 crossChainCallHash,
-        CrossChainCall memory cc,
+        L2ToL1Call memory cc,
         bytes memory returnData,
         bytes32 rollingHash
     )
@@ -112,13 +112,13 @@ contract CrossChainManagerL2Test is Test {
         view
         returns (ExecutionEntry memory entry)
     {
-        CrossChainCall[] memory calls = new CrossChainCall[](1);
+        L2ToL1Call[] memory calls = new L2ToL1Call[](1);
         calls[0] = cc;
         entry.stateDeltas = new StateDelta[](0);
         entry.crossChainCallHash = crossChainCallHash;
         entry.destinationRollupId = TEST_ROLLUP_ID;
         entry.calls = calls;
-        entry.nestedActions = new NestedAction[](0);
+        entry.nestedActions = new ExpectedL1ToL2Call[](0);
         entry.callCount = 1;
         entry.returnData = returnData;
         entry.rollingHash = rollingHash;
@@ -133,8 +133,8 @@ contract CrossChainManagerL2Test is Test {
         entry.stateDeltas = new StateDelta[](0);
         entry.crossChainCallHash = crossChainCallHash;
         entry.destinationRollupId = TEST_ROLLUP_ID;
-        entry.calls = new CrossChainCall[](0);
-        entry.nestedActions = new NestedAction[](0);
+        entry.calls = new L2ToL1Call[](0);
+        entry.nestedActions = new ExpectedL1ToL2Call[](0);
         entry.callCount = 0;
         entry.returnData = returnData;
         entry.rollingHash = bytes32(0);
@@ -178,7 +178,7 @@ contract CrossChainManagerL2Test is Test {
         bytes32 crossChainCallHash =
             _computeActionHash(TEST_ROLLUP_ID, address(target), 0, callData, address(this), TEST_ROLLUP_ID);
 
-        CrossChainCall memory cc = CrossChainCall({
+        L2ToL1Call memory cc = L2ToL1Call({
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (42)),
@@ -205,7 +205,7 @@ contract CrossChainManagerL2Test is Test {
         bytes32 crossChainCallHash =
             _computeActionHash(TEST_ROLLUP_ID, address(target), 0, callData, address(this), TEST_ROLLUP_ID);
 
-        CrossChainCall memory cc = CrossChainCall({
+        L2ToL1Call memory cc = L2ToL1Call({
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (42)),
@@ -260,7 +260,7 @@ contract CrossChainManagerL2Test is Test {
         assertEq(computed, actual);
     }
 
-    function test_MultipleProxies_DifferentRollups() public {
+    function test_MultipleProxies_DifferentEEZ() public {
         address proxy1 = manager.createCrossChainProxy(address(target), 1);
         address proxy2 = manager.createCrossChainProxy(address(target), 2);
         assertTrue(proxy1 != proxy2);
@@ -273,11 +273,11 @@ contract CrossChainManagerL2Test is Test {
         assertTrue(proxy1 != proxy2);
     }
 
-    // ── executeCrossChainCall ──
+    // ── executeL1ToL2Call ──
 
     function test_ExecuteCrossChainCall_RevertsUnauthorizedProxy() public {
         vm.expectRevert(CrossChainManagerL2.UnauthorizedProxy.selector);
-        manager.executeCrossChainCall(address(this), "");
+        manager.executeL1ToL2Call(address(this), "");
     }
 
     function test_ExecuteCrossChainCall_RevertsExecutionNotInCurrentBlock() public {
@@ -312,7 +312,7 @@ contract CrossChainManagerL2Test is Test {
         bytes32 crossChainCallHash =
             _computeActionHash(TEST_ROLLUP_ID, address(target), 0, callData, address(this), TEST_ROLLUP_ID);
 
-        CrossChainCall memory cc = CrossChainCall({
+        L2ToL1Call memory cc = L2ToL1Call({
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (42)),
@@ -339,7 +339,7 @@ contract CrossChainManagerL2Test is Test {
         bytes32 crossChainCallHash =
             _computeActionHash(TEST_ROLLUP_ID, address(target), 0, callData, address(this), TEST_ROLLUP_ID);
 
-        CrossChainCall memory cc = CrossChainCall({
+        L2ToL1Call memory cc = L2ToL1Call({
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.getValue, ()),
@@ -374,7 +374,7 @@ contract CrossChainManagerL2Test is Test {
         bytes32 crossChainCallHash =
             _computeActionHash(TEST_ROLLUP_ID, address(target), 0, callData, address(this), TEST_ROLLUP_ID);
 
-        CrossChainCall memory cc = CrossChainCall({
+        L2ToL1Call memory cc = L2ToL1Call({
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.getValue, ()),
@@ -423,7 +423,7 @@ contract CrossChainManagerL2Test is Test {
         bytes32 crossChainCallHash =
             _computeActionHash(TEST_ROLLUP_ID, address(target), 0, callData, address(this), TEST_ROLLUP_ID);
 
-        CrossChainCall memory cc = CrossChainCall({
+        L2ToL1Call memory cc = L2ToL1Call({
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (42)),
@@ -449,8 +449,8 @@ contract CrossChainManagerL2Test is Test {
         bytes32 crossChainCallHash =
             _computeActionHash(TEST_ROLLUP_ID, address(target), 0, callData, address(this), TEST_ROLLUP_ID);
 
-        CrossChainCall[] memory calls = new CrossChainCall[](2);
-        calls[0] = CrossChainCall({
+        L2ToL1Call[] memory calls = new L2ToL1Call[](2);
+        calls[0] = L2ToL1Call({
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (42)),
@@ -458,7 +458,7 @@ contract CrossChainManagerL2Test is Test {
             sourceRollupId: TEST_ROLLUP_ID,
             revertSpan: 0
         });
-        calls[1] = CrossChainCall({
+        calls[1] = L2ToL1Call({
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (99)),
@@ -474,7 +474,7 @@ contract CrossChainManagerL2Test is Test {
         entry.stateDeltas = new StateDelta[](0);
         entry.crossChainCallHash = crossChainCallHash;
         entry.calls = calls;
-        entry.nestedActions = new NestedAction[](0);
+        entry.nestedActions = new ExpectedL1ToL2Call[](0);
         entry.callCount = 1;
         entry.returnData = "";
         entry.rollingHash = rollingHash;
@@ -495,8 +495,8 @@ contract CrossChainManagerL2Test is Test {
         bytes32 crossChainCallHash =
             _computeActionHash(TEST_ROLLUP_ID, address(target), 0, callData, address(this), TEST_ROLLUP_ID);
 
-        CrossChainCall[] memory calls = new CrossChainCall[](2);
-        calls[0] = CrossChainCall({
+        L2ToL1Call[] memory calls = new L2ToL1Call[](2);
+        calls[0] = L2ToL1Call({
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (10)),
@@ -504,7 +504,7 @@ contract CrossChainManagerL2Test is Test {
             sourceRollupId: TEST_ROLLUP_ID,
             revertSpan: 0
         });
-        calls[1] = CrossChainCall({
+        calls[1] = L2ToL1Call({
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (20)),
@@ -525,7 +525,7 @@ contract CrossChainManagerL2Test is Test {
         entry.stateDeltas = new StateDelta[](0);
         entry.crossChainCallHash = crossChainCallHash;
         entry.calls = calls;
-        entry.nestedActions = new NestedAction[](0);
+        entry.nestedActions = new ExpectedL1ToL2Call[](0);
         entry.callCount = 2;
         entry.returnData = "";
         entry.rollingHash = hash;
@@ -554,8 +554,8 @@ contract CrossChainManagerL2Test is Test {
         bytes32 crossChainCallHash =
             _computeActionHash(TEST_ROLLUP_ID, address(target), 0, callData, address(this), TEST_ROLLUP_ID);
 
-        CrossChainCall[] memory calls = new CrossChainCall[](1);
-        calls[0] = CrossChainCall({
+        L2ToL1Call[] memory calls = new L2ToL1Call[](1);
+        calls[0] = L2ToL1Call({
             targetAddress: address(revTarget),
             value: 0,
             data: hex"deadbeef",
@@ -573,7 +573,7 @@ contract CrossChainManagerL2Test is Test {
         entry.stateDeltas = new StateDelta[](0);
         entry.crossChainCallHash = crossChainCallHash;
         entry.calls = calls;
-        entry.nestedActions = new NestedAction[](0);
+        entry.nestedActions = new ExpectedL1ToL2Call[](0);
         entry.callCount = 1;
         entry.returnData = "";
         entry.rollingHash = hash;
@@ -640,7 +640,7 @@ contract CrossChainManagerL2Test is Test {
         bytes32 crossChainCallHash =
             _computeActionHash(TEST_ROLLUP_ID, address(target), 0, callData, address(this), TEST_ROLLUP_ID);
 
-        CrossChainCall memory cc = CrossChainCall({
+        L2ToL1Call memory cc = L2ToL1Call({
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (42)),
@@ -679,7 +679,7 @@ contract CrossChainManagerL2Test is Test {
         bytes32 crossChainCallHash =
             _computeActionHash(TEST_ROLLUP_ID, address(target), 0, callData, address(this), TEST_ROLLUP_ID);
 
-        CrossChainCall memory cc = CrossChainCall({
+        L2ToL1Call memory cc = L2ToL1Call({
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (42)),
@@ -725,7 +725,7 @@ contract CrossChainManagerL2Test is Test {
         bytes32 crossChainCallHash =
             _computeActionHash(TEST_ROLLUP_ID, address(target), 0, callData, address(this), TEST_ROLLUP_ID);
 
-        CrossChainCall memory cc = CrossChainCall({
+        L2ToL1Call memory cc = L2ToL1Call({
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (42)),

@@ -2,11 +2,11 @@
 pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
-import {Rollups, ProofSystemBatch} from "../../../src/Rollups.sol";
+import {EEZ, ProofSystemBatchPerVerificationEntries} from "../../../src/EEZ.sol";
 import {
     StateDelta,
-    CrossChainCall,
-    NestedAction,
+    L2ToL1Call,
+    ExpectedL1ToL2Call,
     ExecutionEntry,
     LookupCall
 } from "../../../src/ICrossChainManager.sol";
@@ -60,20 +60,20 @@ abstract contract MultiCallActions {
         entries = new ExecutionEntry[](2);
         entries[0] = ExecutionEntry({
             stateDeltas: deltasA,
-            crossChainCallHash: ah,
+            proxyEntryHash: ah,
             destinationRollupId: L2_ROLLUP_ID,
-            calls: noCalls(),
-            nestedActions: noNestedActions(),
+            L2ToL1Calls: noCalls(),
+            expectedL1ToL2Calls: noNestedActions(),
             callCount: 0,
             returnData: abi.encode(uint256(1)),
             rollingHash: bytes32(0)
         });
         entries[1] = ExecutionEntry({
             stateDeltas: deltasB,
-            crossChainCallHash: ah,
+            proxyEntryHash: ah,
             destinationRollupId: L2_ROLLUP_ID,
-            calls: noCalls(),
-            nestedActions: noNestedActions(),
+            L2ToL1Calls: noCalls(),
+            expectedL1ToL2Calls: noNestedActions(),
             callCount: 0,
             returnData: abi.encode(uint256(2)),
             rollingHash: bytes32(0)
@@ -96,7 +96,7 @@ contract Deploy is Script {
         address counterL2Addr = vm.envAddress("COUNTER_L2");
 
         vm.startBroadcast();
-        Rollups rollups = Rollups(rollupsAddr);
+        EEZ rollups = EEZ(rollupsAddr);
 
         address counterProxy;
         try rollups.createCrossChainProxy(counterL2Addr, L2_ROLLUP_ID) returns (address p) {
@@ -114,7 +114,7 @@ contract Deploy is Script {
 
 contract Batcher {
     function execute(
-        Rollups rollups,
+        EEZ rollups,
         address proofSystem,
         ExecutionEntry[] calldata entries,
         LookupCall[] calldata lookupCalls,
@@ -130,20 +130,20 @@ contract Batcher {
         rids[0] = L2_ROLLUP_ID;
         bytes[] memory proofs = new bytes[](1);
         proofs[0] = "proof";
-        ProofSystemBatch[] memory batches = new ProofSystemBatch[](1);
-        batches[0] = ProofSystemBatch({
+        ProofSystemBatchPerVerificationEntries[] memory batches = new ProofSystemBatchPerVerificationEntries[](1);
+        batches[0] = ProofSystemBatchPerVerificationEntries({
             proofSystems: psList,
             rollupIds: rids,
             entries: entries,
-            lookupCalls: lookupCalls,
-            transientCount: 0,
+            l1ToL2lookupCalls: lookupCalls,
+            transientExecutionEntryCount: 0,
             transientLookupCallCount: 0,
             blobIndices: new uint256[](0),
             callData: "",
-            proof: proofs,
+            proofs: proofs,
             crossProofSystemInteractions: bytes32(0)
         });
-        rollups.postBatch(batches);
+        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batches);
         (first, second) = caller.callCounterTwice(counterProxy);
     }
 }
@@ -159,7 +159,7 @@ contract Execute is Script, MultiCallActions {
         vm.startBroadcast();
         Batcher batcher = new Batcher();
         (uint256 first, uint256 second) = batcher.execute(
-            Rollups(rollupsAddr),
+            EEZ(rollupsAddr),
             proofSystemAddr,
             _l1Entries(counterL2Addr, callerAddr),
             noLookupCalls(),

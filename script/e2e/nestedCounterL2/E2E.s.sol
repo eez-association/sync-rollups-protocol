@@ -3,11 +3,11 @@ pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
-import {Rollups} from "../../../src/Rollups.sol";
+import {EEZ} from "../../../src/EEZ.sol";
 import {
     StateDelta,
-    CrossChainCall,
-    NestedAction,
+    L2ToL1Call,
+    ExpectedL1ToL2Call,
     ExecutionEntry,
     LookupCall
 } from "../../../src/ICrossChainManager.sol";
@@ -83,8 +83,8 @@ abstract contract NestedL2Actions {
         pure
         returns (ExecutionEntry[] memory entries)
     {
-        CrossChainCall[] memory calls = new CrossChainCall[](1);
-        calls[0] = CrossChainCall({
+        L2ToL1Call[] memory calls = new L2ToL1Call[](1);
+        calls[0] = L2ToL1Call({
             targetAddress: cap,
             value: 0,
             data: abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),
@@ -93,18 +93,18 @@ abstract contract NestedL2Actions {
             revertSpan: 0
         });
 
-        NestedAction[] memory nested = new NestedAction[](1);
-        nested[0] = NestedAction({
+        ExpectedL1ToL2Call[] memory nested = new ExpectedL1ToL2Call[](1);
+        nested[0] = ExpectedL1ToL2Call({
             crossChainCallHash: _innerActionHash(counterL1, cap), callCount: 0, returnData: abi.encode(uint256(1))
         });
 
         entries = new ExecutionEntry[](1);
         entries[0] = ExecutionEntry({
             stateDeltas: new StateDelta[](0),
-            crossChainCallHash: _outerActionHash(cap, alice),
+            proxyEntryHash: _outerActionHash(cap, alice),
             destinationRollupId: L2_ROLLUP_ID,
-            calls: calls,
-            nestedActions: nested,
+            L2ToL1Calls: calls,
+            expectedL1ToL2Calls: nested,
             callCount: 1,
             returnData: "",
             rollingHash: _expectedRollingHash()

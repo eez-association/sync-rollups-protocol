@@ -3,15 +3,15 @@ pragma solidity ^0.8.28;
 
 import {Test, Vm} from "forge-std/Test.sol";
 import {Base} from "./Base.t.sol";
-import {Rollups, RollupConfig, ProofSystemBatch, RollupVerification} from "../src/Rollups.sol";
+import {EEZ, RollupConfig, ProofSystemBatchPerVerificationEntries, RollupVerification} from "../src/EEZ.sol";
 import {Rollup} from "../src/rollupContract/Rollup.sol";
-import {IRollup} from "../src/rollupContract/IRollup.sol";
+import {IRollupContract} from "../src/rollupContract/IRollup.sol";
 import {IProofSystem} from "../src/IProofSystem.sol";
 import {
     ExecutionEntry,
     StateDelta,
-    CrossChainCall,
-    NestedAction,
+    L2ToL1Call,
+    ExpectedL1ToL2Call,
     LookupCall,
     ProxyInfo
 } from "../src/ICrossChainManager.sol";
@@ -42,7 +42,7 @@ contract RevertingTarget {
     }
 }
 
-contract RollupsTest is Base {
+contract EEZTest is Base {
     TestTarget public target;
 
     address public alice = makeAddr("alice");
@@ -72,7 +72,7 @@ contract RollupsTest is Base {
     }
 
     /// @notice Action-hash computation. Test-local helper kept for callsite compatibility;
-    ///         identical to `Base._hashCall` and `Rollups.computeCrossChainCallHash`.
+    ///         identical to `Base._hashCall` and `EEZ.computeCrossChainCallHash`.
     function _computeActionHash(
         uint256 rollupId,
         address destination,
@@ -88,7 +88,7 @@ contract RollupsTest is Base {
         return keccak256(abi.encode(rollupId, destination, value_, data, sourceAddress, sourceRollup));
     }
 
-    /// @notice Wrap entries into a single-PS / single-rollup ProofSystemBatch and call postBatch.
+    /// @notice Wrap entries into a single-PS / single-rollup ProofSystemBatchPerVerificationEntries and call postVerifyAndExecuteOrSaveExecutionsFromBatch.
     function _postBatchSingle(uint256 rid, ExecutionEntry[] memory entries, uint256 transientCount) internal {
         LookupCall[] memory noStatic = new LookupCall[](0);
         _postBatchSingle(rid, entries, noStatic, transientCount, 0);
@@ -122,20 +122,20 @@ contract RollupsTest is Base {
         bytes[] memory proofs = new bytes[](1);
         proofs[0] = "proof";
 
-        ProofSystemBatch[] memory batches = new ProofSystemBatch[](1);
-        batches[0] = ProofSystemBatch({
+        ProofSystemBatchPerVerificationEntries[] memory batches = new ProofSystemBatchPerVerificationEntries[](1);
+        batches[0] = ProofSystemBatchPerVerificationEntries({
             proofSystems: psList,
             rollupIds: rids,
             entries: entries,
-            lookupCalls: lookupCalls,
-            transientCount: transientCount,
+            l1ToL2lookupCalls: lookupCalls,
+            transientExecutionEntryCount: transientCount,
             transientLookupCallCount: transientLookupCallCount,
             blobIndices: new uint256[](0),
             callData: "",
-            proof: proofs,
+            proofs: proofs,
             crossProofSystemInteractions: bytes32(0)
         });
-        rollups.postBatch(batches);
+        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batches);
     }
 
     /// @notice Wrap entries into a single-PS batch with `transientCount = 1` when the leading entry is immediate.
@@ -168,12 +168,12 @@ contract RollupsTest is Base {
     }
 
     function test_CreateRollup_ZeroAddressContractReverts() public {
-        vm.expectRevert(Rollups.InvalidRollupContract.selector);
+        vm.expectRevert(EEZ.InvalidRollupContract.selector);
         rollups.createRollup(address(0), bytes32(0));
     }
 
     function test_CreateRollup_RegistryItselfReverts() public {
-        vm.expectRevert(Rollups.InvalidRollupContract.selector);
+        vm.expectRevert(EEZ.InvalidRollupContract.selector);
         rollups.createRollup(address(rollups), bytes32(0));
     }
 
@@ -220,7 +220,7 @@ contract RollupsTest is Base {
     }
 
     // ──────────────────────────────────────────────
-    //  postBatch — immediate state update
+    //  postVerifyAndExecuteOrSaveExecutionsFromBatch — immediate state update
     // ──────────────────────────────────────────────
 
     function test_PostBatch_ImmediateStateUpdate() public {
@@ -240,13 +240,13 @@ contract RollupsTest is Base {
         // revert is swallowed and the entry is reported as `ImmediateEntrySkipped`.
         entries[0] = _immediateEntry(rid, bytes32(0), keccak256("new"));
         vm.expectEmit(true, false, false, false);
-        emit Rollups.ImmediateEntrySkipped(0, "");
+        emit EEZ.ImmediateEntrySkipped(0, "");
         _postBatch(rid, entries);
         // State unchanged because the immediate entry was skipped.
         assertEq(_getRollupState(rid), keccak256("real"));
     }
 
-    function test_PostBatch_MultipleRollups_OneEntryEach() public {
+    function test_PostBatch_MultipleEEZ_OneEntryEach() public {
         (uint256 r1,) = _makeRollupLocal(bytes32(0), alice);
         (uint256 r2,) = _makeRollupLocal(bytes32(0), bob);
 
@@ -258,8 +258,8 @@ contract RollupsTest is Base {
         entries[0].stateDeltas = deltas;
         entries[0].crossChainCallHash = bytes32(0);
         entries[0].destinationRollupId = r1; // any rollup in batch is fine for inline
-        entries[0].calls = new CrossChainCall[](0);
-        entries[0].nestedActions = new NestedAction[](0);
+        entries[0].calls = new L2ToL1Call[](0);
+        entries[0].nestedActions = new ExpectedL1ToL2Call[](0);
         entries[0].rollingHash = bytes32(0);
 
         uint256[] memory rids = new uint256[](2);
@@ -277,7 +277,7 @@ contract RollupsTest is Base {
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         entries[0] = _immediateEntry(rid, bytes32(0), keccak256("s"));
         ps.setVerifyResult(false);
-        vm.expectRevert(Rollups.InvalidProof.selector);
+        vm.expectRevert(EEZ.InvalidProof.selector);
         _postBatch(rid, entries);
     }
 
@@ -289,11 +289,11 @@ contract RollupsTest is Base {
 
         ExecutionEntry[] memory entries2 = new ExecutionEntry[](1);
         entries2[0] = _immediateEntry(rid, keccak256("s1"), keccak256("s2"));
-        vm.expectRevert(abi.encodeWithSelector(Rollups.RollupAlreadyVerifiedThisBlock.selector, rid));
+        vm.expectRevert(abi.encodeWithSelector(EEZ.RollupAlreadyVerifiedThisBlock.selector, rid));
         _postBatch(rid, entries2);
     }
 
-    function test_PostBatch_SameBlockDifferentRollupsOk() public {
+    function test_PostBatch_SameBlockDifferentEEZOk() public {
         (uint256 r1,) = _makeRollupLocal(bytes32(0), alice);
         (uint256 r2,) = _makeRollupLocal(bytes32(0), bob);
         ExecutionEntry[] memory e1 = new ExecutionEntry[](1);
@@ -318,8 +318,8 @@ contract RollupsTest is Base {
         e1[0].stateDeltas = new StateDelta[](0);
         e1[0].crossChainCallHash = ah;
         e1[0].destinationRollupId = rid;
-        e1[0].calls = new CrossChainCall[](0);
-        e1[0].nestedActions = new NestedAction[](0);
+        e1[0].calls = new L2ToL1Call[](0);
+        e1[0].nestedActions = new ExpectedL1ToL2Call[](0);
         e1[0].rollingHash = bytes32(0);
         _postBatchSingle(rid, e1, 0);
         assertEq(rollups.queueLength(rid), 1);
@@ -343,9 +343,9 @@ contract RollupsTest is Base {
     }
 
     function test_PostBatch_EmptyBatchesReverts() public {
-        ProofSystemBatch[] memory empty = new ProofSystemBatch[](0);
-        vm.expectRevert(Rollups.InvalidProofSystemConfig.selector);
-        rollups.postBatch(empty);
+        ProofSystemBatchPerVerificationEntries[] memory empty = new ProofSystemBatchPerVerificationEntries[](0);
+        vm.expectRevert(EEZ.InvalidProofSystemConfig.selector);
+        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(empty);
     }
 
     // ──────────────────────────────────────────────
@@ -363,7 +363,7 @@ contract RollupsTest is Base {
         uint256[] memory rids = new uint256[](1);
         rids[0] = rid;
 
-        ProofSystemBatch[] memory batches = new ProofSystemBatch[](1);
+        ProofSystemBatchPerVerificationEntries[] memory batches = new ProofSystemBatchPerVerificationEntries[](1);
         batches[0].proofSystems = psList;
         batches[0].rollupIds = rids;
         batches[0].entries = new ExecutionEntry[](0);
@@ -371,8 +371,8 @@ contract RollupsTest is Base {
         batches[0].blobIndices = new uint256[](0);
         batches[0].proof = proofs;
 
-        vm.expectRevert(abi.encodeWithSelector(Rollups.DuplicateProofSystem.selector, address(ps)));
-        rollups.postBatch(batches);
+        vm.expectRevert(abi.encodeWithSelector(EEZ.DuplicateProofSystem.selector, address(ps)));
+        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batches);
     }
 
     // NOTE: dropped after refactor:
@@ -391,7 +391,7 @@ contract RollupsTest is Base {
         rids[1] = r1 < r2 ? r1 : r2;
 
         ExecutionEntry[] memory entries = new ExecutionEntry[](0);
-        vm.expectRevert(Rollups.InvalidProofSystemConfig.selector);
+        vm.expectRevert(EEZ.InvalidProofSystemConfig.selector);
         _postBatchSingleMulti(rids, entries, new LookupCall[](0), 0, 0);
     }
 
@@ -404,7 +404,7 @@ contract RollupsTest is Base {
         uint256[] memory rids = new uint256[](1);
         rids[0] = rid;
 
-        ProofSystemBatch[] memory batches = new ProofSystemBatch[](2);
+        ProofSystemBatchPerVerificationEntries[] memory batches = new ProofSystemBatchPerVerificationEntries[](2);
         batches[0].proofSystems = psList;
         batches[0].rollupIds = rids;
         batches[0].entries = new ExecutionEntry[](0);
@@ -416,8 +416,8 @@ contract RollupsTest is Base {
 
         // After refactor: cross-batch disjointness is enforced by `_markVerifiedThisBlock`,
         // which reverts `RollupAlreadyVerifiedThisBlock` on the second mark of any rid.
-        vm.expectRevert(abi.encodeWithSelector(Rollups.RollupAlreadyVerifiedThisBlock.selector, rid));
-        rollups.postBatch(batches);
+        vm.expectRevert(abi.encodeWithSelector(EEZ.RollupAlreadyVerifiedThisBlock.selector, rid));
+        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batches);
     }
 
     function test_SubBatch_RollupNotInBatchReverts() public {
@@ -430,16 +430,16 @@ contract RollupsTest is Base {
         entries[0].stateDeltas = deltas;
         entries[0].crossChainCallHash = bytes32(0);
         entries[0].destinationRollupId = r1;
-        entries[0].calls = new CrossChainCall[](0);
-        entries[0].nestedActions = new NestedAction[](0);
+        entries[0].calls = new L2ToL1Call[](0);
+        entries[0].nestedActions = new ExpectedL1ToL2Call[](0);
         entries[0].rollingHash = bytes32(0);
 
-        vm.expectRevert(abi.encodeWithSelector(Rollups.RollupNotInBatch.selector, r2));
+        vm.expectRevert(abi.encodeWithSelector(EEZ.RollupNotInBatch.selector, r2));
         _postBatchSingle(r1, entries, 1);
     }
 
     // ──────────────────────────────────────────────
-    //  Per-rollup queue routing (executeCrossChainCall / executeL2TX)
+    //  Per-rollup queue routing (executeL1ToL2Call / executeL2TX)
     // ──────────────────────────────────────────────
 
     function test_ExecuteCrossChainCall_Simple() public {
@@ -448,8 +448,8 @@ contract RollupsTest is Base {
         bytes memory cd = abi.encodeCall(TestTarget.setValue, (42));
         bytes32 ah = _computeActionHash(rid, address(target), 0, cd, address(this), MAINNET_ROLLUP_ID);
 
-        CrossChainCall[] memory calls = new CrossChainCall[](1);
-        calls[0] = CrossChainCall({
+        L2ToL1Call[] memory calls = new L2ToL1Call[](1);
+        calls[0] = L2ToL1Call({
             targetAddress: address(target),
             value: 0,
             data: cd,
@@ -466,7 +466,7 @@ contract RollupsTest is Base {
         entries[0].crossChainCallHash = ah;
         entries[0].destinationRollupId = rid;
         entries[0].calls = calls;
-        entries[0].nestedActions = new NestedAction[](0);
+        entries[0].nestedActions = new ExpectedL1ToL2Call[](0);
         entries[0].callCount = 1;
         entries[0].rollingHash = rh;
         _postBatchSingle(rid, entries, 0); // deferred — must consume via proxy
@@ -479,14 +479,14 @@ contract RollupsTest is Base {
 
     function test_ExecuteCrossChainCall_UnauthorizedProxyReverts() public {
         _makeRollupLocal(bytes32(0), alice);
-        vm.expectRevert(Rollups.UnauthorizedProxy.selector);
-        rollups.executeCrossChainCall(alice, "");
+        vm.expectRevert(EEZ.UnauthorizedProxy.selector);
+        rollups.executeL1ToL2Call(alice, "");
     }
 
     function test_ExecuteCrossChainCall_NotInCurrentBlockReverts() public {
         (uint256 rid,) = _makeRollupLocal(bytes32(0), alice);
         address proxyAddr = rollups.createCrossChainProxy(address(target), rid);
-        // No postBatch in this block → proxy call should revert
+        // No postVerifyAndExecuteOrSaveExecutionsFromBatch in this block → proxy call should revert
         bytes memory cd = abi.encodeCall(TestTarget.setValue, (1));
         (bool ok, bytes memory ret) = proxyAddr.call(cd);
         assertFalse(ok);
@@ -494,7 +494,7 @@ contract RollupsTest is Base {
         assembly {
             sel := mload(add(ret, 32))
         }
-        assertEq(sel, Rollups.ExecutionNotInCurrentBlock.selector);
+        assertEq(sel, EEZ.ExecutionNotInCurrentBlock.selector);
     }
 
     function test_ExecuteL2TX() public {
@@ -513,12 +513,12 @@ contract RollupsTest is Base {
 
     function test_ExecuteL2TX_NotInCurrentBlockReverts() public {
         (uint256 rid,) = _makeRollupLocal(bytes32(0), alice);
-        vm.expectRevert(abi.encodeWithSelector(Rollups.ExecutionNotInCurrentBlock.selector, rid));
+        vm.expectRevert(abi.encodeWithSelector(EEZ.ExecutionNotInCurrentBlock.selector, rid));
         rollups.executeL2TX(rid);
     }
 
     function test_ExecuteInContext_NotSelfReverts() public {
-        vm.expectRevert(Rollups.NotSelf.selector);
+        vm.expectRevert(EEZ.NotSelf.selector);
         rollups.executeInContextAndRevert(1);
     }
 
@@ -549,8 +549,8 @@ contract RollupsTest is Base {
         entries[0].stateDeltas = deltas;
         entries[0].crossChainCallHash = bytes32(0);
         entries[0].destinationRollupId = r1;
-        entries[0].calls = new CrossChainCall[](0);
-        entries[0].nestedActions = new NestedAction[](0);
+        entries[0].calls = new L2ToL1Call[](0);
+        entries[0].nestedActions = new ExpectedL1ToL2Call[](0);
         entries[0].rollingHash = bytes32(0);
 
         uint256[] memory rids = new uint256[](2);
@@ -572,12 +572,12 @@ contract RollupsTest is Base {
         entries[0].stateDeltas = deltas;
         entries[0].crossChainCallHash = bytes32(0);
         entries[0].destinationRollupId = rid;
-        entries[0].calls = new CrossChainCall[](0);
-        entries[0].nestedActions = new NestedAction[](0);
+        entries[0].calls = new L2ToL1Call[](0);
+        entries[0].nestedActions = new ExpectedL1ToL2Call[](0);
         entries[0].rollingHash = bytes32(0);
         // EtherDeltaMismatch raised inside attemptApplyImmediate → caught → ImmediateEntrySkipped.
         vm.expectEmit(true, false, false, false);
-        emit Rollups.ImmediateEntrySkipped(0, "");
+        emit EEZ.ImmediateEntrySkipped(0, "");
         _postBatch(rid, entries);
         assertEq(_getRollupState(rid), bytes32(0));
         assertEq(_getRollupEtherBalance(rid), 5 ether);
@@ -592,12 +592,12 @@ contract RollupsTest is Base {
         entries[0].stateDeltas = deltas;
         entries[0].crossChainCallHash = bytes32(0);
         entries[0].destinationRollupId = rid;
-        entries[0].calls = new CrossChainCall[](0);
-        entries[0].nestedActions = new NestedAction[](0);
+        entries[0].calls = new L2ToL1Call[](0);
+        entries[0].nestedActions = new ExpectedL1ToL2Call[](0);
         entries[0].rollingHash = bytes32(0);
         // InsufficientRollupBalance raised inside attemptApplyImmediate → caught → ImmediateEntrySkipped.
         vm.expectEmit(true, false, false, false);
-        emit Rollups.ImmediateEntrySkipped(0, "");
+        emit EEZ.ImmediateEntrySkipped(0, "");
         _postBatch(rid, entries);
         assertEq(_getRollupState(rid), bytes32(0));
         assertEq(_getRollupEtherBalance(rid), 0);
@@ -627,7 +627,7 @@ contract RollupsTest is Base {
         entries[0] = _immediateEntry(rid, bytes32(0), keccak256("s"));
         _postBatch(rid, entries);
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(Rollups.RollupBatchActiveThisBlock.selector, rid));
+        vm.expectRevert(abi.encodeWithSelector(EEZ.RollupBatchActiveThisBlock.selector, rid));
         r.setStateRoot(keccak256("escape"));
     }
 
@@ -671,9 +671,9 @@ contract RollupsTest is Base {
 
         // Old contract is de-indexed; calling setStateRoot from it now reverts.
         // We need a fresh block so the per-rollup `lastVerifiedBlock` doesn't lock out
-        // the call (setRollupContract above didn't touch lastVerifiedBlock — only postBatch does).
+        // the call (setRollupContract above didn't touch lastVerifiedBlock — only postVerifyAndExecuteOrSaveExecutionsFromBatch does).
         vm.prank(alice);
-        vm.expectRevert(Rollups.NotRollupContract.selector);
+        vm.expectRevert(EEZ.NotRollupContract.selector);
         r1.setStateRoot(keccak256("x"));
     }
 
@@ -686,8 +686,8 @@ contract RollupsTest is Base {
         address proxyAddr = rollups.createCrossChainProxy(address(target), rid);
         bytes memory cd = abi.encodeCall(TestTarget.setValue, (42));
         bytes32 ah = _computeActionHash(rid, address(target), 0, cd, address(this), MAINNET_ROLLUP_ID);
-        CrossChainCall[] memory calls = new CrossChainCall[](1);
-        calls[0] = CrossChainCall({
+        L2ToL1Call[] memory calls = new L2ToL1Call[](1);
+        calls[0] = L2ToL1Call({
             targetAddress: address(target),
             value: 0,
             data: cd,
@@ -702,11 +702,11 @@ contract RollupsTest is Base {
         entries[0].crossChainCallHash = ah;
         entries[0].destinationRollupId = rid;
         entries[0].calls = calls;
-        entries[0].nestedActions = new NestedAction[](0);
+        entries[0].nestedActions = new ExpectedL1ToL2Call[](0);
         entries[0].callCount = 1;
         entries[0].rollingHash = bytes32(uint256(0xdead)); // wrong!
         _postBatchSingle(rid, entries, 0);
-        vm.expectRevert(Rollups.RollingHashMismatch.selector);
+        vm.expectRevert(EEZ.RollingHashMismatch.selector);
         proxyAddr.call(cd);
     }
 
@@ -715,8 +715,8 @@ contract RollupsTest is Base {
         address proxyAddr = rollups.createCrossChainProxy(address(target), rid);
         bytes memory cd = abi.encodeCall(TestTarget.setValue, (42));
         bytes32 ah = _computeActionHash(rid, address(target), 0, cd, address(this), MAINNET_ROLLUP_ID);
-        CrossChainCall[] memory calls = new CrossChainCall[](2);
-        calls[0] = CrossChainCall({
+        L2ToL1Call[] memory calls = new L2ToL1Call[](2);
+        calls[0] = L2ToL1Call({
             targetAddress: address(target),
             value: 0,
             data: cd,
@@ -732,11 +732,11 @@ contract RollupsTest is Base {
         entries[0].crossChainCallHash = ah;
         entries[0].destinationRollupId = rid;
         entries[0].calls = calls;
-        entries[0].nestedActions = new NestedAction[](0);
+        entries[0].nestedActions = new ExpectedL1ToL2Call[](0);
         entries[0].callCount = 1; // promise only one call but provide two
         entries[0].rollingHash = _rollingHashSingleCall("");
         _postBatchSingle(rid, entries, 0);
-        vm.expectRevert(Rollups.UnconsumedCalls.selector);
+        vm.expectRevert(EEZ.UnconsumedCalls.selector);
         proxyAddr.call(cd);
     }
 
@@ -752,7 +752,7 @@ contract RollupsTest is Base {
         Rollup r = new Rollup(address(rollups), alice, 1, psList, vks);
         vm.expectEmit(true, true, true, true);
         // rid 0 was burned in setUpBase, so this fresh rollup lands at id 1.
-        emit Rollups.RollupCreated(1, address(r), keccak256("init"));
+        emit EEZ.RollupCreated(1, address(r), keccak256("init"));
         rollups.createRollup(address(r), keccak256("init"));
     }
 
@@ -763,7 +763,7 @@ contract RollupsTest is Base {
         vm.recordLogs();
         _postBatch(rid, entries);
         Vm.Log[] memory logs = vm.getRecordedLogs();
-        bytes32 sel = Rollups.BatchPosted.selector;
+        bytes32 sel = EEZ.BatchPosted.selector;
         bool found = false;
         for (uint256 i = 0; i < logs.length; i++) {
             if (logs[i].topics[0] == sel) {
@@ -778,7 +778,7 @@ contract RollupsTest is Base {
         (uint256 rid, Rollup r) = _makeRollupLocal(bytes32(0), alice);
         vm.prank(alice);
         vm.expectEmit(true, true, true, true);
-        emit Rollups.StateUpdated(rid, keccak256("escape"));
+        emit EEZ.StateUpdated(rid, keccak256("escape"));
         r.setStateRoot(keccak256("escape"));
     }
 }

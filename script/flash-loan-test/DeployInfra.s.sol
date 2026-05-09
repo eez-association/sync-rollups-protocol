@@ -2,7 +2,7 @@
 pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
-import {Rollups} from "../../src/Rollups.sol";
+import {EEZ} from "../../src/EEZ.sol";
 import {Rollup} from "../../src/rollupContract/Rollup.sol";
 import {IProofSystem} from "../../src/IProofSystem.sol";
 import {CrossChainManagerL2} from "../../src/CrossChainManagerL2.sol";
@@ -14,17 +14,17 @@ contract MockProofSystem is IProofSystem {
     }
 }
 
-/// @title DeployRollupsL1 — Deploy MockProofSystem + Rollups + create L2 rollup (id=1)
+/// @title DeployEEZL1 — Deploy MockProofSystem + EEZ + create L2 rollup (id=1)
 /// @dev Burns rollupId 0 (MAINNET, unpostable) so the L2 rollup gets id 1.
 /// Outputs: PROOF_SYSTEM, ROLLUPS, L2_MANAGER
-contract DeployRollupsL1 is Script {
+contract DeployEEZL1 is Script {
     bytes32 constant DEFAULT_VK = keccak256("verificationKey");
 
     function run() external {
         vm.startBroadcast();
 
         MockProofSystem ps = new MockProofSystem();
-        Rollups rollups = new Rollups();
+        EEZ rollups = new EEZ();
 
         // Burn rollupId 0 (MAINNET) so user rollups start at id 1.
         {

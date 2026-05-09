@@ -2,12 +2,12 @@
 pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
-import {Rollups, ProofSystemBatch} from "../../../src/Rollups.sol";
+import {EEZ, ProofSystemBatchPerVerificationEntries} from "../../../src/EEZ.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
 import {
     StateDelta,
-    CrossChainCall,
-    NestedAction,
+    L2ToL1Call,
+    ExpectedL1ToL2Call,
     ExecutionEntry,
     LookupCall
 } from "../../../src/ICrossChainManager.sol";
@@ -164,8 +164,8 @@ abstract contract ReentrantActions {
             etherDelta: 0
         });
 
-        CrossChainCall[] memory calls = new CrossChainCall[](2);
-        calls[0] = CrossChainCall({
+        L2ToL1Call[] memory calls = new L2ToL1Call[](2);
+        calls[0] = L2ToL1Call({
             targetAddress: rcL1,
             value: 0,
             data: abi.encodeWithSelector(ReentrantCounter.deepCall.selector, uint256(3)),
@@ -173,7 +173,7 @@ abstract contract ReentrantActions {
             sourceRollupId: L2_ROLLUP_ID,
             revertSpan: 0
         });
-        calls[1] = CrossChainCall({
+        calls[1] = L2ToL1Call({
             targetAddress: rcL1,
             value: 0,
             data: abi.encodeWithSelector(ReentrantCounter.deepCall.selector, uint256(1)),
@@ -182,21 +182,21 @@ abstract contract ReentrantActions {
             revertSpan: 0
         });
 
-        NestedAction[] memory nested = new NestedAction[](2);
-        nested[0] = NestedAction({
+        ExpectedL1ToL2Call[] memory nested = new ExpectedL1ToL2Call[](2);
+        nested[0] = ExpectedL1ToL2Call({
             crossChainCallHash: _l1NestedHash0(rcL2, rcL1), callCount: 1, returnData: abi.encode(uint256(2))
         });
-        nested[1] = NestedAction({
+        nested[1] = ExpectedL1ToL2Call({
             crossChainCallHash: _l1NestedHash1(rcL2, rcL1), callCount: 0, returnData: abi.encode(uint256(1))
         });
 
         entries = new ExecutionEntry[](1);
         entries[0] = ExecutionEntry({
             stateDeltas: deltas,
-            crossChainCallHash: _l1OuterActionHash(rcL1, batcher),
+            proxyEntryHash: _l1OuterActionHash(rcL1, batcher),
             destinationRollupId: L2_ROLLUP_ID,
-            calls: calls,
-            nestedActions: nested,
+            L2ToL1Calls: calls,
+            expectedL1ToL2Calls: nested,
             callCount: 1,
             // Top-level rcL1.deepCall(3) returns ++count == 2 after the chain.
             returnData: abi.encode(uint256(2)),
@@ -209,8 +209,8 @@ abstract contract ReentrantActions {
         pure
         returns (ExecutionEntry[] memory entries)
     {
-        CrossChainCall[] memory calls = new CrossChainCall[](2);
-        calls[0] = CrossChainCall({
+        L2ToL1Call[] memory calls = new L2ToL1Call[](2);
+        calls[0] = L2ToL1Call({
             targetAddress: rcL2,
             value: 0,
             data: abi.encodeWithSelector(ReentrantCounter.deepCall.selector, uint256(2)),
@@ -218,7 +218,7 @@ abstract contract ReentrantActions {
             sourceRollupId: MAINNET_ROLLUP_ID,
             revertSpan: 0
         });
-        calls[1] = CrossChainCall({
+        calls[1] = L2ToL1Call({
             targetAddress: rcL2,
             value: 0,
             data: abi.encodeWithSelector(ReentrantCounter.deepCall.selector, uint256(0)),
@@ -227,18 +227,18 @@ abstract contract ReentrantActions {
             revertSpan: 0
         });
 
-        NestedAction[] memory nested = new NestedAction[](1);
-        nested[0] = NestedAction({
+        ExpectedL1ToL2Call[] memory nested = new ExpectedL1ToL2Call[](1);
+        nested[0] = ExpectedL1ToL2Call({
             crossChainCallHash: _l2NestedHash0(rcL1, rcL2), callCount: 1, returnData: abi.encode(uint256(1))
         });
 
         entries = new ExecutionEntry[](1);
         entries[0] = ExecutionEntry({
             stateDeltas: new StateDelta[](0),
-            crossChainCallHash: _l2OuterActionHash(rcL1, alice),
+            proxyEntryHash: _l2OuterActionHash(rcL1, alice),
             destinationRollupId: L2_ROLLUP_ID,
-            calls: calls,
-            nestedActions: nested,
+            L2ToL1Calls: calls,
+            expectedL1ToL2Calls: nested,
             callCount: 1,
             // Top-level rcL2.deepCall(2) returns ++count == 2 after the chain.
             returnData: abi.encode(uint256(2)),
@@ -266,7 +266,7 @@ contract Deploy is Script {
         address rcL2Addr = vm.envAddress("REENTRANT_L2");
 
         vm.startBroadcast();
-        Rollups rollups = Rollups(rollupsAddr);
+        EEZ rollups = EEZ(rollupsAddr);
 
         // Proxy for rcL2@L2 on L1 (rcL1's peer)
         address rcL2ProxyOnL1;
@@ -351,7 +351,7 @@ contract ExecuteL2 is Script, ReentrantActions {
 
 contract Batcher {
     function execute(
-        Rollups rollups,
+        EEZ rollups,
         address proofSystem,
         ExecutionEntry[] calldata entries,
         LookupCall[] calldata lookupCalls,
@@ -365,20 +365,20 @@ contract Batcher {
         rids[0] = L2_ROLLUP_ID;
         bytes[] memory proofs = new bytes[](1);
         proofs[0] = "proof";
-        ProofSystemBatch[] memory batches = new ProofSystemBatch[](1);
-        batches[0] = ProofSystemBatch({
+        ProofSystemBatchPerVerificationEntries[] memory batches = new ProofSystemBatchPerVerificationEntries[](1);
+        batches[0] = ProofSystemBatchPerVerificationEntries({
             proofSystems: psList,
             rollupIds: rids,
             entries: entries,
-            lookupCalls: lookupCalls,
-            transientCount: 0,
+            l1ToL2lookupCalls: lookupCalls,
+            transientExecutionEntryCount: 0,
             transientLookupCallCount: 0,
             blobIndices: new uint256[](0),
             callData: "",
-            proof: proofs,
+            proofs: proofs,
             crossProofSystemInteractions: bytes32(0)
         });
-        rollups.postBatch(batches);
+        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batches);
         (bool ok,) = rcL1ProxyOnL1.call(abi.encodeWithSelector(ReentrantCounter.deepCall.selector, uint256(3)));
         require(ok, "L1 trigger failed");
     }
@@ -396,7 +396,7 @@ contract Execute is Script, ReentrantActions {
         Batcher batcher = new Batcher();
 
         batcher.execute(
-            Rollups(rollupsAddr),
+            EEZ(rollupsAddr),
             proofSystemAddr,
             _l1Entries(rcL1Addr, rcL2Addr, address(batcher)),
             noLookupCalls(),

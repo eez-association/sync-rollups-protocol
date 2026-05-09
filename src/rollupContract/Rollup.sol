@@ -1,43 +1,43 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import {IRollup} from "./IRollup.sol";
+import {IRollupContract} from "./IRollup.sol";
 
-/// @notice Minimal interface against the central Rollups registry — only the calls this
+/// @notice Minimal interface against the central EEZ registry — only the calls this
 ///         per-rollup contract needs. Kept inline (rather than imported from `ICrossChainManager`)
 ///         to keep `Rollup.sol` decoupled from the cross-chain execution model.
-interface IRollupsRegistry {
+interface IEEZRegistry {
     function setStateRoot(uint256 rollupId, bytes32 newStateRoot) external;
 }
 
 /// @title Rollup
 /// @notice Reference per-rollup management contract. Holds proof system membership, vkeys,
-///         threshold, and ownership for a single rollup. Anyone can deploy this (or a custom
-///         contract conforming to `IRollup`) and register it via `Rollups.createRollup` — the
-///         central registry never deploys it on the user's behalf.
-/// @dev The rollupId is provided by the registry via the `rollupContractRegistered` callback (only
-///      callable by `ROLLUPS`). It's stored internally and passed back when this contract
-///      calls into the registry (`setStateRoot(rid, root)` etc.), so the registry doesn't need
-///      a reverse lookup from contract address to rollupId.
-contract Rollup is IRollup {
-    /// @notice The central Rollups registry this rollup is registered with
+///         threshold, and ownership for a single rollup. Anyone can deploy this and register
+///         it via `EEZ.createRollup` — the central registry never deploys it on the user's
+///         behalf.
+/// @dev The rollupId is provided by the registry via the `rollupContractRegistered` callback
+///      (only callable by `ROLLUPS`). Stored internally and passed back when this contract
+///      calls into the registry (`setStateRoot(rid, root)`), so the registry doesn't need a
+///      reverse lookup from contract address to rollupId.
+contract Rollup is IRollupContract {
+    /// @notice The central EEZ registry this rollup is registered with
     address public immutable ROLLUPS;
 
     /// @notice Current owner — controls PS membership, threshold, and the state-root escape hatch.
-    /// @dev Implementation detail of THIS reference manager. Not part of `IRollup`; the central
+    /// @dev Implementation detail of THIS reference manager. Not part of `IRollupContract`; the central
     ///      registry makes no assumption about ownership. Custom managers may use a multisig,
     ///      governance contract, or any other model.
     address public owner;
 
     /// @notice The rollupId this contract manages. Written by the `rollupContractRegistered` callback,
-    ///         on registration (`Rollups.createRollup`) or handoff (`Rollups.setRollupContract`).
+    ///         on registration (`EEZ.createRollup`) or handoff (`EEZ.setRollupContract`).
     uint256 public rollupId;
 
     /// @notice Minimum number of proof systems that must attest per batch (M of N). Owner is
     ///         free to set this to any value, including above the current PS count (which
     ///         effectively locks the rollup until more PSes are added).
-    /// @dev Enforced internally by `getVkeysFromProofSystems`; not on the `IRollup` interface
-    ///      (registry doesn't read it as a separate value).
+    /// @dev Enforced internally by `checkProofSystemsAndGetVkeys`; not on the `IRollupContract`
+    ///      interface (registry doesn't read it as a separate value).
     uint256 public threshold;
 
     /// @notice Per-proof-system verification key. `bytes32(0)` = not allowed.
@@ -51,13 +51,13 @@ contract Rollup is IRollup {
     event StateRootEscape(bytes32 newStateRoot);
 
     error NotOwner();
-    error NotRollupsRegistry();
+    error NotEEZRegistry();
     error InvalidConfig();
     error ProofSystemAlreadyAllowed(address proofSystem);
     error ProofSystemNotAllowed(address proofSystem);
 
-    /// @notice Reverts during `getVkeysFromProofSystems` when fewer non-zero vkeys would be
-    ///         returned than this manager's threshold requires
+    /// @notice Reverts during `checkProofSystemsAndGetVkeys` when fewer non-zero vkeys would
+    ///         be returned than this manager's threshold requires
     error ThresholdNotMet(uint256 submitted, uint256 required);
 
     modifier onlyOwner() {
@@ -65,7 +65,7 @@ contract Rollup is IRollup {
         _;
     }
 
-    /// @param rollupsRegistry The central Rollups contract
+    /// @param rollupsRegistry The central EEZ contract
     /// @param _owner Initial owner
     /// @param _threshold Initial threshold — owner picks any value (no upper bound against
     ///        the initial PS list).
@@ -97,33 +97,50 @@ contract Rollup is IRollup {
     }
 
     // ──────────────────────────────────────────────
-    //  IRollup
+    //  Registry-facing surface
     // ──────────────────────────────────────────────
 
-    /// @inheritdoc IRollup
+    /// @notice Bulk vkey lookup for the chosen PS subset of a posting batch.
     /// @dev Strict: every `proofSystem` in the input MUST be allowed for this rollup
     ///      (non-zero vkey). Reverts `ProofSystemNotAllowed` on the first unknown one. There
-    ///      is no zero-padding semantic — the orchestrator must compose sub-batches whose
-    ///      proofSystem set is a subset of EVERY participating rollup's allowed set, and
-    ///      whose size is at least each rollup's threshold. Implication: the (rid × ps)
+    ///      is no zero-padding semantic — the orchestrator must compose batches whose
+    ///      proofSystem subset for THIS rollup is a subset of this manager's allowed set,
+    ///      and whose size is at least the manager's threshold. Implication: the (rid × ps)
     ///      vkMatrix the registry sees is uniformly non-zero.
-    function getVkeysFromProofSystems(address[] calldata proofSystems) external view returns (bytes32[] memory vkeys) {
+    function checkProofSystemsAndGetVkeys(address[] calldata proofSystems) external view returns (bytes32[] memory vkeys) {
         if (proofSystems.length < threshold) revert ThresholdNotMet(proofSystems.length, threshold);
         vkeys = new bytes32[](proofSystems.length);
+        // Strictly-increasing check: rejects address(0) AND duplicates in one pass. The registry
+        // already enforces the same invariant on the batch's global PS list and on each
+        // rollup's `proofSystemIndex[]` (so the resolved subset reaches us already sorted),
+        // but checking here keeps this manager safe for callers that don't pre-sort.
+        address prev = address(0);
         for (uint256 i = 0; i < proofSystems.length; i++) {
-            bytes32 vk = verificationKey[proofSystems[i]];
-            if (vk == bytes32(0)) revert ProofSystemNotAllowed(proofSystems[i]);
+            address ps = proofSystems[i];
+            if (uint160(ps) <= uint160(prev)) revert ProofSystemNotAllowed(ps);
+            bytes32 vk = verificationKey[ps];
+            if (vk == bytes32(0)) revert ProofSystemNotAllowed(ps);
             vkeys[i] = vk;
+            prev = ps;
         }
     }
 
-    /// @inheritdoc IRollup
-    /// @dev Auth: caller MUST be the central `ROLLUPS` registry, otherwise `NotRollupsRegistry`.
-    ///      This impl does NOT enforce one-shot semantics — overwriting `rollupId` is allowed
-    ///      so the same contract can be re-attached to a different rollup via
-    ///      `Rollups.setRollupContract` handoff. A stricter manager could latch the first id.
+    /// @notice Returns the (timestamp, blockHash) pair this rollup is binding into its
+    ///         per-rollup commit during proof verification. Reference impl returns zeros —
+    ///         a stub for rollups that don't ingest L1 messaging context. Real rollups can
+    ///         override the value (e.g., the latest L1 block their ingestion has finality
+    ///         for) by replacing this contract via handoff.
+    function getTimestampAndBlockHash() external pure returns (uint256 timestamp, bytes32 blockHash) {
+        return (0, bytes32(0));
+    }
+
+    /// @notice Notification fired by the central registry on first registration.
+    /// @dev Auth: caller MUST be the central `ROLLUPS` registry, otherwise `NotEEZRegistry`.
+    ///      This impl does NOT enforce one-shot semantics — overwriting `rollupId` is allowed,
+    ///      though the registry no longer exposes a manager-handoff path so this should fire
+    ///      exactly once in normal operation.
     function rollupContractRegistered(uint256 _rollupId) external {
-        if (msg.sender != ROLLUPS) revert NotRollupsRegistry();
+        if (msg.sender != ROLLUPS) revert NotEEZRegistry();
         rollupId = _rollupId;
     }
 
@@ -132,8 +149,8 @@ contract Rollup is IRollup {
     // ──────────────────────────────────────────────
     //
     // No mid-flow lockout modifier here. Two scenarios to consider:
-    //   1. During a `postBatch` meta hook — the registry already snapshotted this rollup's
-    //      vkMatrix in step 2 of postBatch (before the hook fires in step 6), so any
+    //   1. During a `postVerifyAndExecuteOrSaveExecutionsFromBatch` meta hook — the registry already snapshotted this rollup's
+    //      vkMatrix in step 2 of postVerifyAndExecuteOrSaveExecutionsFromBatch (before the hook fires in step 6), so any
     //      mutation here doesn't affect the in-flight verification.
     //   2. The setStateRoot escape hatch — the only path that mutates central state — is
     //      itself gated by the registry's `RollupBatchActiveThisBlock` check.
@@ -183,14 +200,14 @@ contract Rollup is IRollup {
     }
 
     /// @notice Owner escape hatch — directly sets the rollup's state root via the central
-    ///         registry. Single state-mutating call from this contract back into Rollups.
+    ///         registry. Single state-mutating call from this contract back into EEZ.
     /// @dev Passes `rollupId` explicitly so the registry doesn't need a reverse lookup. The
     ///      registry validates `msg.sender == rollups[rollupId].rollupContract` and reverts
     ///      `RollupBatchActiveThisBlock` if `lastVerifiedBlock(rid) == block.number` (i.e.,
-    ///      a postBatch has touched this rollup in the current block) — the escape hatch
+    ///      a postVerifyAndExecuteOrSaveExecutionsFromBatch has touched this rollup in the current block) — the escape hatch
     ///      is locked out for the rest of the block once a verified state transition lands.
     function setStateRoot(bytes32 newStateRoot) external onlyOwner {
-        IRollupsRegistry(ROLLUPS).setStateRoot(rollupId, newStateRoot);
+        IEEZRegistry(ROLLUPS).setStateRoot(rollupId, newStateRoot);
         emit StateRootEscape(newStateRoot);
     }
 }

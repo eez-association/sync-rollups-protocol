@@ -5,8 +5,8 @@ import {Script, console} from "forge-std/Script.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
 import {
     StateDelta,
-    CrossChainCall,
-    NestedAction,
+    L2ToL1Call,
+    ExpectedL1ToL2Call,
     ExecutionEntry,
     LookupCall
 } from "../../../src/ICrossChainManager.sol";
@@ -21,7 +21,7 @@ import {Action, actionHash, noStaticCalls, noLookupCalls, noNestedActions, noCal
 //    1. loadExecutionTable loads ONE entry on L2 with precomputed return=uint256(1)
 //    2. User calls CounterAndProxy.incrementProxy() on L2
 //    3. CounterAndProxy calls CounterProxy (L2 proxy for Counter@L1)
-//    4. Proxy forwards to managerL2.executeCrossChainCall
+//    4. Proxy forwards to managerL2.executeL1ToL2Call
 //    5. Entry consumed, returns abi.encode(1)
 //    6. CounterAndProxy (on L2): counter=1, targetCounter=1
 //
@@ -55,10 +55,10 @@ abstract contract CounterL2Actions {
         entries = new ExecutionEntry[](1);
         entries[0] = ExecutionEntry({
             stateDeltas: new StateDelta[](0),
-            crossChainCallHash: actionHash(_callAction(counterL1, counterAndProxyL2)),
+            proxyEntryHash: actionHash(_callAction(counterL1, counterAndProxyL2)),
             destinationRollupId: L2_ROLLUP_ID,
-            calls: noCalls(),
-            nestedActions: noNestedActions(),
+            L2ToL1Calls: noCalls(),
+            expectedL1ToL2Calls: noNestedActions(),
             callCount: 0,
             returnData: abi.encode(uint256(1)),
             rollingHash: bytes32(0)

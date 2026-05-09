@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import {Rollups, ProofSystemBatch} from "../../../src/Rollups.sol";
+import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../../src/EEZ.sol";
 import {
     ICrossChainManager,
     ExecutionEntry,
     LookupCall,
-    CrossChainCall,
-    NestedAction
+    L2ToL1Call,
+    ExpectedL1ToL2Call
 } from "../../../src/ICrossChainManager.sol";
 
 // ══════════════════════════════════════════════════════════════════════
-//  Rolling hash tag constants (must match Rollups.sol / CrossChainManagerL2.sol)
+//  Rolling hash tag constants (must match EEZ.sol / CrossChainManagerL2.sol)
 // ══════════════════════════════════════════════════════════════════════
 uint8 constant CALL_BEGIN = 1;
 uint8 constant CALL_END = 2;
@@ -33,7 +33,7 @@ function getOrCreateProxy(ICrossChainManager manager, address originalAddress, u
     }
 }
 
-/// @notice Cross-chain call hash builder matching `Rollups.computeCrossChainCallHash`.
+/// @notice Cross-chain call hash builder matching `EEZ.computeCrossChainCallHash`.
 /// @dev Same formula on L1 and L2; off-chain tooling and on-chain code share this preimage.
 function crossChainCallHash(
     uint256 targetRollupId,
@@ -77,7 +77,7 @@ function noStaticCalls() pure returns (LookupCall[] memory) {
 
 // ══════════════════════════════════════════════════════════════════════
 //  RollingHashBuilder — replay the same tagged-hash sequence that
-//  Rollups._processNCalls / _consumeNestedAction produce on-chain.
+//  EEZ._processNCalls / _consumeNestedAction produce on-chain.
 // ══════════════════════════════════════════════════════════════════════
 
 library RollingHashBuilder {
@@ -107,10 +107,10 @@ library RollingHashBuilder {
 }
 
 // ══════════════════════════════════════════════════════════════════════
-//  L2TXBatcher — postBatch + executeL2TX in one tx (local mode).
+//  L2TXBatcher — postVerifyAndExecuteOrSaveExecutionsFromBatch + executeL2TX in one tx (local mode).
 //  Satisfies the same-block requirement.
 //
-//  POST-REFACTOR: postBatch now takes `ProofSystemBatch[]`. The batcher wraps the
+//  POST-REFACTOR: postVerifyAndExecuteOrSaveExecutionsFromBatch now takes `ProofSystemBatchPerVerificationEntries[]`. The batcher wraps the
 //  caller's entries into a single sub-batch with the supplied proofSystem + rollupId,
 //  then drains immediate entries (transientCount = leading-zero-actionHash run length)
 //  and finally calls executeL2TX(rollupId).
@@ -118,7 +118,7 @@ library RollingHashBuilder {
 
 contract L2TXBatcher {
     function execute(
-        Rollups rollups,
+        EEZ rollups,
         address proofSystem,
         uint256 rollupId,
         ExecutionEntry[] calldata entries,
@@ -126,33 +126,36 @@ contract L2TXBatcher {
     )
         external
     {
-        // Compute transientCount as the count of leading entries whose crossChainCallHash == 0
-        // (immediate entries — no source action to match, run inline during postBatch).
+        // Compute transientCount as the count of leading entries whose proxyEntryHash == 0
+        // (immediate entries — no source action to match, run inline during the batch call).
         uint256 tc = 0;
-        while (tc < entries.length && entries[tc].crossChainCallHash == bytes32(0)) {
+        while (tc < entries.length && entries[tc].proxyEntryHash == bytes32(0)) {
             tc++;
         }
 
         address[] memory psList = new address[](1);
         psList[0] = proofSystem;
-        uint256[] memory rids = new uint256[](1);
-        rids[0] = rollupId;
         bytes[] memory proofs = new bytes[](1);
         proofs[0] = "proof";
-        ProofSystemBatch[] memory batches = new ProofSystemBatch[](1);
-        batches[0] = ProofSystemBatch({
-            proofSystems: psList,
-            rollupIds: rids,
+
+        uint64[] memory psIdx = new uint64[](1);
+        psIdx[0] = 0;
+        RollupIdWithProofSystems[] memory rps = new RollupIdWithProofSystems[](1);
+        rps[0] = RollupIdWithProofSystems({rollupId: rollupId, proofSystemIndex: psIdx});
+
+        ProofSystemBatchPerVerificationEntries memory batch = ProofSystemBatchPerVerificationEntries({
             entries: entries,
-            lookupCalls: lookupCalls,
-            transientCount: tc,
+            l1ToL2lookupCalls: lookupCalls,
+            transientExecutionEntryCount: tc,
             transientLookupCallCount: 0,
+            proofSystems: psList,
+            rollupIdsWithProofSystems: rps,
+            crossProofSystemInteractions: bytes32(0),
             blobIndices: new uint256[](0),
             callData: "",
-            proof: proofs,
-            crossProofSystemInteractions: bytes32(0)
+            proofs: proofs
         });
-        rollups.postBatch(batches);
+        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
         rollups.executeL2TX(rollupId);
     }
 }
@@ -166,12 +169,12 @@ function noLookupCalls() pure returns (LookupCall[] memory) {
     return new LookupCall[](0);
 }
 
-/// @notice Returns an empty NestedAction[].
-function noNestedActions() pure returns (NestedAction[] memory) {
-    return new NestedAction[](0);
+/// @notice Returns an empty ExpectedL1ToL2Call[].
+function noNestedActions() pure returns (ExpectedL1ToL2Call[] memory) {
+    return new ExpectedL1ToL2Call[](0);
 }
 
-/// @notice Returns an empty CrossChainCall[].
-function noCalls() pure returns (CrossChainCall[] memory) {
-    return new CrossChainCall[](0);
+/// @notice Returns an empty L2ToL1Call[].
+function noCalls() pure returns (L2ToL1Call[] memory) {
+    return new L2ToL1Call[](0);
 }

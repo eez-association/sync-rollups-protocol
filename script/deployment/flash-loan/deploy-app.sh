@@ -2,7 +2,7 @@
 # Deploy bridge + flash loan contracts across L1 and L2.
 #
 # Prerequisites:
-#   - Rollups deployed on L1, CrossChainManagerL2 deployed on L2
+#   - EEZ deployed on L1, CrossChainManagerL2 deployed on L2
 #   - Private key with ETH on both chains
 #
 # Usage:

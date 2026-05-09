@@ -2,7 +2,7 @@
 pragma solidity ^0.8.28;
 
 /// @title IProofSystem
-/// @notice Interface for proof-verifying systems referenced from a per-rollup `IRollup`
+/// @notice Interface for proof-verifying systems referenced from a per-rollup `IRollupContract`
 ///         contract's vkey map.
 /// @dev A proof system is any contract that can check `(proof, publicInputsHash)` — ZK, ECDSA,
 ///      etc. There is no central registry; each rollup owner is responsible for vetting which

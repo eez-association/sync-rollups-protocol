@@ -2,7 +2,7 @@
 pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
-import {Rollups} from "../../../src/Rollups.sol";
+import {EEZ} from "../../../src/EEZ.sol";
 import {Rollup} from "../../../src/rollupContract/Rollup.sol";
 import {IProofSystem} from "../../../src/IProofSystem.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
@@ -15,20 +15,20 @@ contract AcceptAllProofSystem is IProofSystem {
     }
 }
 
-/// @title DeployRollupsL1
-/// @notice Deploys AcceptAllProofSystem + Rollups + creates L2 rollup (id=1).
+/// @title DeployEEZL1
+/// @notice Deploys AcceptAllProofSystem + EEZ + creates L2 rollup (id=1).
 /// @dev The first registered rollup gets id 0 = MAINNET_ROLLUP_ID, which is unpostable
-///      because the strict-increasing rollupIds check in postBatch rejects 0. So we burn
+///      because the strict-increasing rollupIds check in postVerifyAndExecuteOrSaveExecutionsFromBatch rejects 0. So we burn
 ///      id 0 with a throwaway rollup, then register the L2 rollup at id 1.
 /// Outputs: ROLLUPS, PROOF_SYSTEM, L2_MANAGER, L2_ROLLUP_ID
-contract DeployRollupsL1 is Script {
+contract DeployEEZL1 is Script {
     bytes32 constant DEFAULT_VK = keccak256("verificationKey");
 
     function run() external {
         vm.startBroadcast();
 
         AcceptAllProofSystem ps = new AcceptAllProofSystem();
-        Rollups rollups = new Rollups();
+        EEZ rollups = new EEZ();
 
         // Burn rollupId 0 (MAINNET) so user rollups start at id 1.
         {

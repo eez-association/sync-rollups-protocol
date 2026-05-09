@@ -4,8 +4,8 @@ pragma solidity ^0.8.28;
 import {Script, console} from "forge-std/Script.sol";
 import {
     StateDelta,
-    CrossChainCall,
-    NestedAction,
+    L2ToL1Call,
+    ExpectedL1ToL2Call,
     ExecutionEntry,
     LookupCall
 } from "../../../src/ICrossChainManager.sol";
@@ -26,7 +26,7 @@ abstract contract ComputeExpectedBase is Script {
     }
 
     function _entryHash(ExecutionEntry memory e) internal pure returns (bytes32) {
-        return _entryHash(e.crossChainCallHash, e.rollingHash);
+        return _entryHash(e.proxyEntryHash, e.rollingHash);
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -42,10 +42,10 @@ abstract contract ComputeExpectedBase is Script {
     }
 
     // ══════════════════════════════════════════════════════════════════
-    //  CrossChainCall formatting (the legacy `Action` struct was removed)
+    //  L2ToL1Call formatting (the legacy `Action` struct was removed)
     // ══════════════════════════════════════════════════════════════════
 
-    function _fmtCall(CrossChainCall memory c) internal view returns (string memory) {
+    function _fmtCall(L2ToL1Call memory c) internal view returns (string memory) {
         string memory func = c.data.length == 0 ? "(ETH transfer)" : string.concat(".", _funcName(bytes4(c.data)), "()");
         string memory valStr = c.value > 0 ? string.concat("  value=", _fmtEther(c.value)) : "";
         string memory revertStr = c.revertSpan > 0 ? string.concat("  revertSpan=", vm.toString(c.revertSpan)) : "";
@@ -62,7 +62,7 @@ abstract contract ComputeExpectedBase is Script {
         );
     }
 
-    function _fmtNested(NestedAction memory n) internal pure returns (string memory) {
+    function _fmtNested(ExpectedL1ToL2Call memory n) internal pure returns (string memory) {
         return string.concat(
             "NESTED crossChainCallHash=",
             _shortHash(n.crossChainCallHash),
@@ -80,11 +80,16 @@ abstract contract ComputeExpectedBase is Script {
     /// @notice L1 deferred entry (with state deltas + rolling hash).
     function _logEntry(uint256 idx, ExecutionEntry memory e) internal view {
         bytes32 hash = _entryHash(e);
-        bool immediate = e.crossChainCallHash == bytes32(0);
+        bool immediate = e.proxyEntryHash == bytes32(0);
         console.log("  [%s] %s  entryHash=%s", idx, immediate ? "IMMEDIATE" : "DEFERRED", vm.toString(hash));
-        console.log("      crossChainCallHash:  %s", vm.toString(e.crossChainCallHash));
+        console.log("      proxyEntryHash:  %s", vm.toString(e.proxyEntryHash));
         console.log("      rollingHash: %s", vm.toString(e.rollingHash));
-        console.log("      callCount=%s  calls=%s  nested=%s", e.callCount, e.calls.length, e.nestedActions.length);
+        console.log(
+            "      callCount=%s  calls=%s  nested=%s",
+            e.callCount,
+            e.L2ToL1Calls.length,
+            e.expectedL1ToL2Calls.length
+        );
 
         for (uint256 d = 0; d < e.stateDeltas.length; d++) {
             StateDelta memory sd = e.stateDeltas[d];
@@ -96,11 +101,11 @@ abstract contract ComputeExpectedBase is Script {
                 )
             );
         }
-        for (uint256 c = 0; c < e.calls.length; c++) {
-            console.log(string.concat("      ", _fmtCall(e.calls[c])));
+        for (uint256 c = 0; c < e.L2ToL1Calls.length; c++) {
+            console.log(string.concat("      ", _fmtCall(e.L2ToL1Calls[c])));
         }
-        for (uint256 n = 0; n < e.nestedActions.length; n++) {
-            console.log(string.concat("      ", _fmtNested(e.nestedActions[n])));
+        for (uint256 n = 0; n < e.expectedL1ToL2Calls.length; n++) {
+            console.log(string.concat("      ", _fmtNested(e.expectedL1ToL2Calls[n])));
         }
         if (e.returnData.length > 0) {
             console.log("      returnData: %s", _shortBytes(e.returnData));
@@ -112,14 +117,19 @@ abstract contract ComputeExpectedBase is Script {
     function _logL2Entry(uint256 idx, ExecutionEntry memory e) internal view {
         bytes32 hash = _entryHash(e);
         console.log("  [%s] entryHash=%s", idx, vm.toString(hash));
-        console.log("      crossChainCallHash:  %s", vm.toString(e.crossChainCallHash));
+        console.log("      proxyEntryHash:  %s", vm.toString(e.proxyEntryHash));
         console.log("      rollingHash: %s", vm.toString(e.rollingHash));
-        console.log("      callCount=%s  calls=%s  nested=%s", e.callCount, e.calls.length, e.nestedActions.length);
-        for (uint256 c = 0; c < e.calls.length; c++) {
-            console.log(string.concat("      ", _fmtCall(e.calls[c])));
+        console.log(
+            "      callCount=%s  calls=%s  nested=%s",
+            e.callCount,
+            e.L2ToL1Calls.length,
+            e.expectedL1ToL2Calls.length
+        );
+        for (uint256 c = 0; c < e.L2ToL1Calls.length; c++) {
+            console.log(string.concat("      ", _fmtCall(e.L2ToL1Calls[c])));
         }
-        for (uint256 n = 0; n < e.nestedActions.length; n++) {
-            console.log(string.concat("      ", _fmtNested(e.nestedActions[n])));
+        for (uint256 n = 0; n < e.expectedL1ToL2Calls.length; n++) {
+            console.log(string.concat("      ", _fmtNested(e.expectedL1ToL2Calls[n])));
         }
         if (e.returnData.length > 0) {
             console.log("      returnData: %s", _shortBytes(e.returnData));
@@ -154,12 +164,12 @@ abstract contract ComputeExpectedBase is Script {
             string.concat(
                 "  [",
                 vm.toString(idx),
-                "] crossChainCallHash=",
-                _shortHash(e.crossChainCallHash),
+                "] proxyEntryHash=",
+                _shortHash(e.proxyEntryHash),
                 "  calls=",
-                vm.toString(e.calls.length),
+                vm.toString(e.L2ToL1Calls.length),
                 "  nested=",
-                vm.toString(e.nestedActions.length)
+                vm.toString(e.expectedL1ToL2Calls.length)
             )
         );
     }

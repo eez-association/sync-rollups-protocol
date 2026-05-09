@@ -2,25 +2,25 @@
 pragma solidity ^0.8.28;
 
 import {Test, Vm} from "forge-std/Test.sol";
-import {Rollups, RollupConfig, ProofSystemBatch, RollupVerification} from "../src/Rollups.sol";
+import {EEZ, RollupConfig, ProofSystemBatchPerVerificationEntries, RollupVerification} from "../src/EEZ.sol";
 import {Rollup} from "../src/rollupContract/Rollup.sol";
-import {IRollup} from "../src/rollupContract/IRollup.sol";
+import {IRollupContract} from "../src/rollupContract/IRollup.sol";
 import {IProofSystem} from "../src/IProofSystem.sol";
 import {
     ExecutionEntry,
     StateDelta,
-    CrossChainCall,
-    NestedAction,
+    L2ToL1Call,
+    ExpectedL1ToL2Call,
     LookupCall,
     ProxyInfo
 } from "../src/ICrossChainManager.sol";
 import {CrossChainProxy} from "../src/CrossChainProxy.sol";
 import {MockProofSystem} from "./mocks/MockProofSystem.sol";
 
-/// @notice Shared fixture for all `*.t.sol` tests touching the L1 `Rollups` registry.
-/// @dev Sets up a `Rollups` instance + a default `MockProofSystem`, and exposes builders for
+/// @notice Shared fixture for all `*.t.sol` tests touching the L1 `EEZ` registry.
+/// @dev Sets up a `EEZ` instance + a default `MockProofSystem`, and exposes builders for
 ///      the most common operations: deploying a `Rollup` manager, registering it, posting a
-///      single-PS / single-rollup `ProofSystemBatch`, building immediate entries, and
+///      single-PS / single-rollup `ProofSystemBatchPerVerificationEntries`, building immediate entries, and
 ///      computing rolling-hash event tags.
 ///
 ///      Tests should:
@@ -35,13 +35,13 @@ import {MockProofSystem} from "./mocks/MockProofSystem.sol";
 ///        6. Use the `_h*` rolling-hash helpers to compute expected `entry.rollingHash`
 ///           values without hardcoding the tag formulas.
 abstract contract Base is Test {
-    Rollups internal rollups;
+    EEZ internal rollups;
     MockProofSystem internal ps;
 
     address internal defaultOwner = makeAddr("defaultOwner");
     bytes32 internal constant DEFAULT_VK = bytes32(uint256(0x100));
 
-    // ── Rolling hash tag constants (mirror Rollups.sol) ──
+    // ── Rolling hash tag constants (mirror EEZ.sol) ──
     uint8 internal constant CALL_BEGIN = 1;
     uint8 internal constant CALL_END = 2;
     uint8 internal constant NESTED_BEGIN = 3;
@@ -58,11 +58,11 @@ abstract contract Base is Test {
     // ──────────────────────────────────────────────
 
     function setUpBase() internal {
-        rollups = new Rollups();
+        rollups = new EEZ();
         ps = new MockProofSystem();
 
         // Burn rollupId 0 (MAINNET_ROLLUP_ID): the strict-increasing rollupIds check in
-        // postBatch rejects rid <= prevRid where prevRid starts at MAINNET_ROLLUP_ID (0).
+        // postVerifyAndExecuteOrSaveExecutionsFromBatch rejects rid <= prevRid where prevRid starts at MAINNET_ROLLUP_ID (0).
         // So id 0 is unpostable. Register a throwaway rollup first so user rollups land at id >= 1.
         address[] memory psList = new address[](1);
         psList[0] = address(ps);
@@ -127,7 +127,7 @@ abstract contract Base is Test {
     }
 
     /// @notice Direct write to the `etherBalance` slot of `rollups[rid]`.
-    /// @dev Storage layout: `mapping(rid => RollupConfig)` is at slot 1 of `Rollups` (slot 0 =
+    /// @dev Storage layout: `mapping(rid => RollupConfig)` is at slot 1 of `EEZ` (slot 0 =
     ///      `rollupCounter`). Mapping value slot = `keccak256(abi.encode(rid, 1))`.
     ///      `RollupConfig` is `{rollupContract, stateRoot, etherBalance}` at slot offsets 0, 1, 2,
     ///      so `etherBalance` lives at `keccak256(abi.encode(rid, 1)) + 2`. Also funds the
@@ -140,10 +140,10 @@ abstract contract Base is Test {
     }
 
     // ──────────────────────────────────────────────
-    //  ProofSystemBatch builders
+    //  ProofSystemBatchPerVerificationEntries builders
     // ──────────────────────────────────────────────
 
-    /// @notice Builds a single-PS / single-rollup `ProofSystemBatch` using the default `ps`.
+    /// @notice Builds a single-PS / single-rollup `ProofSystemBatchPerVerificationEntries` using the default `ps`.
     function _singleSubBatch(
         RollupHandle memory r,
         ExecutionEntry[] memory entries,
@@ -153,7 +153,7 @@ abstract contract Base is Test {
     )
         internal
         view
-        returns (ProofSystemBatch memory batch)
+        returns (ProofSystemBatchPerVerificationEntries memory batch)
     {
         address[] memory psList = new address[](1);
         psList[0] = address(ps);
@@ -161,21 +161,21 @@ abstract contract Base is Test {
         rids[0] = r.id;
         bytes[] memory proofs = new bytes[](1);
         proofs[0] = "proof";
-        batch = ProofSystemBatch({
+        batch = ProofSystemBatchPerVerificationEntries({
             proofSystems: psList,
             rollupIds: rids,
             entries: entries,
-            lookupCalls: lookupCalls,
-            transientCount: transientCount,
+            l1ToL2lookupCalls: lookupCalls,
+            transientExecutionEntryCount: transientCount,
             transientLookupCallCount: transientLookupCallCount,
             blobIndices: new uint256[](0),
             callData: "",
-            proof: proofs,
+            proofs: proofs,
             crossProofSystemInteractions: bytes32(0)
         });
     }
 
-    /// @notice Wraps a single sub-batch for `r` and calls `rollups.postBatch`.
+    /// @notice Wraps a single sub-batch for `r` and calls `rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch`.
     function _postBatchOne(
         RollupHandle memory r,
         ExecutionEntry[] memory entries,
@@ -185,9 +185,9 @@ abstract contract Base is Test {
     )
         internal
     {
-        ProofSystemBatch[] memory batches = new ProofSystemBatch[](1);
+        ProofSystemBatchPerVerificationEntries[] memory batches = new ProofSystemBatchPerVerificationEntries[](1);
         batches[0] = _singleSubBatch(r, entries, lookupCalls, transientCount, transientLookupCallCount);
-        rollups.postBatch(batches);
+        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batches);
     }
 
     /// @notice Convenience: post a single-rollup batch with no lookup calls. Auto-detects whether
@@ -210,12 +210,12 @@ abstract contract Base is Test {
         arr = new LookupCall[](0);
     }
 
-    function _emptyCalls() internal pure returns (CrossChainCall[] memory arr) {
-        arr = new CrossChainCall[](0);
+    function _emptyCalls() internal pure returns (L2ToL1Call[] memory arr) {
+        arr = new L2ToL1Call[](0);
     }
 
-    function _emptyNested() internal pure returns (NestedAction[] memory arr) {
-        arr = new NestedAction[](0);
+    function _emptyNested() internal pure returns (ExpectedL1ToL2Call[] memory arr) {
+        arr = new ExpectedL1ToL2Call[](0);
     }
 
     /// @notice An immediate entry (`crossChainCallHash == 0`) transitioning `rid` from
@@ -238,7 +238,7 @@ abstract contract Base is Test {
     }
 
     /// @notice An immediate entry with no state deltas at all (`crossChainCallHash == 0`,
-    ///         empty deltas/calls). Useful for tests that want to verify postBatch flow
+    ///         empty deltas/calls). Useful for tests that want to verify postVerifyAndExecuteOrSaveExecutionsFromBatch flow
     ///         without state changes.
     function _emptyImmediateEntry(uint256 rid) internal pure returns (ExecutionEntry memory entry) {
         entry.stateDeltas = new StateDelta[](0);
@@ -252,7 +252,7 @@ abstract contract Base is Test {
     }
 
     // ──────────────────────────────────────────────
-    //  Cross-chain call hash helper (mirrors Rollups.computeCrossChainCallHash)
+    //  Cross-chain call hash helper (mirrors EEZ.computeCrossChainCallHash)
     // ──────────────────────────────────────────────
 
     function _hashCall(
@@ -271,7 +271,7 @@ abstract contract Base is Test {
     }
 
     // ──────────────────────────────────────────────
-    //  Rolling hash helpers (mirror Rollups.sol's tag scheme)
+    //  Rolling hash helpers (mirror EEZ.sol's tag scheme)
     // ──────────────────────────────────────────────
 
     function _hCallBegin(bytes32 prev, uint256 callNumber) internal pure returns (bytes32) {

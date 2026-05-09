@@ -5,8 +5,8 @@ import {Script, console} from "forge-std/Script.sol";
 import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
 import {
     StateDelta,
-    CrossChainCall,
-    NestedAction,
+    L2ToL1Call,
+    ExpectedL1ToL2Call,
     ExecutionEntry,
     LookupCall
 } from "../../../src/ICrossChainManager.sol";
@@ -85,8 +85,8 @@ abstract contract RevertL2Actions {
         // demonstrate the EVM state effect being rolled back while the rolling
         // hash still records the successful outcome. sourceRollupId mirrors the
         // entry's outer source (Alice on L2) per the spec convention.
-        CrossChainCall[] memory calls = new CrossChainCall[](1);
-        calls[0] = CrossChainCall({
+        L2ToL1Call[] memory calls = new L2ToL1Call[](1);
+        calls[0] = L2ToL1Call({
             targetAddress: counterL2,
             value: 0,
             data: abi.encodeWithSelector(Counter.increment.selector),
@@ -98,10 +98,10 @@ abstract contract RevertL2Actions {
         entries = new ExecutionEntry[](1);
         entries[0] = ExecutionEntry({
             stateDeltas: new StateDelta[](0),
-            crossChainCallHash: _outerActionHash(counterL1, alice),
+            proxyEntryHash: _outerActionHash(counterL1, alice),
             destinationRollupId: L2_ROLLUP_ID,
-            calls: calls,
-            nestedActions: noNestedActions(),
+            L2ToL1Calls: calls,
+            expectedL1ToL2Calls: noNestedActions(),
             callCount: 1,
             returnData: "",
             rollingHash: _expectedRollingHash()
