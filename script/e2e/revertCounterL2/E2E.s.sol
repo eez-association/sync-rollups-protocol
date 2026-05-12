@@ -3,14 +3,8 @@ pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../../src/EEZ.sol";
-import {CrossChainManagerL2} from "../../../src/L2/CrossChainManagerL2.sol";
-import {
-    StateDelta,
-    L2ToL1Call,
-    ExpectedL1ToL2Call,
-    ExecutionEntry,
-    LookupCall
-} from "../../../src/ICrossChainManager.sol";
+import {EEZL2} from "../../../src/L2/EEZL2.sol";
+import {StateDelta, L2ToL1Call, ExpectedL1ToL2Call, ExecutionEntry, LookupCall} from "../../../src/IEEZ.sol";
 import {Counter} from "../../../test/mocks/CounterContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 import {
@@ -45,7 +39,7 @@ import {
 //       commits to a successful call.
 //
 //  L1 side (Execute) — system-driven mirror:
-//    1. postVerifyAndExecuteOrSaveExecutionsFromBatch loads a deferred entry
+//    1. postAndVerifyBatch loads a deferred entry
 //       (proxyEntryHash=0; transientExecutionEntryCount=0) routed to the L2
 //       rollup queue. calls[0] targets the real Counter on L1 with
 //       revertSpan=1, source=(alice, L2_ROLLUP_ID).
@@ -69,12 +63,7 @@ abstract contract RevertL2Actions {
     /// @dev Outer action hash: alice calls counterProxy (Counter@L1) on L2.
     function _outerActionHash(address counterL1, address alice) internal pure returns (bytes32) {
         return crossChainCallHash(
-            MAINNET_ROLLUP_ID,
-            counterL1,
-            0,
-            abi.encodeWithSelector(Counter.increment.selector),
-            alice,
-            L2_ROLLUP_ID
+            MAINNET_ROLLUP_ID, counterL1, 0, abi.encodeWithSelector(Counter.increment.selector), alice, L2_ROLLUP_ID
         );
     }
 
@@ -171,7 +160,7 @@ contract DeployL2 is Script {
         address counterL1 = vm.envAddress("COUNTER_L1");
 
         vm.startBroadcast();
-        CrossChainManagerL2 manager = CrossChainManagerL2(managerAddr);
+        EEZL2 manager = EEZL2(managerAddr);
 
         Counter counterL2 = new Counter();
 
@@ -205,7 +194,7 @@ contract ExecuteL2 is Script, RevertL2Actions {
         address alice = msg.sender;
         console.log("ExecuteL2: alice=%s counterProxy=%s", alice, counterProxy);
 
-        CrossChainManagerL2(managerAddr).loadExecutionTable(_l2Entries(counterL2, counterL1, alice), noLookupCalls());
+        EEZL2(managerAddr).loadExecutionTable(_l2Entries(counterL2, counterL1, alice), noLookupCalls());
         console.log("ExecuteL2: loadExecutionTable done");
 
         // Trigger: alice calls counterProxy.increment() — consumes the entry.
@@ -269,7 +258,7 @@ contract DeferredL2TXBatcher {
             callData: "",
             proofs: proofs
         });
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
+        rollups.postAndVerifyBatch(batch);
         rollups.executeL2TX(rollupId);
     }
 }
@@ -293,11 +282,7 @@ contract Execute is Script, RevertL2Actions {
 
         DeferredL2TXBatcher batcher = new DeferredL2TXBatcher();
         batcher.execute(
-            EEZ(rollupsAddr),
-            proofSystemAddr,
-            L2_ROLLUP_ID,
-            _l1Entries(counterL1, counterL2, alice),
-            noLookupCalls()
+            EEZ(rollupsAddr), proofSystemAddr, L2_ROLLUP_ID, _l1Entries(counterL1, counterL2, alice), noLookupCalls()
         );
 
         uint256 finalCounter = Counter(counterL1).counter();

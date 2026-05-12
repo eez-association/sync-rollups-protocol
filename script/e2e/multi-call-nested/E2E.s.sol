@@ -3,15 +3,9 @@ pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../../src/EEZ.sol";
-import {CrossChainManagerL2} from "../../../src/L2/CrossChainManagerL2.sol";
-import {ICrossChainManager} from "../../../src/ICrossChainManager.sol";
-import {
-    StateDelta,
-    L2ToL1Call,
-    ExpectedL1ToL2Call,
-    ExecutionEntry,
-    LookupCall
-} from "../../../src/ICrossChainManager.sol";
+import {EEZL2} from "../../../src/L2/EEZL2.sol";
+import {IEEZ} from "../../../src/IEEZ.sol";
+import {StateDelta, L2ToL1Call, ExpectedL1ToL2Call, ExecutionEntry, LookupCall} from "../../../src/IEEZ.sol";
 import {Counter, CounterAndProxy} from "../../../test/mocks/CounterContracts.sol";
 import {CallTwiceNestedAndOnce} from "../../../test/mocks/MultiCallContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
@@ -362,7 +356,7 @@ contract Batcher {
             callData: "",
             proofs: proofs
         });
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
+        rollups.postAndVerifyBatch(batch);
         return app.execute(nestedProxy, simpleProxy);
     }
 }
@@ -390,10 +384,10 @@ contract DeployL2 is Script {
         address counterL1 = vm.envAddress("COUNTER_L1");
 
         vm.startBroadcast();
-        CrossChainManagerL2 manager = CrossChainManagerL2(managerAddr);
+        EEZL2 manager = EEZL2(managerAddr);
 
         // Proxy on L2 for CounterL1 on MAINNET — used by CAP2 to reach back to L1.
-        address counterL1ProxyL2 = getOrCreateProxy(ICrossChainManager(address(manager)), counterL1, MAINNET_ROLLUP_ID);
+        address counterL1ProxyL2 = getOrCreateProxy(IEEZ(address(manager)), counterL1, MAINNET_ROLLUP_ID);
 
         // CAP2: lives on L2, its `target` is CounterL1's proxy on L2 (so target.increment()
         // becomes a cross-chain call back to L1).
@@ -410,9 +404,8 @@ contract DeployL2 is Script {
         // Trigger proxies on L2: tagged originalRollupId=MAINNET so the actionHash inverts to
         // (rollup=MAINNET, target=<L2 contract addr>, sourceRollup=L2). This gives L2_APP a
         // proxy entry-point that consumes the L2 entries.
-        address nestedProxyL2 = getOrCreateProxy(ICrossChainManager(address(manager)), address(cap2), MAINNET_ROLLUP_ID);
-        address simpleProxyL2 =
-            getOrCreateProxy(ICrossChainManager(address(manager)), address(counterL2), MAINNET_ROLLUP_ID);
+        address nestedProxyL2 = getOrCreateProxy(IEEZ(address(manager)), address(cap2), MAINNET_ROLLUP_ID);
+        address simpleProxyL2 = getOrCreateProxy(IEEZ(address(manager)), address(counterL2), MAINNET_ROLLUP_ID);
 
         console.log("COUNTER_L1_PROXY_L2=%s", counterL1ProxyL2);
         console.log("COUNTER_AND_PROXY_L2=%s", address(cap2));
@@ -434,8 +427,8 @@ contract Deploy2 is Script {
         vm.startBroadcast();
         EEZ rollups = EEZ(rollupsAddr);
 
-        address cap2ProxyL1 = getOrCreateProxy(ICrossChainManager(address(rollups)), cap2, L2_ROLLUP_ID);
-        address counterL2ProxyL1 = getOrCreateProxy(ICrossChainManager(address(rollups)), counterL2, L2_ROLLUP_ID);
+        address cap2ProxyL1 = getOrCreateProxy(IEEZ(address(rollups)), cap2, L2_ROLLUP_ID);
+        address counterL2ProxyL1 = getOrCreateProxy(IEEZ(address(rollups)), counterL2, L2_ROLLUP_ID);
 
         console.log("CAP2_PROXY_L1=%s", cap2ProxyL1);
         console.log("COUNTER_L2_PROXY_L1=%s", counterL2ProxyL1);
@@ -447,7 +440,7 @@ contract Deploy2 is Script {
 //  Executes
 // ═══════════════════════════════════════════════════════════════════════
 
-/// @title Execute — L1 local mode: postVerifyAndExecuteOrSaveExecutionsFromBatch (3 entries) + app.execute() via Batcher
+/// @title Execute — L1 local mode: postAndVerifyBatch (3 entries) + app.execute() via Batcher
 contract Execute is Script, MCNActions {
     function run() external {
         address rollupsAddr = vm.envAddress("ROLLUPS");
@@ -494,8 +487,7 @@ contract ExecuteL2 is Script, MCNActions {
         address simpleProxyL2 = vm.envAddress("SIMPLE_PROXY_L2");
 
         vm.startBroadcast();
-        CrossChainManagerL2(managerAddr)
-            .loadExecutionTable(_l2Entries(counterL1, cap2, counterL2, l2App), noStaticCalls());
+        EEZL2(managerAddr).loadExecutionTable(_l2Entries(counterL1, cap2, counterL2, l2App), noStaticCalls());
 
         uint256 simpleResult = CallTwiceNestedAndOnce(l2App).execute(nestedProxyL2, simpleProxyL2);
 

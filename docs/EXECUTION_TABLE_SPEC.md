@@ -525,7 +525,7 @@ For sub-calls **within** a single entry (e.g., a contract on the destination sid
 
 ## L1 vs L2 Entries
 
-| Aspect | L1 (Rollups) | L2 (CrossChainManagerL2) |
+| Aspect | L1 (Rollups) | L2 (EEZL2) |
 |---|---|---|
 | **How loaded** | `postBatch(ProofSystemBatch[] batches)` — each sub-batch carries its own `entries[]`, `lookupCalls[]`, `transientCount`, `transientLookupCallCount`, `proofSystems[]`, `rollupIds[]`, `proof[]`, `callData`, `blobIndices[]`, `crossProofSystemInteractions` | `loadExecutionTable(entries, _lookupCalls)` by `SYSTEM_ADDRESS` |
 | **State deltas** | Required for entries that touch rollup state; `delta.currentState` checked against `rollups[id].stateRoot` (mismatch reverts `StateRootMismatch`); `etherDelta` accounted | Empty by convention; the L2 contract has no rollup state |

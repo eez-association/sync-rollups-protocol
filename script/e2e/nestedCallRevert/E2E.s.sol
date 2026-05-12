@@ -3,14 +3,8 @@ pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../../src/EEZ.sol";
-import {CrossChainManagerL2} from "../../../src/L2/CrossChainManagerL2.sol";
-import {
-    StateDelta,
-    L2ToL1Call,
-    ExpectedL1ToL2Call,
-    ExecutionEntry,
-    LookupCall
-} from "../../../src/ICrossChainManager.sol";
+import {EEZL2} from "../../../src/L2/EEZL2.sol";
+import {StateDelta, L2ToL1Call, ExpectedL1ToL2Call, ExecutionEntry, LookupCall} from "../../../src/IEEZ.sol";
 import {Counter, SafeCounterAndProxy} from "../../../test/mocks/CounterContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 import {crossChainCallHash, noLookupCalls, RollingHashBuilder} from "../shared/E2EHelpers.sol";
@@ -63,12 +57,7 @@ abstract contract NestedCallRevertActions {
     ///      hash uses MAINNET as the source rollup.
     function _innerActionHash(address counterL2, address scap) internal pure returns (bytes32) {
         return crossChainCallHash(
-            L2_ROLLUP_ID,
-            counterL2,
-            0,
-            abi.encodeWithSelector(Counter.increment.selector),
-            scap,
-            MAINNET_ROLLUP_ID
+            L2_ROLLUP_ID, counterL2, 0, abi.encodeWithSelector(Counter.increment.selector), scap, MAINNET_ROLLUP_ID
         );
     }
 
@@ -153,20 +142,11 @@ abstract contract NestedCallRevertActions {
     ///      Manager forces sourceRollupId=ROLLUP_ID (=L2) for L2-issued reentrant calls.
     function _innerActionHashL2(address counterL1, address scapL2) internal pure returns (bytes32) {
         return crossChainCallHash(
-            MAINNET_ROLLUP_ID,
-            counterL1,
-            0,
-            abi.encodeWithSelector(Counter.increment.selector),
-            scapL2,
-            L2_ROLLUP_ID
+            MAINNET_ROLLUP_ID, counterL1, 0, abi.encodeWithSelector(Counter.increment.selector), scapL2, L2_ROLLUP_ID
         );
     }
 
-    function _l2Entries(address scapL2, address batcherL1)
-        internal
-        pure
-        returns (ExecutionEntry[] memory entries)
-    {
+    function _l2Entries(address scapL2, address batcherL1) internal pure returns (ExecutionEntry[] memory entries) {
         L2ToL1Call[] memory calls = new L2ToL1Call[](1);
         calls[0] = L2ToL1Call({
             targetAddress: scapL2,
@@ -194,11 +174,7 @@ abstract contract NestedCallRevertActions {
     ///      Same mechanism as the L1-side LookupCall — _consumeNestedAction falls back
     ///      to the persistent lookupCalls list and reverts with `returnData` when the
     ///      key (hash, callNumber=1, lastNestedActionConsumed=0) matches.
-    function _l2LookupCalls(address counterL1, address scapL2)
-        internal
-        pure
-        returns (LookupCall[] memory statics)
-    {
+    function _l2LookupCalls(address counterL1, address scapL2) internal pure returns (LookupCall[] memory statics) {
         statics = new LookupCall[](1);
         statics[0] = LookupCall({
             crossChainCallHash: _innerActionHashL2(counterL1, scapL2),
@@ -280,7 +256,7 @@ contract DeployL2Step2 is Script {
         address counterL1 = vm.envAddress("COUNTER_L1");
 
         vm.startBroadcast();
-        CrossChainManagerL2 manager = CrossChainManagerL2(managerAddr);
+        EEZL2 manager = EEZL2(managerAddr);
 
         // Proxy on L2 for Counter@MAINNET — never actually invoked end-to-end because the
         // L2 LookupCall {failed:true} short-circuits the proxy's reentrant call.
@@ -344,7 +320,7 @@ contract Batcher {
             callData: "",
             proofs: proofs
         });
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
+        rollups.postAndVerifyBatch(batch);
         (bool ok,) = scapProxy.call(abi.encodeWithSelector(SafeCounterAndProxy.incrementProxy.selector));
         require(ok, "outer call failed");
     }
@@ -369,19 +345,18 @@ contract ExecuteL2 is Script, NestedCallRevertActions {
         // the L1 trigger). The two halves do NOT need identical sourceAddresses because each side
         // is a separate proof; only the rolling-hash / call-shape / LookupCall key matter.
         address triggerSource = msg.sender;
-        console.log(
-            "ExecuteL2: manager=%s scapL2=%s triggerSource=%s", managerAddr, scapL2, triggerSource
-        );
+        console.log("ExecuteL2: manager=%s scapL2=%s triggerSource=%s", managerAddr, scapL2, triggerSource);
 
-        CrossChainManagerL2(managerAddr).executeIncomingCrossChainCall(
-            scapL2,
-            0,
-            abi.encodeWithSelector(SafeCounterAndProxy.incrementProxy.selector),
-            triggerSource,
-            MAINNET_ROLLUP_ID,
-            _l2Entries(scapL2, triggerSource),
-            _l2LookupCalls(counterL1, scapL2)
-        );
+        EEZL2(managerAddr)
+            .executeIncomingCrossChainCall(
+                scapL2,
+                0,
+                abi.encodeWithSelector(SafeCounterAndProxy.incrementProxy.selector),
+                triggerSource,
+                MAINNET_ROLLUP_ID,
+                _l2Entries(scapL2, triggerSource),
+                _l2LookupCalls(counterL1, scapL2)
+            );
 
         console.log("ExecuteL2: done");
         console.log("scapL2.counter=%s", SafeCounterAndProxy(scapL2).counter());

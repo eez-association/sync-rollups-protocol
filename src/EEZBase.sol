@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import {ICrossChainManager} from "./ICrossChainManager.sol";
+import {IEEZ} from "./IEEZ.sol";
 
-/// @title CrossChainManagerBase
-/// @notice Shared base for the L1 (`EEZ`) and L2 (`CrossChainManagerL2`) cross-chain managers.
+/// @title EEZBase
+/// @notice Shared base for the L1 (`EEZ`) and L2 (`EEZL2`) cross-chain managers.
 /// @dev Holds the rolling-hash machinery used identically by both: the four event-type
 ///      tag constants, the `_rollingHash` transient accumulator, and the helpers that
 ///      fold tagged events into it.
@@ -14,7 +14,7 @@ import {ICrossChainManager} from "./ICrossChainManager.sol";
 ///      children currently diverge in subtle ways (transient lookup tables on L1, ether
 ///      accounting on L1, etc.). Future iterations can pull more into this base once those
 ///      divergences are reconciled.
-abstract contract CrossChainManagerBase is ICrossChainManager {
+abstract contract EEZBase is IEEZ {
     // ── Rolling hash tag constants ──
     uint8 internal constant CALL_BEGIN = 1;
     uint8 internal constant CALL_END = 2;

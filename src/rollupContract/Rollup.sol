@@ -4,7 +4,7 @@ pragma solidity ^0.8.28;
 import {IRollupContract} from "./IRollup.sol";
 
 /// @notice Minimal interface against the central EEZ registry — only the calls this
-///         per-rollup contract needs. Kept inline (rather than imported from `ICrossChainManager`)
+///         per-rollup contract needs. Kept inline (rather than imported from `IEEZ`)
 ///         to keep `Rollup.sol` decoupled from the cross-chain execution model.
 interface IEEZRegistry {
     function setStateRoot(uint256 rollupId, bytes32 newStateRoot) external;
@@ -13,7 +13,7 @@ interface IEEZRegistry {
 /// @title Rollup
 /// @notice Reference per-rollup management contract. Holds proof system membership, vkeys,
 ///         threshold, and ownership for a single rollup. Anyone can deploy this and register
-///         it via `EEZ.createRollup` — the central registry never deploys it on the user's
+///         it via `EEZ.registerRollup` — the central registry never deploys it on the user's
 ///         behalf.
 /// @dev The rollupId is provided by the registry via the `rollupContractRegistered` callback
 ///      (only callable by `ROLLUPS`). Stored internally and passed back when this contract
@@ -30,7 +30,7 @@ contract Rollup is IRollupContract {
     address public owner;
 
     /// @notice The rollupId this contract manages. Written by the `rollupContractRegistered` callback,
-    ///         on registration (`EEZ.createRollup`) or handoff (`EEZ.setRollupContract`).
+    ///         on registration (`EEZ.registerRollup`) or handoff (`EEZ.setRollupContract`).
     uint256 public rollupId;
 
     /// @notice Minimum number of proof systems that must attest per batch (M of N). Owner is
@@ -107,7 +107,11 @@ contract Rollup is IRollupContract {
     ///      proofSystem subset for THIS rollup is a subset of this manager's allowed set,
     ///      and whose size is at least the manager's threshold. Implication: the (rid × ps)
     ///      vkMatrix the registry sees is uniformly non-zero.
-    function checkProofSystemsAndGetVkeys(address[] calldata proofSystems) external view returns (bytes32[] memory vkeys) {
+    function checkProofSystemsAndGetVkeys(address[] calldata proofSystems)
+        external
+        view
+        returns (bytes32[] memory vkeys)
+    {
         if (proofSystems.length < threshold) revert ThresholdNotMet(proofSystems.length, threshold);
         vkeys = new bytes32[](proofSystems.length);
         // Strictly-increasing check: rejects address(0) AND duplicates in one pass. The registry
@@ -149,8 +153,8 @@ contract Rollup is IRollupContract {
     // ──────────────────────────────────────────────
     //
     // No mid-flow lockout modifier here. Two scenarios to consider:
-    //   1. During a `postVerifyAndExecuteOrSaveExecutionsFromBatch` meta hook — the registry already snapshotted this rollup's
-    //      vkMatrix in step 2 of postVerifyAndExecuteOrSaveExecutionsFromBatch (before the hook fires in step 6), so any
+    //   1. During a `postAndVerifyBatch` meta hook — the registry already snapshotted this rollup's
+    //      vkMatrix in step 2 of postAndVerifyBatch (before the hook fires in step 6), so any
     //      mutation here doesn't affect the in-flight verification.
     //   2. The setStateRoot escape hatch — the only path that mutates central state — is
     //      itself gated by the registry's `RollupBatchActiveThisBlock` check.
@@ -204,7 +208,7 @@ contract Rollup is IRollupContract {
     /// @dev Passes `rollupId` explicitly so the registry doesn't need a reverse lookup. The
     ///      registry validates `msg.sender == rollups[rollupId].rollupContract` and reverts
     ///      `RollupBatchActiveThisBlock` if `lastVerifiedBlock(rid) == block.number` (i.e.,
-    ///      a postVerifyAndExecuteOrSaveExecutionsFromBatch has touched this rollup in the current block) — the escape hatch
+    ///      a postAndVerifyBatch has touched this rollup in the current block) — the escape hatch
     ///      is locked out for the rest of the block once a verified state transition lands.
     function setStateRoot(bytes32 newStateRoot) external onlyOwner {
         IEEZRegistry(ROLLUPS).setStateRoot(rollupId, newStateRoot);

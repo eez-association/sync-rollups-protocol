@@ -3,14 +3,8 @@ pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../../src/EEZ.sol";
-import {CrossChainManagerL2} from "../../../src/L2/CrossChainManagerL2.sol";
-import {
-    StateDelta,
-    L2ToL1Call,
-    ExpectedL1ToL2Call,
-    ExecutionEntry,
-    LookupCall
-} from "../../../src/ICrossChainManager.sol";
+import {EEZL2} from "../../../src/L2/EEZL2.sol";
+import {StateDelta, L2ToL1Call, ExpectedL1ToL2Call, ExecutionEntry, LookupCall} from "../../../src/IEEZ.sol";
 import {Counter, SelfCallerWithRevert} from "../../../test/mocks/CounterContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 import {
@@ -263,7 +257,7 @@ contract DeployL2Step2 is Script {
         address counterL1 = vm.envAddress("COUNTER_L1");
 
         vm.startBroadcast();
-        CrossChainManagerL2 manager = CrossChainManagerL2(managerAddr);
+        EEZL2 manager = EEZL2(managerAddr);
 
         // Proxy on L2 for Counter on MAINNET
         address counterProxyL2;
@@ -323,7 +317,7 @@ contract Batcher {
             callData: "",
             proofs: proofs
         });
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
+        rollups.postAndVerifyBatch(batch);
         (bool ok,) = selfCallerProxy.call(abi.encodeWithSelector(SelfCallerWithRevert.execute.selector));
         require(ok, "outer call failed");
     }
@@ -342,22 +336,18 @@ contract ExecuteL2 is Script, RevertContinueActions {
 
         vm.startBroadcast();
         address triggerSource = msg.sender;
-        console.log(
-            "ExecuteL2: manager=%s selfCallerL2=%s triggerSource=%s",
-            managerAddr,
-            selfCallerL2,
-            triggerSource
-        );
+        console.log("ExecuteL2: manager=%s selfCallerL2=%s triggerSource=%s", managerAddr, selfCallerL2, triggerSource);
 
-        CrossChainManagerL2(managerAddr).executeIncomingCrossChainCall(
-            selfCallerL2,
-            0,
-            abi.encodeWithSelector(SelfCallerWithRevert.execute.selector),
-            triggerSource,
-            MAINNET_ROLLUP_ID,
-            _l2Entries(selfCallerL2, counterL1, triggerSource),
-            noLookupCalls()
-        );
+        EEZL2(managerAddr)
+            .executeIncomingCrossChainCall(
+                selfCallerL2,
+                0,
+                abi.encodeWithSelector(SelfCallerWithRevert.execute.selector),
+                triggerSource,
+                MAINNET_ROLLUP_ID,
+                _l2Entries(selfCallerL2, counterL1, triggerSource),
+                noLookupCalls()
+            );
 
         console.log("ExecuteL2: done");
         console.log("selfCallerL2.lastResult=%s", SelfCallerWithRevert(selfCallerL2).lastResult());

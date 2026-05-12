@@ -7,12 +7,12 @@ import {Vm} from "forge-std/Vm.sol";
 /// @title DecodeExecutions
 /// @notice Decodes cross-chain events from a block (or recorded logs) and shows the
 ///         execution flow. Works against the post-multi-prover ABI: events on both
-///         L1 (EEZ.sol) and L2 (CrossChainManagerL2.sol).
+///         L1 (EEZ.sol) and L2 (EEZL2.sol).
 ///
 /// NOTE: Pre-execution entry payload is NOT decoded by this script.
 ///       Post-refactor, `BatchPosted(uint256 subBatchCount)` carries only the
 ///       sub-batch count; the full `ExecutionEntry[]` payload lives in the
-///       `postVerifyAndExecuteOrSaveExecutionsFromBatch` transaction input calldata. Decoding tx input from inside
+///       `postAndVerifyBatch` transaction input calldata. Decoding tx input from inside
 ///       a Forge script is awkward (no direct cheatcode for it), so this
 ///       decoder reports execution flow purely from emitted events. The events
 ///       it relies on are rich enough for almost all debugging use cases:
@@ -21,7 +21,7 @@ import {Vm} from "forge-std/Vm.sol";
 ///       L2TXExecuted, EntryExecuted, CrossChainCallExecuted, CallResult,
 ///       NestedActionConsumed, RevertSpanExecuted, CrossChainProxyCreated,
 ///       and the L2-only ExecutionTableLoaded / IncomingCrossChainCallExecuted.
-///       For a full pre-execution dump of entries, decode the postVerifyAndExecuteOrSaveExecutionsFromBatch tx
+///       For a full pre-execution dump of entries, decode the postAndVerifyBatch tx
 ///       input off-chain (e.g. with `cast calldata-decode`).
 ///
 /// Usage:
@@ -515,8 +515,8 @@ contract DecodeExecutions is Script {
         if (sel == bytes4(keccak256("number()"))) return "number()";
         if (sel == bytes4(keccak256("greet()"))) return "greet()";
         if (sel == bytes4(keccak256("greet(string)"))) return "greet(string)";
-        if (sel == bytes4(keccak256("executeL1ToL2Call(address,bytes)"))) {
-            return "executeL1ToL2Call(address,bytes)";
+        if (sel == bytes4(keccak256("executeCrossChainCall(address,bytes)"))) {
+            return "executeCrossChainCall(address,bytes)";
         }
         if (sel == bytes4(keccak256("staticCallLookup(address,bytes)"))) return "staticCallLookup(address,bytes)";
         // Fall back to raw 4-byte selector

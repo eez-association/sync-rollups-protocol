@@ -2,15 +2,9 @@
 pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
-import {CrossChainManagerL2} from "../../../src/L2/CrossChainManagerL2.sol";
+import {EEZL2} from "../../../src/L2/EEZL2.sol";
 import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../../src/EEZ.sol";
-import {
-    StateDelta,
-    L2ToL1Call,
-    ExpectedL1ToL2Call,
-    ExecutionEntry,
-    LookupCall
-} from "../../../src/ICrossChainManager.sol";
+import {StateDelta, L2ToL1Call, ExpectedL1ToL2Call, ExecutionEntry, LookupCall} from "../../../src/IEEZ.sol";
 import {Counter, CounterAndProxy} from "../../../test/mocks/CounterContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 import {Action, actionHash, noLookupCalls, noStaticCalls, RollingHashBuilder} from "../shared/E2EHelpers.sol";
@@ -87,11 +81,7 @@ abstract contract MultiCallNestedL2Actions {
     ///      one Counter.increment() call on L1. Each call surfaces on L1 as a top-level
     ///      cross-chain invocation from CAP (on L2) to Counter (on MAINNET). Each entry is
     ///      drained by one executeL2TX call.
-    function _l1Entries(address counterL1, address cap)
-        internal
-        pure
-        returns (ExecutionEntry[] memory entries)
-    {
+    function _l1Entries(address counterL1, address cap) internal pure returns (ExecutionEntry[] memory entries) {
         L2ToL1Call memory innerCall = L2ToL1Call({
             targetAddress: counterL1,
             value: 0,
@@ -153,8 +143,10 @@ abstract contract MultiCallNestedL2Actions {
 
         bytes32 innerHash = _innerActionHash(counterL1, cap);
         ExpectedL1ToL2Call[] memory nested = new ExpectedL1ToL2Call[](2);
-        nested[0] = ExpectedL1ToL2Call({crossChainCallHash: innerHash, callCount: 0, returnData: abi.encode(uint256(1))});
-        nested[1] = ExpectedL1ToL2Call({crossChainCallHash: innerHash, callCount: 0, returnData: abi.encode(uint256(2))});
+        nested[0] =
+            ExpectedL1ToL2Call({crossChainCallHash: innerHash, callCount: 0, returnData: abi.encode(uint256(1))});
+        nested[1] =
+            ExpectedL1ToL2Call({crossChainCallHash: innerHash, callCount: 0, returnData: abi.encode(uint256(2))});
 
         entries = new ExecutionEntry[](1);
         entries[0] = ExecutionEntry({
@@ -191,7 +183,7 @@ contract DeployL2 is Script {
         address counterL1Addr = vm.envAddress("COUNTER_L1");
 
         vm.startBroadcast();
-        CrossChainManagerL2 manager = CrossChainManagerL2(managerAddr);
+        EEZL2 manager = EEZL2(managerAddr);
 
         // Proxy for Counter@MAINNET on L2
         address counterProxy;
@@ -235,7 +227,7 @@ contract ExecuteL2 is Script, MultiCallNestedL2Actions {
         address alice = msg.sender;
         console.log("ExecuteL2: alice=%s cap=%s capL1Proxy=%s", alice, capAddr, capL1Proxy);
 
-        CrossChainManagerL2(managerAddr).loadExecutionTable(_l2Entries(counterL1Addr, capAddr, alice), noStaticCalls());
+        EEZL2(managerAddr).loadExecutionTable(_l2Entries(counterL1Addr, capAddr, alice), noStaticCalls());
         console.log("ExecuteL2: loadExecutionTable done");
 
         // Trigger: alice calls capL1Proxy.incrementProxy()
@@ -286,7 +278,7 @@ contract DeferredL2TXBatcherTwice {
             callData: "",
             proofs: proofs
         });
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
+        rollups.postAndVerifyBatch(batch);
         rollups.executeL2TX(rollupId);
         rollups.executeL2TX(rollupId);
     }
@@ -303,13 +295,7 @@ contract Execute is Script, MultiCallNestedL2Actions {
 
         vm.startBroadcast();
         DeferredL2TXBatcherTwice batcher = new DeferredL2TXBatcherTwice();
-        batcher.execute(
-            EEZ(rollupsAddr),
-            proofSystemAddr,
-            L2_ROLLUP_ID,
-            _l1Entries(counterL1, cap),
-            noLookupCalls()
-        );
+        batcher.execute(EEZ(rollupsAddr), proofSystemAddr, L2_ROLLUP_ID, _l1Entries(counterL1, cap), noLookupCalls());
 
         console.log("Execute: done");
         console.log("L1 counter=%s (expected 2)", Counter(counterL1).counter());
@@ -356,9 +342,7 @@ contract ComputeExpected is ComputeExpectedBase, MultiCallNestedL2Actions {
         bytes32 l1Hash1 = _entryHash(l1[1]);
 
         console.log("EXPECTED_L2_HASHES=[%s]", vm.toString(l2Hash));
-        console.log(
-            string.concat("EXPECTED_L1_HASHES=[", vm.toString(l1Hash0), ",", vm.toString(l1Hash1), "]")
-        );
+        console.log(string.concat("EXPECTED_L1_HASHES=[", vm.toString(l1Hash0), ",", vm.toString(l1Hash1), "]"));
         console.log("");
         console.log("=== EXPECTED L2 TABLE (1 entry, 2 calls, 2 nested) ===");
         _logL2Entry(0, l2[0]);

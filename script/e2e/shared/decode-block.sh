@@ -2,7 +2,7 @@
 # Cross-chain block decoder.
 #
 # NOTE: Post-multi-prover-refactor, the orchestrator no longer encodes L2 block
-# numbers in postVerifyAndExecuteOrSaveExecutionsFromBatch callData. The cross-chain block correlation that was the
+# numbers in postAndVerifyBatch callData. The cross-chain block correlation that was the
 # main feature of this script is no longer available on-chain. The single-block
 # decoder still works (decodes events on the given chain at the given block) —
 # if you only need that, just call:

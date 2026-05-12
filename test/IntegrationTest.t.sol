@@ -4,16 +4,9 @@ pragma solidity ^0.8.28;
 import {Test, console} from "forge-std/Test.sol";
 import {EEZ, RollupConfig, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../src/EEZ.sol";
 import {Rollup} from "../src/rollupContract/Rollup.sol";
-import {CrossChainManagerL2} from "../src/L2/CrossChainManagerL2.sol";
+import {EEZL2} from "../src/L2/EEZL2.sol";
 import {CrossChainProxy} from "../src/CrossChainProxy.sol";
-import {
-    ExecutionEntry,
-    StateDelta,
-    L2ToL1Call,
-    ExpectedL1ToL2Call,
-    LookupCall,
-    ProxyInfo
-} from "../src/ICrossChainManager.sol";
+import {ExecutionEntry, StateDelta, L2ToL1Call, ExpectedL1ToL2Call, LookupCall, ProxyInfo} from "../src/IEEZ.sol";
 import {MockProofSystem} from "./mocks/MockProofSystem.sol";
 import {Counter, CounterAndProxy} from "./mocks/CounterContracts.sol";
 
@@ -50,7 +43,7 @@ contract IntegrationTest is Test {
     Rollup public l2Manager; // per-rollup IRollupContract manager for L2_ROLLUP_ID
 
     // ── L2 contracts ──
-    CrossChainManagerL2 public managerL2;
+    EEZL2 public managerL2;
 
     // ── Application contracts (see legend) ──
     CounterAndProxy public counterAndProxy; // A  -- CounterAndProxy on L1, target = B'
@@ -79,7 +72,7 @@ contract IntegrationTest is Test {
 
         // The contract has no `startingRollupId` constructor arg, so `rollupCounter`
         // starts at 0 and the FIRST registered rollup would receive id 0 = MAINNET.
-        // postVerifyAndExecuteOrSaveExecutionsFromBatch validation rejects id 0 (strict-increasing from MAINNET_ROLLUP_ID),
+        // postAndVerifyBatch validation rejects id 0 (strict-increasing from MAINNET_ROLLUP_ID),
         // so we burn id 0 with a throwaway rollup, then register L2 at id 1.
         {
             address[] memory psList = new address[](1);
@@ -87,7 +80,7 @@ contract IntegrationTest is Test {
             bytes32[] memory vks = new bytes32[](1);
             vks[0] = DEFAULT_VK;
             Rollup burnRollup = new Rollup(address(rollups), address(this), 1, psList, vks);
-            rollups.createRollup(address(burnRollup), bytes32(0));
+            rollups.registerRollup(address(burnRollup), bytes32(0));
         }
 
         // Create L2 rollup at id = 1 = L2_ROLLUP_ID
@@ -97,12 +90,12 @@ contract IntegrationTest is Test {
             bytes32[] memory vks = new bytes32[](1);
             vks[0] = DEFAULT_VK;
             l2Manager = new Rollup(address(rollups), address(this), 1, psList, vks);
-            uint256 rid = rollups.createRollup(address(l2Manager), keccak256("l2-initial-state"));
+            uint256 rid = rollups.registerRollup(address(l2Manager), keccak256("l2-initial-state"));
             require(rid == L2_ROLLUP_ID, "expected L2_ROLLUP_ID = 1");
         }
 
         // ── L2 infrastructure ──
-        managerL2 = new CrossChainManagerL2(L2_ROLLUP_ID, SYSTEM_ADDRESS);
+        managerL2 = new EEZL2(L2_ROLLUP_ID, SYSTEM_ADDRESS);
 
         // ── Deploy application contracts ──
         counterL2 = new Counter(); // B
@@ -173,7 +166,7 @@ contract IntegrationTest is Test {
             callData: "",
             proofs: proofs
         });
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
+        rollups.postAndVerifyBatch(batch);
     }
 
     /// @notice Computes the action hash the same way executeL1ToL2Call does
@@ -192,7 +185,7 @@ contract IntegrationTest is Test {
         return keccak256(abi.encode(rollupId, destination, value, data, sourceAddress, sourceRollup));
     }
 
-    /// @notice Creates an empty LookupCall array (used by postVerifyAndExecuteOrSaveExecutionsFromBatch and loadExecutionTable)
+    /// @notice Creates an empty LookupCall array (used by postAndVerifyBatch and loadExecutionTable)
     function _noLookupCalls() internal pure returns (LookupCall[] memory) {
         return new LookupCall[](0);
     }

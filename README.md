@@ -18,7 +18,7 @@ This restores the synchronous execution semantics that DeFi protocols depend on 
 - **Reentrant Calls via `NestedAction`**: cross-chain reentrancy is resolved by consuming pre-computed `NestedAction` entries, not by recursion.
 - **Static Call Support**: read-only and reverting reentrant calls are pre-computed as `StaticCall` entries and looked up via a view function.
 - **In-Tx Consumption via `IMetaCrossChainReceiver`**: an L1 batch poster can drive consumption of the batch's transient prefix via a callback hook in the same transaction.
-- **L1 + L2 Contracts**: L1 `Rollups` contract manages state and proofs; L2 `CrossChainManagerL2` handles execution without ZK overhead.
+- **L1 + L2 Contracts**: L1 `Rollups` contract manages state and proofs; L2 `EEZL2` handles execution without ZK overhead.
 - **ETH Balance Tracking (L1)**: per-rollup ETH accounting with conservation guarantees, verified per entry.
 
 ## Architecture
@@ -29,7 +29,7 @@ This restores the synchronous execution semantics that DeFi protocols depend on 
 |----------|-------------|
 | `Rollups.sol` | L1 contract managing rollup state roots, ZK-proven batch posting, transient/deferred execution split, the meta-hook callback, and cross-chain call execution. |
 | `CrossChainProxy.sol` | Proxy contract deployed via CREATE2 for each `(address, rollupId)` pair. Routes incoming calls to the manager via `executeCrossChainCall` (or `staticCallLookup` in static context); forwards manager-driven outbound calls via `executeOnBehalf`. |
-| `CrossChainManagerL2.sol` | L2-side contract for cross-chain execution via pre-computed execution tables loaded by a system address. No ZK proofs, no rollup registry, no state deltas. |
+| `EEZL2.sol` | L2-side contract for cross-chain execution via pre-computed execution tables loaded by a system address. No ZK proofs, no rollup registry, no state deltas. |
 | `IZKVerifier.sol` | Interface for external ZK proof verification. |
 | `IMetaCrossChainReceiver.sol` | Optional callback interface invoked on `postBatch`'s `msg.sender` (when it has code) so the sender can consume the batch's transient entries inline. |
 
@@ -140,9 +140,9 @@ User calls CrossChainProxy.someFunction()
     │           replay any sub-calls; check rolling hash; return / revert
 ```
 
-### L2 Execution (CrossChainManagerL2)
+### L2 Execution (EEZL2)
 
-On L2, `CrossChainManagerL2` handles cross-chain execution without ZK proofs or rollup state:
+On L2, `EEZL2` handles cross-chain execution without ZK proofs or rollup state:
 
 - A **system address** loads execution tables via `loadExecutionTable(entries, _staticCalls)`. There is no transient/deferred split on L2 — all entries go to persistent `executions`.
 - Local proxy calls go through `executeCrossChainCall(sourceAddress, callData)`. `msg.value` is forwarded to `SYSTEM_ADDRESS` (burn) — no ether accounting.
@@ -192,7 +192,7 @@ forge fmt           # format code
 ```solidity
 Rollups rollups = new Rollups(zkVerifierAddress, startingRollupId);
 
-uint256 rollupId = rollups.createRollup(
+uint256 rollupId = rollups.registerRollup(
     initialState,      // bytes32
     verificationKey,   // bytes32
     owner              // address
@@ -287,7 +287,7 @@ The transient table must be fully drained for the deferred remainder to be publi
 
 | Function | Description |
 |----------|-------------|
-| `createRollup(initialState, verificationKey, owner)` | Creates a new rollup and returns its ID. |
+| `registerRollup(initialState, verificationKey, owner)` | Creates a new rollup and returns its ID. |
 | `createCrossChainProxy(originalAddress, originalRollupId)` | Deploys a `CrossChainProxy` via CREATE2. |
 | `computeCrossChainProxyAddress(originalAddress, originalRollupId)` | Computes the deterministic CREATE2 address. |
 | `postBatch(entries, staticCalls, transientCount, transientStaticCallCount, blobCount, callData, proof)` | Posts a batch with ZK proof. Splits entries into transient (inline-consumed) and deferred (persistent). |
@@ -298,7 +298,7 @@ The transient table must be fully drained for the deferred remainder to be publi
 | `setVerificationKey(rollupId, newVerificationKey)` | Owner-only. |
 | `transferRollupOwnership(rollupId, newOwner)` | Owner-only. |
 
-### CrossChainManagerL2 (L2)
+### EEZL2 (L2)
 
 | Function | Description |
 |----------|-------------|

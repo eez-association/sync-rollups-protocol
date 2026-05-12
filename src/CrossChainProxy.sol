@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import {ICrossChainManager} from "./ICrossChainManager.sol";
+import {IEEZ} from "./IEEZ.sol";
 
 /// @title CrossChainProxy
 /// @notice Proxy contract for cross-chain addresses, deployed via CREATE2
@@ -23,7 +23,7 @@ contract CrossChainProxy {
     ///      Writing to it reverts in a static context; the self-call in _fallback catches this.
     uint256 transient _staticDetector;
 
-    /// @param _manager The manager contract address (EEZ on L1, CrossChainManagerL2 on L2)
+    /// @param _manager The manager contract address (EEZ on L1, EEZL2 on L2)
     /// @param _originalAddress The original address this proxy represents
     /// @param _originalRollupId The original rollup ID
     constructor(address _manager, address _originalAddress, uint256 _originalRollupId) {
@@ -76,7 +76,7 @@ contract CrossChainProxy {
     ///      If it reverts we're in a STATICCALL — route to staticCallLookup (view) instead.
     ///
     ///      Result decoding:
-    ///      The low-level `.call()` returns ABI-encoded return data. Since `executeL1ToL2Call`
+    ///      The low-level `.call()` returns ABI-encoded return data. Since `executeCrossChainCall`
     ///      returns `bytes memory`, the raw `result` is double-encoded: the outer ABI encoding
     ///      wraps the inner `bytes` return value. We must `abi.decode(result, (bytes))` to unwrap
     ///      the inner bytes before returning them to the caller.
@@ -89,13 +89,11 @@ contract CrossChainProxy {
 
         if (!success) {
             // Static context — look up pre-computed result via view function
-            (success, result) =
-                MANAGER.staticcall(abi.encodeCall(ICrossChainManager.staticCallLookup, (msg.sender, msg.data)));
+            (success, result) = MANAGER.staticcall(abi.encodeCall(IEEZ.staticCallLookup, (msg.sender, msg.data)));
         } else {
             // Normal context — execute cross-chain call
-            (success, result) = MANAGER.call{
-                value: msg.value
-            }(abi.encodeCall(ICrossChainManager.executeL1ToL2Call, (msg.sender, msg.data)));
+            (success, result) =
+                MANAGER.call{value: msg.value}(abi.encodeCall(IEEZ.executeCrossChainCall, (msg.sender, msg.data)));
         }
 
         if (success) {

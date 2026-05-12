@@ -251,7 +251,7 @@ When a bundle is clicked, show:
 
 ## How Action Hash is Computed (Reference)
 
-From Solidity (`Rollups.sol` / `CrossChainManagerL2.sol`):
+From Solidity (`Rollups.sol` / `EEZL2.sol`):
 ```solidity
 bytes32 actionHash = keccak256(abi.encode(action));
 ```

@@ -56,9 +56,9 @@ per-rollup-manager refactor on `feature/flatten`. Updated as the design evolves.
 | `src/Rollup.sol` | Reference per-rollup manager (PS membership, vkeys, threshold, owner) |
 | `src/IRollup.sol` | Interface registry calls back into per-rollup managers |
 | `src/IProofSystem.sol` | Interface for proof-verifying contracts |
-| `src/ICrossChainManager.sol` | Shared structs (`StateDelta`, `ExecutionEntry`, `LookupCall`, etc.) |
+| `src/IEEZ.sol` | Shared structs (`StateDelta`, `ExecutionEntry`, `LookupCall`, etc.) |
 | `src/CrossChainProxy.sol` | CREATE2-deployed proxy per (originalAddress, originalRollupId) |
-| `src/CrossChainManagerL2.sol` | L2 manager (unchanged by this refactor) |
+| `src/EEZL2.sol` | L2 manager (unchanged by this refactor) |
 
 ### Deleted in this refactor
 
@@ -223,7 +223,7 @@ AFTER step 2 instead of before: the only paths that mutate state in step 2 are f
 STATICCALL.
 
 The OTHER reentrancy windows are non-view callbacks: `IRollup.rollupContractRegistered` (called from
-`createRollup` and `setRollupContract`) and the `IMetaCrossChainReceiver` hook (called in
+`registerRollup` and `setRollupContract`) and the `IMetaCrossChainReceiver` hook (called in
 step 6). Those are normal CALL → can reenter. Lockouts:
 - Same-rollup re-entry into `postBatch` → blocked by `lastVerifiedBlock == block.number`
   (`RollupAlreadyVerifiedThisBlock`).
@@ -242,7 +242,7 @@ step 6). Those are normal CALL → can reenter. Lockouts:
 ### Initial registration
 
 ```solidity
-function createRollup(address rollupContract, bytes32 initialState) external returns (uint256 rollupId);
+function registerRollup(address rollupContract, bytes32 initialState) external returns (uint256 rollupId);
 ```
 
 - Caller deploys their `IRollup`-conforming contract (e.g. our reference `Rollup.sol`,
@@ -287,7 +287,7 @@ function setStateRoot(uint256 rollupId, bytes32 newStateRoot) external;
 | `RollupConfig.owner` / `threshold` / `proofSystemCount` | All on the per-rollup manager. Registry just stores `rollupContract` pointer + state root + ether. |
 | `Rollups.setStateByOwner` / `setVerificationKey` / `addProofSystem` / `removeProofSystem` / `setThreshold` / `transferRollupOwnership` | All moved to the manager. |
 | `IRollup.threshold()` | Manager enforces threshold internally inside `getVkeysFromProofSystems`; never read separately. |
-| `IRollup.owner()` probe in `createRollup`/`setRollupContract` | Registry makes no assumption about ownership model. |
+| `IRollup.owner()` probe in `registerRollup`/`setRollupContract` | Registry makes no assumption about ownership model. |
 | `_validateRelevance` (anti-griefing PS-relevance check) | Manager's threshold check covers it; unrelated PSes are wasted gas the orchestrator pays. |
 | "Drained cleanly" gate before `_publishRemainder` | Always publish — `StateDelta.currentState` is the soundness backstop. |
 | `Rollups.ThresholdNotMet` / `UnrelatedProofSystem` errors | No longer thrown by the registry. |
@@ -316,7 +316,7 @@ function setStateRoot(uint256 rollupId, bytes32 newStateRoot) external;
   update. A malicious new manager's `rollupContractRegistered` impl could call `setRollupContract`
   again during the callback (since `msg.sender == rollupContract` is true). Mitigation
   candidates: invoke callback BEFORE pointer update, or add a transient reentrancy flag.
-- **`createRollup` initial state overwrite**: same window — callback fires AFTER pointer is
+- **`registerRollup` initial state overwrite**: same window — callback fires AFTER pointer is
   set, can call `setStateRoot` to overwrite `initialState`. Cosmetic (owner controls anyway)
   but the `RollupCreated` event's `initialState` field becomes unreliable.
 - **Double-registration of same manager address**: a custom manager without `rollupIdSet`
@@ -362,7 +362,7 @@ Two parallel reviews were run after the latest round of changes:
   `RollupNotInBatch`), `_processNLookupCalls` rolling hash format divergence (pre-existing).
 - **Security review**: HIGH on reentrancy via `_fetchVkMatrix` / `threshold()` BEFORE
   `_markVerifiedThisBlock` — fixed by hoisting the mark to step 2 before any external call.
-  MEDIUM on `rollupContractRegistered` reentrancy in `createRollup` / `setRollupContract` — open.
+  MEDIUM on `rollupContractRegistered` reentrancy in `registerRollup` / `setRollupContract` — open.
   MEDIUM on double-registration without unique-address check — open (acceptable per trust
   model).
 

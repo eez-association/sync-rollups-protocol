@@ -2,24 +2,13 @@
 pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
-import {CrossChainManagerL2} from "../../../src/L2/CrossChainManagerL2.sol";
+import {EEZL2} from "../../../src/L2/EEZL2.sol";
 import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../../src/EEZ.sol";
-import {ICrossChainManager} from "../../../src/ICrossChainManager.sol";
-import {
-    StateDelta,
-    L2ToL1Call,
-    ExpectedL1ToL2Call,
-    ExecutionEntry,
-    LookupCall
-} from "../../../src/ICrossChainManager.sol";
+import {IEEZ} from "../../../src/IEEZ.sol";
+import {StateDelta, L2ToL1Call, ExpectedL1ToL2Call, ExecutionEntry, LookupCall} from "../../../src/IEEZ.sol";
 import {Counter, CounterAndProxy} from "../../../test/mocks/CounterContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
-import {
-    crossChainCallHash,
-    noLookupCalls,
-    getOrCreateProxy,
-    RollingHashBuilder
-} from "../shared/E2EHelpers.sol";
+import {crossChainCallHash, noLookupCalls, getOrCreateProxy, RollingHashBuilder} from "../shared/E2EHelpers.sol";
 
 // ═══════════════════════════════════════════════════════════════════════
 //  NestedCounterL2 scenario — exercises expectedL1ToL2Calls[] on L2 side (two-sided)
@@ -32,7 +21,7 @@ import {
 //    5. Nested action returns abi.encode(1) → CAP reads targetCounter=1.
 //
 //  L1 side (Execute):
-//    1. postVerifyAndExecuteOrSaveExecutionsFromBatch loads ONE deferred entry
+//    1. postAndVerifyBatch loads ONE deferred entry
 //       (proxyEntryHash=0 — system-driven) whose L2ToL1Calls describe the L1 mirror:
 //       cap@L2 calls capL1@L1.incrementProxy().
 //    2. executeL2TX(L2_ROLLUP_ID) drains via _processNCalls.
@@ -56,12 +45,7 @@ abstract contract NestedL2Actions {
     /// Inner: CAP (on L2) reentrant-calls Counter on MAINNET.
     function _l2InnerHash(address counterL1, address cap) internal pure returns (bytes32) {
         return crossChainCallHash(
-            MAINNET_ROLLUP_ID,
-            counterL1,
-            0,
-            abi.encodeWithSelector(Counter.increment.selector),
-            cap,
-            L2_ROLLUP_ID
+            MAINNET_ROLLUP_ID, counterL1, 0, abi.encodeWithSelector(Counter.increment.selector), cap, L2_ROLLUP_ID
         );
     }
 
@@ -195,16 +179,16 @@ contract DeployL2 is Script {
         address counterL1Addr = vm.envAddress("COUNTER_L1");
 
         vm.startBroadcast();
-        CrossChainManagerL2 manager = CrossChainManagerL2(managerAddr);
+        EEZL2 manager = EEZL2(managerAddr);
 
         // Proxy for counterL1 on MAINNET — used by cap (on L2) to reach L1.
-        address counterProxy = getOrCreateProxy(ICrossChainManager(address(manager)), counterL1Addr, MAINNET_ROLLUP_ID);
+        address counterProxy = getOrCreateProxy(IEEZ(address(manager)), counterL1Addr, MAINNET_ROLLUP_ID);
 
         // cap on L2 — target is counterProxy.
         CounterAndProxy cap = new CounterAndProxy(Counter(counterProxy));
 
         // Proxy on L2 for cap on MAINNET (trigger point alice calls).
-        address capL1Proxy = getOrCreateProxy(ICrossChainManager(address(manager)), address(cap), MAINNET_ROLLUP_ID);
+        address capL1Proxy = getOrCreateProxy(IEEZ(address(manager)), address(cap), MAINNET_ROLLUP_ID);
 
         // counterL2Target — separate Counter on L2 used by the L1 mirror's nested call.
         Counter counterL2Target = new Counter();
@@ -227,8 +211,7 @@ contract Deploy2 is Script {
         vm.startBroadcast();
 
         // L1-side proxy for counterL2Target on L2 — capL1.target = this proxy.
-        address counterL2TargetProxy =
-            getOrCreateProxy(ICrossChainManager(rollupsAddr), counterL2TargetAddr, L2_ROLLUP_ID);
+        address counterL2TargetProxy = getOrCreateProxy(IEEZ(rollupsAddr), counterL2TargetAddr, L2_ROLLUP_ID);
 
         // capL1 — CAP on L1 whose target is the L1-side proxy for counterL2Target.
         // capL1.incrementProxy() reentrant-calls counterL2Target via the cross-chain proxy.
@@ -256,7 +239,7 @@ contract ExecuteL2 is Script, NestedL2Actions {
         address alice = msg.sender;
         console.log("ExecuteL2: alice=%s cap=%s capL1Proxy=%s", alice, capAddr, capL1Proxy);
 
-        CrossChainManagerL2(managerAddr).loadExecutionTable(_l2Entries(counterL1Addr, capAddr, alice), noLookupCalls());
+        EEZL2(managerAddr).loadExecutionTable(_l2Entries(counterL1Addr, capAddr, alice), noLookupCalls());
         console.log("ExecuteL2: loadExecutionTable done");
 
         (bool ok,) = capL1Proxy.call(abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector));
@@ -305,7 +288,7 @@ contract DeferredL2TXBatcher {
             callData: "",
             proofs: proofs
         });
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
+        rollups.postAndVerifyBatch(batch);
         rollups.executeL2TX(rollupId);
     }
 }

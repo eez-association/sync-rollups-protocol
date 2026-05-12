@@ -2,16 +2,10 @@
 pragma solidity ^0.8.28;
 
 import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../../src/EEZ.sol";
-import {
-    ICrossChainManager,
-    ExecutionEntry,
-    LookupCall,
-    L2ToL1Call,
-    ExpectedL1ToL2Call
-} from "../../../src/ICrossChainManager.sol";
+import {IEEZ, ExecutionEntry, LookupCall, L2ToL1Call, ExpectedL1ToL2Call} from "../../../src/IEEZ.sol";
 
 // ══════════════════════════════════════════════════════════════════════
-//  Rolling hash tag constants (must match EEZ.sol / CrossChainManagerL2.sol)
+//  Rolling hash tag constants (must match EEZ.sol / EEZL2.sol)
 // ══════════════════════════════════════════════════════════════════════
 uint8 constant CALL_BEGIN = 1;
 uint8 constant CALL_END = 2;
@@ -23,9 +17,7 @@ uint8 constant NESTED_END = 4;
 // ══════════════════════════════════════════════════════════════════════
 
 /// @notice Returns existing proxy if already deployed, otherwise creates it.
-function getOrCreateProxy(ICrossChainManager manager, address originalAddress, uint256 originalRollupId)
-    returns (address proxy)
-{
+function getOrCreateProxy(IEEZ manager, address originalAddress, uint256 originalRollupId) returns (address proxy) {
     try manager.createCrossChainProxy(originalAddress, originalRollupId) returns (address p) {
         proxy = p;
     } catch {
@@ -50,7 +42,7 @@ function crossChainCallHash(
 }
 
 /// @notice **Backward-compatibility shim** for legacy E2E scripts.
-/// @dev The `Action` struct was removed from `ICrossChainManager.sol`. E2E flow scripts
+/// @dev The `Action` struct was removed from `IEEZ.sol`. E2E flow scripts
 ///      pre-refactor used it heavily as an off-chain "tooling-side" record of the inputs
 ///      that hash to `crossChainCallHash`. Re-defined here with the same field order so
 ///      existing scripts can keep using `Action({...})` literals; computing the hash via
@@ -107,10 +99,10 @@ library RollingHashBuilder {
 }
 
 // ══════════════════════════════════════════════════════════════════════
-//  L2TXBatcher — postVerifyAndExecuteOrSaveExecutionsFromBatch + executeL2TX in one tx (local mode).
+//  L2TXBatcher — postAndVerifyBatch + executeL2TX in one tx (local mode).
 //  Satisfies the same-block requirement.
 //
-//  POST-REFACTOR: postVerifyAndExecuteOrSaveExecutionsFromBatch now takes `ProofSystemBatchPerVerificationEntries[]`. The batcher wraps the
+//  POST-REFACTOR: postAndVerifyBatch now takes `ProofSystemBatchPerVerificationEntries[]`. The batcher wraps the
 //  caller's entries into a single sub-batch with the supplied proofSystem + rollupId,
 //  then drains immediate entries (transientCount = leading-zero-actionHash run length)
 //  and finally calls executeL2TX(rollupId).
@@ -155,7 +147,7 @@ contract L2TXBatcher {
             callData: "",
             proofs: proofs
         });
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
+        rollups.postAndVerifyBatch(batch);
         rollups.executeL2TX(rollupId);
     }
 }

@@ -67,7 +67,7 @@ import {
     NestedAction,
     ExecutionEntry,
     StaticCall
-} from "../../../src/ICrossChainManager.sol";
+} from "../../../src/IEEZ.sol";
 ```
 
 Plus helpers:
@@ -113,7 +113,7 @@ Mirror rule: omit `Execute` when the scenario is L2-only (`counterL2`).
 Know these event signatures — `Verify.s.sol` decodes them, `DecodeExecutions.s.sol` formats them:
 
 - `Rollups.BatchPosted(ExecutionEntry[] entries, bytes32 publicInputsHash)` — flatten ABI.
-- `CrossChainManagerL2.ExecutionTableLoaded(ExecutionEntry[] entries)` — flatten ABI.
+- `EEZL2.ExecutionTableLoaded(ExecutionEntry[] entries)` — flatten ABI.
 - `ExecutionConsumed(bytes32 indexed actionHash, uint256 indexed entryIndex)` — fired per entry consumption.
 - `CrossChainCallExecuted(bytes32 indexed actionHash, address indexed proxy, address sourceAddress, bytes callData, uint256 value)` — fired on every proxy→manager hop.
 - `CallResult(uint256 indexed entryIndex, uint256 indexed callNumber, bool success, bytes returnData)` — one per call in `_processNCalls`.

@@ -5,8 +5,8 @@ import {Script, console} from "forge-std/Script.sol";
 import {Rollups, ProofSystemBatch, RollupConfig} from "src/Rollups.sol";
 import {Rollup} from "src/rollupContract/Rollup.sol";
 import {IProofSystem} from "src/IProofSystem.sol";
-import {CrossChainManagerL2} from "src/CrossChainManagerL2.sol";
-import {ExecutionEntry, StateDelta, CrossChainCall, NestedAction, LookupCall} from "src/ICrossChainManager.sol";
+import {EEZL2} from "src/EEZL2.sol";
+import {ExecutionEntry, StateDelta, CrossChainCall, NestedAction, LookupCall} from "src/IEEZ.sol";
 import {Counter, CounterAndProxy} from "test/mocks/CounterContracts.sol";
 
 contract MockProofSystem is IProofSystem {
@@ -23,7 +23,7 @@ contract DeployL2Base is Script {
         vm.startBroadcast();
 
         address systemAddress = address(0xFFfFfFffFFfffFFfFFfFFFFFffFFFffffFfFFFfF);
-        CrossChainManagerL2 managerL2 = new CrossChainManagerL2(1, systemAddress);
+        EEZL2 managerL2 = new EEZL2(1, systemAddress);
         Counter counterL2 = new Counter(); // B
 
         vm.stopBroadcast();
@@ -55,10 +55,10 @@ contract DeployL1 is Script {
 
         // Burn rollupId 0 (MAINNET).
         Rollup burn = new Rollup(address(rollups), msg.sender, 1, psList, vks);
-        rollups.createRollup(address(burn), bytes32(0));
+        rollups.registerRollup(address(burn), bytes32(0));
 
         Rollup l2Manager = new Rollup(address(rollups), msg.sender, 1, psList, vks);
-        uint256 rid = rollups.createRollup(address(l2Manager), keccak256("l2-initial-state"));
+        uint256 rid = rollups.registerRollup(address(l2Manager), keccak256("l2-initial-state"));
         require(rid == 1, "expected L2 rollupId = 1");
 
         Counter counterL1 = new Counter(); // C
@@ -88,7 +88,7 @@ contract DeployL2Apps is Script {
         address counterL1Addr = vm.envAddress("COUNTER_L1");
         address managerL2Addr = vm.envAddress("MANAGER_L2");
 
-        CrossChainManagerL2 managerL2 = CrossChainManagerL2(payable(managerL2Addr));
+        EEZL2 managerL2 = EEZL2(payable(managerL2Addr));
 
         vm.startBroadcast();
 
@@ -134,7 +134,7 @@ contract Scenario1_L2 is Script {
         address counterL1Addr = vm.envAddress("COUNTER_L1");
         address counterAndProxyL2Addr = vm.envAddress("COUNTER_AND_PROXY_L2");
 
-        CrossChainManagerL2 managerL2 = CrossChainManagerL2(payable(managerL2Addr));
+        EEZL2 managerL2 = EEZL2(payable(managerL2Addr));
         bytes memory incrementCallData = abi.encodeWithSelector(Counter.increment.selector);
 
         // D calls C' (proxy: originalAddress=counterL1, originalRollupId=0). msg.sender at C' is D.

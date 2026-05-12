@@ -33,9 +33,9 @@ echo "EEZ: $ROLLUPS"
 echo "CounterL2: $COUNTER_L2"
 echo "CounterAndProxy: $COUNTER_AND_PROXY"
 
-# ── 3. postVerifyAndExecuteOrSaveExecutionsFromBatch + incrementProxy (same broadcast = same block) ──
+# ── 3. postAndVerifyBatch + incrementProxy (same broadcast = same block) ──
 echo ""
-echo "====== Execute (postVerifyAndExecuteOrSaveExecutionsFromBatch + incrementProxy) ======"
+echo "====== Execute (postAndVerifyBatch + incrementProxy) ======"
 forge script script/e2e-decode/E2EDecode.s.sol:E2EExecute \
     --rpc-url "$RPC" --broadcast --private-key "$PK" \
     --sig "run(address,address,address)" "$ROLLUPS" "$COUNTER_L2" "$COUNTER_AND_PROXY" 2>&1 \

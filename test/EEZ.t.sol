@@ -3,18 +3,17 @@ pragma solidity ^0.8.28;
 
 import {Test, Vm} from "forge-std/Test.sol";
 import {Base} from "./Base.t.sol";
-import {EEZ, RollupConfig, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems, RollupVerification} from "../src/EEZ.sol";
+import {
+    EEZ,
+    RollupConfig,
+    ProofSystemBatchPerVerificationEntries,
+    RollupIdWithProofSystems,
+    RollupVerification
+} from "../src/EEZ.sol";
 import {Rollup} from "../src/rollupContract/Rollup.sol";
 import {IRollupContract} from "../src/rollupContract/IRollup.sol";
 import {IProofSystem} from "../src/IProofSystem.sol";
-import {
-    ExecutionEntry,
-    StateDelta,
-    L2ToL1Call,
-    ExpectedL1ToL2Call,
-    LookupCall,
-    ProxyInfo
-} from "../src/ICrossChainManager.sol";
+import {ExecutionEntry, StateDelta, L2ToL1Call, ExpectedL1ToL2Call, LookupCall, ProxyInfo} from "../src/IEEZ.sol";
 import {CrossChainProxy} from "../src/CrossChainProxy.sol";
 import {MockProofSystem} from "./mocks/MockProofSystem.sol";
 
@@ -68,7 +67,7 @@ contract EEZTest is Base {
         bytes32[] memory vks = new bytes32[](1);
         vks[0] = DEFAULT_VK;
         rollup = new Rollup(address(rollups), owner_, 1, psList, vks);
-        rid = rollups.createRollup(address(rollup), initialState);
+        rid = rollups.registerRollup(address(rollup), initialState);
     }
 
     /// @notice Action-hash computation. Test-local helper kept for callsite compatibility;
@@ -88,7 +87,7 @@ contract EEZTest is Base {
         return keccak256(abi.encode(rollupId, destination, value_, data, sourceAddress, sourceRollup));
     }
 
-    /// @notice Wrap entries into a single-PS / single-rollup ProofSystemBatchPerVerificationEntries and call postVerifyAndExecuteOrSaveExecutionsFromBatch.
+    /// @notice Wrap entries into a single-PS / single-rollup ProofSystemBatchPerVerificationEntries and call postAndVerifyBatch.
     function _postBatchSingle(uint256 rid, ExecutionEntry[] memory entries, uint256 transientCount) internal {
         LookupCall[] memory noStatic = new LookupCall[](0);
         _postBatchSingle(rid, entries, noStatic, transientCount, 0);
@@ -143,7 +142,7 @@ contract EEZTest is Base {
             callData: "",
             proofs: proofs
         });
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
+        rollups.postAndVerifyBatch(batch);
     }
 
     /// @notice Wrap entries into a single-PS batch with `transientCount = 1` when the leading entry is immediate.
@@ -177,12 +176,12 @@ contract EEZTest is Base {
 
     function test_CreateRollup_ZeroAddressContractReverts() public {
         vm.expectRevert(EEZ.InvalidRollupContract.selector);
-        rollups.createRollup(address(0), bytes32(0));
+        rollups.registerRollup(address(0), bytes32(0));
     }
 
     function test_CreateRollup_RegistryItselfReverts() public {
         vm.expectRevert(EEZ.InvalidRollupContract.selector);
-        rollups.createRollup(address(rollups), bytes32(0));
+        rollups.registerRollup(address(rollups), bytes32(0));
     }
 
     // NOTE: tests dropped after refactor:
@@ -228,7 +227,7 @@ contract EEZTest is Base {
     }
 
     // ──────────────────────────────────────────────
-    //  postVerifyAndExecuteOrSaveExecutionsFromBatch — immediate state update
+    //  postAndVerifyBatch — immediate state update
     // ──────────────────────────────────────────────
 
     function test_PostBatch_ImmediateStateUpdate() public {
@@ -356,7 +355,7 @@ contract EEZTest is Base {
         assertEq(rollups.lastVerifiedBlock(rid), block.number);
     }
 
-    // NOTE: dropped after refactor — `postVerifyAndExecuteOrSaveExecutionsFromBatch` now
+    // NOTE: dropped after refactor — `postAndVerifyBatch` now
     // takes a single `ProofSystemBatchPerVerificationEntries`, not an array, so there's no
     // "empty array" edge case. The empty-batch validation lives inline in
     // `_validateStructure` (e.g., empty `proofSystems[]` reverts `InvalidProofSystemConfig`)
@@ -395,7 +394,7 @@ contract EEZTest is Base {
         });
 
         vm.expectRevert(abi.encodeWithSelector(EEZ.DuplicateProofSystem.selector, address(ps)));
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
+        rollups.postAndVerifyBatch(batch);
     }
 
     // NOTE: dropped after refactor:
@@ -443,7 +442,7 @@ contract EEZTest is Base {
     }
 
     // ──────────────────────────────────────────────
-    //  Per-rollup queue routing (executeL1ToL2Call / executeL2TX)
+    //  Per-rollup queue routing (executeCrossChainCall / executeL2TX)
     // ──────────────────────────────────────────────
 
     function test_ExecuteCrossChainCall_Simple() public {
@@ -484,13 +483,13 @@ contract EEZTest is Base {
     function test_ExecuteCrossChainCall_UnauthorizedProxyReverts() public {
         _makeRollupLocal(bytes32(0), alice);
         vm.expectRevert(EEZ.UnauthorizedProxy.selector);
-        rollups.executeL1ToL2Call(alice, "");
+        rollups.executeCrossChainCall(alice, "");
     }
 
     function test_ExecuteCrossChainCall_NotInCurrentBlockReverts() public {
         (uint256 rid,) = _makeRollupLocal(bytes32(0), alice);
         address proxyAddr = rollups.createCrossChainProxy(address(target), rid);
-        // No postVerifyAndExecuteOrSaveExecutionsFromBatch in this block → proxy call should revert
+        // No postAndVerifyBatch in this block → proxy call should revert
         bytes memory cd = abi.encodeCall(TestTarget.setValue, (1));
         (bool ok, bytes memory ret) = proxyAddr.call(cd);
         assertFalse(ok);
@@ -656,7 +655,7 @@ contract EEZTest is Base {
     }
 
     // NOTE: `test_SetRollupContract_Handoff` was dropped — the registry no longer exposes
-    // a `setRollupContract` handoff path. Once a manager is registered via `createRollup`
+    // a `setRollupContract` handoff path. Once a manager is registered via `registerRollup`
     // it owns that rollupId for the lifetime of the registry. A future replacement (force
     // inbox / governance handoff) is tracked separately.
 
@@ -736,7 +735,7 @@ contract EEZTest is Base {
         vm.expectEmit(true, true, true, true);
         // rid 0 was burned in setUpBase, so this fresh rollup lands at id 1.
         emit EEZ.RollupCreated(1, address(r), keccak256("init"));
-        rollups.createRollup(address(r), keccak256("init"));
+        rollups.registerRollup(address(r), keccak256("init"));
     }
 
     function test_Event_BatchPosted() public {
