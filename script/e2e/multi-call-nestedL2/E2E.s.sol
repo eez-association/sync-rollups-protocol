@@ -3,7 +3,7 @@ pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 import {CrossChainManagerL2} from "../../../src/L2/CrossChainManagerL2.sol";
-import {EEZ} from "../../../src/EEZ.sol";
+import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../../src/EEZ.sol";
 import {
     StateDelta,
     L2ToL1Call,
@@ -13,7 +13,7 @@ import {
 } from "../../../src/ICrossChainManager.sol";
 import {Counter, CounterAndProxy} from "../../../test/mocks/CounterContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
-import {Action, actionHash, noStaticCalls, RollingHashBuilder} from "../shared/E2EHelpers.sol";
+import {Action, actionHash, noLookupCalls, noStaticCalls, RollingHashBuilder} from "../shared/E2EHelpers.sol";
 
 // ═══════════════════════════════════════════════════════════════════════
 //  MultiCallNestedL2 — L2-side mirror of multi-call-nested
@@ -74,6 +74,58 @@ abstract contract MultiCallNestedL2Actions {
         h = h.appendNestedBegin(2);
         h = h.appendNestedEnd(2);
         h = h.appendCallEnd(2, true, "");
+    }
+
+    /// @dev L1 mirror rolling hash for a single entry — top-level Counter.increment().
+    function _expectedRollingHashL1(uint256 retVal) internal pure returns (bytes32 h) {
+        h = bytes32(0);
+        h = h.appendCallBegin(1);
+        h = h.appendCallEnd(1, true, abi.encode(retVal));
+    }
+
+    /// @dev L1 mirror entries. Two system-driven entries (proxyEntryHash=0), each draining
+    ///      one Counter.increment() call on L1. Each call surfaces on L1 as a top-level
+    ///      cross-chain invocation from CAP (on L2) to Counter (on MAINNET). Each entry is
+    ///      drained by one executeL2TX call.
+    function _l1Entries(address counterL1, address cap)
+        internal
+        pure
+        returns (ExecutionEntry[] memory entries)
+    {
+        L2ToL1Call memory innerCall = L2ToL1Call({
+            targetAddress: counterL1,
+            value: 0,
+            data: abi.encodeWithSelector(Counter.increment.selector),
+            sourceAddress: cap,
+            sourceRollupId: L2_ROLLUP_ID,
+            revertSpan: 0
+        });
+        L2ToL1Call[] memory calls0 = new L2ToL1Call[](1);
+        calls0[0] = innerCall;
+        L2ToL1Call[] memory calls1 = new L2ToL1Call[](1);
+        calls1[0] = innerCall;
+
+        entries = new ExecutionEntry[](2);
+        entries[0] = ExecutionEntry({
+            stateDeltas: new StateDelta[](0),
+            proxyEntryHash: bytes32(0),
+            destinationRollupId: L2_ROLLUP_ID,
+            L2ToL1Calls: calls0,
+            expectedL1ToL2Calls: new ExpectedL1ToL2Call[](0),
+            callCount: 1,
+            returnData: abi.encode(uint256(1)),
+            rollingHash: _expectedRollingHashL1(1)
+        });
+        entries[1] = ExecutionEntry({
+            stateDeltas: new StateDelta[](0),
+            proxyEntryHash: bytes32(0),
+            destinationRollupId: L2_ROLLUP_ID,
+            L2ToL1Calls: calls1,
+            expectedL1ToL2Calls: new ExpectedL1ToL2Call[](0),
+            callCount: 1,
+            returnData: abi.encode(uint256(2)),
+            rollingHash: _expectedRollingHashL1(2)
+        });
     }
 
     function _l2Entries(address counterL1, address cap, address alice)
@@ -198,6 +250,73 @@ contract ExecuteL2 is Script, MultiCallNestedL2Actions {
     }
 }
 
+/// @notice L1-side batcher: postBatch (deferred, 2 entries) + executeL2TX twice in one tx.
+/// @dev Two entries → two drains. Each executeL2TX(rollupId) pops one entry from the L2
+///      rollup's queue, advancing the cursor. transientExecutionEntryCount=0 keeps both
+///      entries in the deferred queue.
+contract DeferredL2TXBatcherTwice {
+    function execute(
+        EEZ rollups,
+        address proofSystem,
+        uint256 rollupId,
+        ExecutionEntry[] calldata entries,
+        LookupCall[] calldata lookupCalls
+    )
+        external
+    {
+        address[] memory psList = new address[](1);
+        psList[0] = proofSystem;
+        bytes[] memory proofs = new bytes[](1);
+        proofs[0] = "proof";
+
+        uint64[] memory psIdx = new uint64[](1);
+        psIdx[0] = 0;
+        RollupIdWithProofSystems[] memory rps = new RollupIdWithProofSystems[](1);
+        rps[0] = RollupIdWithProofSystems({rollupId: rollupId, proofSystemIndex: psIdx});
+
+        ProofSystemBatchPerVerificationEntries memory batch = ProofSystemBatchPerVerificationEntries({
+            entries: entries,
+            l1ToL2lookupCalls: lookupCalls,
+            transientExecutionEntryCount: 0,
+            transientLookupCallCount: 0,
+            proofSystems: psList,
+            rollupIdsWithProofSystems: rps,
+            crossProofSystemInteractions: bytes32(0),
+            blobIndices: new uint256[](0),
+            callData: "",
+            proofs: proofs
+        });
+        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
+        rollups.executeL2TX(rollupId);
+        rollups.executeL2TX(rollupId);
+    }
+}
+
+/// @title Execute - L1-side mirror. Drains the two L2-anchored inner Counter.increment()
+///        calls on the real L1 Counter via two executeL2TX invocations.
+contract Execute is Script, MultiCallNestedL2Actions {
+    function run() external {
+        address rollupsAddr = vm.envAddress("ROLLUPS");
+        address proofSystemAddr = vm.envAddress("PROOF_SYSTEM");
+        address counterL1 = vm.envAddress("COUNTER_L1");
+        address cap = vm.envAddress("COUNTER_AND_PROXY_L2");
+
+        vm.startBroadcast();
+        DeferredL2TXBatcherTwice batcher = new DeferredL2TXBatcherTwice();
+        batcher.execute(
+            EEZ(rollupsAddr),
+            proofSystemAddr,
+            L2_ROLLUP_ID,
+            _l1Entries(counterL1, cap),
+            noLookupCalls()
+        );
+
+        console.log("Execute: done");
+        console.log("L1 counter=%s (expected 2)", Counter(counterL1).counter());
+        vm.stopBroadcast();
+    }
+}
+
 /// @title ExecuteNetworkL2 — network mode output
 contract ExecuteNetworkL2 is Script {
     function run() external view {
@@ -231,11 +350,21 @@ contract ComputeExpected is ComputeExpectedBase, MultiCallNestedL2Actions {
         address alice = msg.sender;
 
         ExecutionEntry[] memory l2 = _l2Entries(counterL1Addr, capAddr, alice);
+        ExecutionEntry[] memory l1 = _l1Entries(counterL1Addr, capAddr);
         bytes32 l2Hash = _entryHash(l2[0]);
+        bytes32 l1Hash0 = _entryHash(l1[0]);
+        bytes32 l1Hash1 = _entryHash(l1[1]);
 
         console.log("EXPECTED_L2_HASHES=[%s]", vm.toString(l2Hash));
+        console.log(
+            string.concat("EXPECTED_L1_HASHES=[", vm.toString(l1Hash0), ",", vm.toString(l1Hash1), "]")
+        );
         console.log("");
         console.log("=== EXPECTED L2 TABLE (1 entry, 2 calls, 2 nested) ===");
         _logL2Entry(0, l2[0]);
+        console.log("");
+        console.log("=== EXPECTED L1 TABLE (2 entries, 1 call each - L2 mirror on L1) ===");
+        _logEntry(0, l1[0]);
+        _logEntry(1, l1[1]);
     }
 }

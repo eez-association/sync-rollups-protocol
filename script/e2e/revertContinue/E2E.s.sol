@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../../src/EEZ.sol";
+import {CrossChainManagerL2} from "../../../src/L2/CrossChainManagerL2.sol";
 import {
     StateDelta,
     L2ToL1Call,
@@ -89,6 +90,74 @@ abstract contract RevertContinueActions {
         h = h.appendCallEnd(1, true, "");
     }
 
+    // ─────────────────────────────────────────────────────────────
+    //  L2-side mirror — SelfCallerWithRevert runs on L2; its inner reentrant call
+    //  to counterProxy (proxy on L2 for Counter on MAINNET) succeeds via an
+    //  ExpectedL1ToL2Call. innerCall()'s revert rolls back the consumption; the
+    //  second target.increment() re-consumes the same slot. Same rolling-hash
+    //  shape as the L1 side.
+    // ─────────────────────────────────────────────────────────────
+
+    /// @dev Outer action hash on L2: source-proxy (for batcher on MAINNET) calls SelfCaller (on L2).
+    function _outerActionHashL2(address selfCallerL2, address batcherL1) internal pure returns (bytes32) {
+        return crossChainCallHash(
+            L2_ROLLUP_ID,
+            selfCallerL2,
+            0,
+            abi.encodeWithSelector(SelfCallerWithRevert.execute.selector),
+            batcherL1,
+            MAINNET_ROLLUP_ID
+        );
+    }
+
+    /// @dev Inner action hash on L2: SelfCaller (on L2) calls counterProxy (Counter on MAINNET).
+    ///      Manager forces sourceRollupId=ROLLUP_ID (=L2) for L2-issued reentrant calls.
+    function _innerActionHashL2(address counterL1, address selfCallerL2) internal pure returns (bytes32) {
+        return crossChainCallHash(
+            MAINNET_ROLLUP_ID,
+            counterL1,
+            0,
+            abi.encodeWithSelector(Counter.increment.selector),
+            selfCallerL2,
+            L2_ROLLUP_ID
+        );
+    }
+
+    function _l2Entries(address selfCallerL2, address counterL1, address batcherL1)
+        internal
+        pure
+        returns (ExecutionEntry[] memory entries)
+    {
+        L2ToL1Call[] memory calls = new L2ToL1Call[](1);
+        calls[0] = L2ToL1Call({
+            targetAddress: selfCallerL2,
+            value: 0,
+            data: abi.encodeWithSelector(SelfCallerWithRevert.execute.selector),
+            sourceAddress: batcherL1,
+            sourceRollupId: MAINNET_ROLLUP_ID,
+            revertSpan: 0
+        });
+
+        ExpectedL1ToL2Call[] memory nested = new ExpectedL1ToL2Call[](1);
+        nested[0] = ExpectedL1ToL2Call({
+            crossChainCallHash: _innerActionHashL2(counterL1, selfCallerL2),
+            callCount: 0,
+            returnData: abi.encode(uint256(1))
+        });
+
+        entries = new ExecutionEntry[](1);
+        entries[0] = ExecutionEntry({
+            stateDeltas: new StateDelta[](0),
+            proxyEntryHash: _outerActionHashL2(selfCallerL2, batcherL1),
+            destinationRollupId: L2_ROLLUP_ID,
+            L2ToL1Calls: calls,
+            expectedL1ToL2Calls: nested,
+            callCount: 1,
+            returnData: "",
+            rollingHash: _expectedRollingHash()
+        });
+    }
+
     function _l1Entries(address selfCaller, address counterL2, address batcher)
         internal
         pure
@@ -154,7 +223,12 @@ contract Deploy is Script {
         vm.startBroadcast();
         EEZ rollups = EEZ(rollupsAddr);
 
-        // Proxy for Counter@L2 on L1
+        // Placeholder Counter on L1 - only its address is referenced by the L2-side
+        // inner action hash. Never invoked (the L2 inner ExpectedL1ToL2Call returns the
+        // cached value, so the proxy's downstream call to this counter never happens).
+        Counter counterL1 = new Counter();
+
+        // Proxy for Counter (on L2) on L1
         address counterProxy;
         try rollups.createCrossChainProxy(counterL2, L2_ROLLUP_ID) returns (address p) {
             counterProxy = p;
@@ -165,7 +239,7 @@ contract Deploy is Script {
         // Deploy SelfCallerWithRevert targeting the counterProxy
         SelfCallerWithRevert selfCaller = new SelfCallerWithRevert(Counter(counterProxy));
 
-        // Proxy for SelfCallerWithRevert@L2 on L1 (trigger point)
+        // Proxy for SelfCallerWithRevert (on L2) on L1 (trigger point)
         address selfCallerProxy;
         try rollups.createCrossChainProxy(address(selfCaller), L2_ROLLUP_ID) returns (address p) {
             selfCallerProxy = p;
@@ -173,9 +247,37 @@ contract Deploy is Script {
             selfCallerProxy = rollups.computeCrossChainProxyAddress(address(selfCaller), L2_ROLLUP_ID);
         }
 
+        console.log("COUNTER_L1=%s", address(counterL1));
         console.log("COUNTER_PROXY=%s", counterProxy);
         console.log("SELF_CALLER=%s", address(selfCaller));
         console.log("SELF_CALLER_PROXY=%s", selfCallerProxy);
+        vm.stopBroadcast();
+    }
+}
+
+/// @title DeployL2Step2 - deploy SelfCallerWithRevert on L2 plus the inner-counter proxy
+/// (proxy on L2 for Counter on MAINNET). Runs after Deploy logs COUNTER_L1 on L1.
+contract DeployL2Step2 is Script {
+    function run() external {
+        address managerAddr = vm.envAddress("MANAGER_L2");
+        address counterL1 = vm.envAddress("COUNTER_L1");
+
+        vm.startBroadcast();
+        CrossChainManagerL2 manager = CrossChainManagerL2(managerAddr);
+
+        // Proxy on L2 for Counter on MAINNET
+        address counterProxyL2;
+        try manager.createCrossChainProxy(counterL1, MAINNET_ROLLUP_ID) returns (address p) {
+            counterProxyL2 = p;
+        } catch {
+            counterProxyL2 = manager.computeCrossChainProxyAddress(counterL1, MAINNET_ROLLUP_ID);
+        }
+
+        // SelfCallerWithRevert on L2 targeting the L2-side counter proxy.
+        SelfCallerWithRevert selfCallerL2 = new SelfCallerWithRevert(Counter(counterProxyL2));
+
+        console.log("COUNTER_PROXY_L2=%s", counterProxyL2);
+        console.log("SELF_CALLER_L2=%s", address(selfCallerL2));
         vm.stopBroadcast();
     }
 }
@@ -224,6 +326,42 @@ contract Batcher {
         rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
         (bool ok,) = selfCallerProxy.call(abi.encodeWithSelector(SelfCallerWithRevert.execute.selector));
         require(ok, "outer call failed");
+    }
+}
+
+// ExecuteL2 - L2-side mirror. SYSTEM-driven via executeIncomingCrossChainCall:
+// loads the L2 entry (1 outer call + 1 ExpectedL1ToL2Call) and runs SelfCaller (on L2) execute().
+// execute() does try this.innerCall() catch {} then target.increment(). innerCall consumes the
+// nested action and then reverts (rolling back the cursor bump). target.increment() then
+// re-consumes the same nested slot for real, returning 1 → lastResult=1.
+contract ExecuteL2 is Script, RevertContinueActions {
+    function run() external {
+        address managerAddr = vm.envAddress("MANAGER_L2");
+        address counterL1 = vm.envAddress("COUNTER_L1");
+        address selfCallerL2 = vm.envAddress("SELF_CALLER_L2");
+
+        vm.startBroadcast();
+        address triggerSource = msg.sender;
+        console.log(
+            "ExecuteL2: manager=%s selfCallerL2=%s triggerSource=%s",
+            managerAddr,
+            selfCallerL2,
+            triggerSource
+        );
+
+        CrossChainManagerL2(managerAddr).executeIncomingCrossChainCall(
+            selfCallerL2,
+            0,
+            abi.encodeWithSelector(SelfCallerWithRevert.execute.selector),
+            triggerSource,
+            MAINNET_ROLLUP_ID,
+            _l2Entries(selfCallerL2, counterL1, triggerSource),
+            noLookupCalls()
+        );
+
+        console.log("ExecuteL2: done");
+        console.log("selfCallerL2.lastResult=%s", SelfCallerWithRevert(selfCallerL2).lastResult());
+        vm.stopBroadcast();
     }
 }
 
@@ -281,14 +419,22 @@ contract ComputeExpected is ComputeExpectedBase, RevertContinueActions {
     function run() external view {
         address counterL2 = vm.envAddress("COUNTER_L2");
         address selfCallerAddr = vm.envAddress("SELF_CALLER");
+        address counterL1 = vm.envAddress("COUNTER_L1");
+        address selfCallerL2 = vm.envAddress("SELF_CALLER_L2");
         address alice = msg.sender;
 
         ExecutionEntry[] memory l1 = _l1Entries(selfCallerAddr, counterL2, alice);
+        ExecutionEntry[] memory l2 = _l2Entries(selfCallerL2, counterL1, alice);
         bytes32 l1Hash = _entryHash(l1[0]);
+        bytes32 l2Hash = _entryHash(l2[0]);
 
         console.log("EXPECTED_L1_HASHES=[%s]", vm.toString(l1Hash));
+        console.log("EXPECTED_L2_HASHES=[%s]", vm.toString(l2Hash));
         console.log("");
         console.log("=== EXPECTED L1 TABLE (1 entry, 1 call, 1 nested - revert+continue) ===");
         _logEntry(0, l1[0]);
+        console.log("");
+        console.log("=== EXPECTED L2 TABLE (1 entry, 1 call, 1 nested - revert+continue mirror) ===");
+        _logL2Entry(0, l2[0]);
     }
 }

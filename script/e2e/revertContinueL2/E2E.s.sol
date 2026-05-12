@@ -3,7 +3,7 @@ pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 import {CrossChainManagerL2} from "../../../src/L2/CrossChainManagerL2.sol";
-import {EEZ} from "../../../src/EEZ.sol";
+import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../../src/EEZ.sol";
 import {
     StateDelta,
     L2ToL1Call,
@@ -90,6 +90,46 @@ abstract contract RevertContinueL2Actions {
         h = h.appendNestedBegin(1);
         h = h.appendNestedEnd(1);
         h = h.appendCallEnd(1, true, "");
+    }
+
+    /// @dev Rolling hash for the L1 mirror entry: a single top-level call (Counter.increment()).
+    ///      The L2-side inner reentrant call surfaces on L1 as a plain top-level call (the
+    ///      destination of the cross-chain hop is Counter on MAINNET).
+    function _expectedRollingHashL1() internal pure returns (bytes32 h) {
+        h = bytes32(0);
+        h = h.appendCallBegin(1);
+        h = h.appendCallEnd(1, true, abi.encode(uint256(1)));
+    }
+
+    /// @dev L1 mirror entry: system-driven (proxyEntryHash=0) — drained by executeL2TX.
+    ///      `L2ToL1Calls[0]` is the inbound call from SelfCaller (on L2) to Counter on MAINNET,
+    ///      delivered through the lazily-created source proxy for (SelfCaller, L2_ROLLUP_ID) on L1.
+    function _l1Entries(address counterL1, address selfCallerL2)
+        internal
+        pure
+        returns (ExecutionEntry[] memory entries)
+    {
+        L2ToL1Call[] memory calls = new L2ToL1Call[](1);
+        calls[0] = L2ToL1Call({
+            targetAddress: counterL1,
+            value: 0,
+            data: abi.encodeWithSelector(Counter.increment.selector),
+            sourceAddress: selfCallerL2,
+            sourceRollupId: L2_ROLLUP_ID,
+            revertSpan: 0
+        });
+
+        entries = new ExecutionEntry[](1);
+        entries[0] = ExecutionEntry({
+            stateDeltas: new StateDelta[](0),
+            proxyEntryHash: bytes32(0),
+            destinationRollupId: L2_ROLLUP_ID,
+            L2ToL1Calls: calls,
+            expectedL1ToL2Calls: new ExpectedL1ToL2Call[](0),
+            callCount: 1,
+            returnData: abi.encode(uint256(1)),
+            rollingHash: _expectedRollingHashL1()
+        });
     }
 
     function _l2Entries(address selfCaller, address counterL1, address alice)
@@ -211,6 +251,71 @@ contract ExecuteL2 is Script, RevertContinueL2Actions {
     }
 }
 
+/// @notice Inline L2-TX batcher — postBatch (deferred) + executeL2TX in one tx.
+/// @dev Pins transientExecutionEntryCount=0 so the zero-hash entry stays in the deferred
+///      queue and is drained by the subsequent executeL2TX(rollupId) call.
+contract DeferredL2TXBatcher {
+    function execute(
+        EEZ rollups,
+        address proofSystem,
+        uint256 rollupId,
+        ExecutionEntry[] calldata entries,
+        LookupCall[] calldata lookupCalls
+    )
+        external
+    {
+        address[] memory psList = new address[](1);
+        psList[0] = proofSystem;
+        bytes[] memory proofs = new bytes[](1);
+        proofs[0] = "proof";
+
+        uint64[] memory psIdx = new uint64[](1);
+        psIdx[0] = 0;
+        RollupIdWithProofSystems[] memory rps = new RollupIdWithProofSystems[](1);
+        rps[0] = RollupIdWithProofSystems({rollupId: rollupId, proofSystemIndex: psIdx});
+
+        ProofSystemBatchPerVerificationEntries memory batch = ProofSystemBatchPerVerificationEntries({
+            entries: entries,
+            l1ToL2lookupCalls: lookupCalls,
+            transientExecutionEntryCount: 0,
+            transientLookupCallCount: 0,
+            proofSystems: psList,
+            rollupIdsWithProofSystems: rps,
+            crossProofSystemInteractions: bytes32(0),
+            blobIndices: new uint256[](0),
+            callData: "",
+            proofs: proofs
+        });
+        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
+        rollups.executeL2TX(rollupId);
+    }
+}
+
+/// @title Execute - L1-side mirror. Deferred postBatch + executeL2TX runs the actual
+///        Counter.increment() on L1 (the destination of the L2-anchored inner reentrant call).
+contract Execute is Script, RevertContinueL2Actions {
+    function run() external {
+        address rollupsAddr = vm.envAddress("ROLLUPS");
+        address proofSystemAddr = vm.envAddress("PROOF_SYSTEM");
+        address counterL1 = vm.envAddress("COUNTER_L1");
+        address selfCallerL2 = vm.envAddress("SELF_CALLER");
+
+        vm.startBroadcast();
+        DeferredL2TXBatcher batcher = new DeferredL2TXBatcher();
+        batcher.execute(
+            EEZ(rollupsAddr),
+            proofSystemAddr,
+            L2_ROLLUP_ID,
+            _l1Entries(counterL1, selfCallerL2),
+            noLookupCalls()
+        );
+
+        console.log("Execute: done");
+        console.log("L1 counter=%s", Counter(counterL1).counter());
+        vm.stopBroadcast();
+    }
+}
+
 /// @title ExecuteNetworkL2 — network mode output
 contract ExecuteNetworkL2 is Script {
     function run() external view {
@@ -244,11 +349,17 @@ contract ComputeExpected is ComputeExpectedBase, RevertContinueL2Actions {
         address alice = msg.sender;
 
         ExecutionEntry[] memory l2 = _l2Entries(selfCallerAddr, counterL1Addr, alice);
+        ExecutionEntry[] memory l1 = _l1Entries(counterL1Addr, selfCallerAddr);
         bytes32 l2Hash = _entryHash(l2[0]);
+        bytes32 l1Hash = _entryHash(l1[0]);
 
         console.log("EXPECTED_L2_HASHES=[%s]", vm.toString(l2Hash));
+        console.log("EXPECTED_L1_HASHES=[%s]", vm.toString(l1Hash));
         console.log("");
         console.log("=== EXPECTED L2 TABLE (1 entry, 1 call, 1 nested - revert+continue) ===");
         _logL2Entry(0, l2[0]);
+        console.log("");
+        console.log("=== EXPECTED L1 TABLE (1 entry, 1 call - L2 mirror destination on L1) ===");
+        _logEntry(0, l1[0]);
     }
 }

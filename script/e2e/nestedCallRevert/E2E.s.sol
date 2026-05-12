@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../../src/EEZ.sol";
+import {CrossChainManagerL2} from "../../../src/L2/CrossChainManagerL2.sol";
 import {
     StateDelta,
     L2ToL1Call,
@@ -129,12 +130,96 @@ abstract contract NestedCallRevertActions {
             rollingHash: bytes32(0)
         });
     }
+
+    // ─────────────────────────────────────────────────────────────
+    //  L2-side mirror — SafeCAP runs on L2; its inner call to the
+    //  counterProxy (proxy on L2 for Counter on MAINNET) reverts via
+    //  the L2 lookupCall (failed=true) fallback in _consumeNestedAction.
+    // ─────────────────────────────────────────────────────────────
+
+    /// @dev Outer action hash on L2: source-proxy (for batcher on MAINNET) calls SafeCAP (on L2).
+    function _outerActionHashL2(address scapL2, address batcherL1) internal pure returns (bytes32) {
+        return crossChainCallHash(
+            L2_ROLLUP_ID,
+            scapL2,
+            0,
+            abi.encodeWithSelector(SafeCounterAndProxy.incrementProxy.selector),
+            batcherL1,
+            MAINNET_ROLLUP_ID
+        );
+    }
+
+    /// @dev Inner action hash on L2: SafeCAP (on L2) calls counterProxy (Counter on MAINNET).
+    ///      Manager forces sourceRollupId=ROLLUP_ID (=L2) for L2-issued reentrant calls.
+    function _innerActionHashL2(address counterL1, address scapL2) internal pure returns (bytes32) {
+        return crossChainCallHash(
+            MAINNET_ROLLUP_ID,
+            counterL1,
+            0,
+            abi.encodeWithSelector(Counter.increment.selector),
+            scapL2,
+            L2_ROLLUP_ID
+        );
+    }
+
+    function _l2Entries(address scapL2, address batcherL1)
+        internal
+        pure
+        returns (ExecutionEntry[] memory entries)
+    {
+        L2ToL1Call[] memory calls = new L2ToL1Call[](1);
+        calls[0] = L2ToL1Call({
+            targetAddress: scapL2,
+            value: 0,
+            data: abi.encodeWithSelector(SafeCounterAndProxy.incrementProxy.selector),
+            sourceAddress: batcherL1,
+            sourceRollupId: MAINNET_ROLLUP_ID,
+            revertSpan: 0
+        });
+
+        entries = new ExecutionEntry[](1);
+        entries[0] = ExecutionEntry({
+            stateDeltas: new StateDelta[](0),
+            proxyEntryHash: _outerActionHashL2(scapL2, batcherL1),
+            destinationRollupId: L2_ROLLUP_ID,
+            L2ToL1Calls: calls,
+            expectedL1ToL2Calls: new ExpectedL1ToL2Call[](0),
+            callCount: 1,
+            returnData: "",
+            rollingHash: _expectedRollingHash()
+        });
+    }
+
+    /// @dev LookupCall on L2 modelling the reverting reentrant call to Counter on MAINNET.
+    ///      Same mechanism as the L1-side LookupCall — _consumeNestedAction falls back
+    ///      to the persistent lookupCalls list and reverts with `returnData` when the
+    ///      key (hash, callNumber=1, lastNestedActionConsumed=0) matches.
+    function _l2LookupCalls(address counterL1, address scapL2)
+        internal
+        pure
+        returns (LookupCall[] memory statics)
+    {
+        statics = new LookupCall[](1);
+        statics[0] = LookupCall({
+            crossChainCallHash: _innerActionHashL2(counterL1, scapL2),
+            destinationRollupId: L2_ROLLUP_ID,
+            returnData: bytes("inner reverts"),
+            failed: true,
+            callNumber: 1,
+            lastNestedActionConsumed: 0,
+            calls: new L2ToL1Call[](0),
+            rollingHash: bytes32(0)
+        });
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
 //  Deploys
 // ═══════════════════════════════════════════════════════════════════════
 
+/// @title DeployL2 — L2: deploy Counter (the L1 inner-call target lives here only as an
+/// address-reference for the off-chain hash; the inner reentrant never actually executes
+/// because the LookupCall {failed:true} short-circuits the proxy before it dispatches).
 contract DeployL2 is Script {
     function run() external {
         vm.startBroadcast();
@@ -144,6 +229,10 @@ contract DeployL2 is Script {
     }
 }
 
+/// @title Deploy — L1: deploy the L1 trigger contracts plus a placeholder Counter that
+/// represents "Counter on MAINNET" from the L2 mirror's perspective (used only as an
+/// address constant in the L2 inner action hash; never invoked because the L2-side
+/// reentrant call short-circuits via LookupCall {failed:true}).
 contract Deploy is Script {
     function run() external {
         address rollupsAddr = vm.envAddress("ROLLUPS");
@@ -151,6 +240,10 @@ contract Deploy is Script {
 
         vm.startBroadcast();
         EEZ rollups = EEZ(rollupsAddr);
+
+        // Placeholder Counter on L1 — only its address matters (referenced by the L2
+        // inner action hash). Never called.
+        Counter counterL1 = new Counter();
 
         // counterProxy: proxy for Counter@L2 on L1 (NOT an actual Counter)
         address counterProxy;
@@ -171,9 +264,41 @@ contract Deploy is Script {
             scapProxy = rollups.computeCrossChainProxyAddress(address(scap), L2_ROLLUP_ID);
         }
 
+        console.log("COUNTER_L1=%s", address(counterL1));
         console.log("COUNTER_PROXY=%s", counterProxy);
         console.log("SAFE_CAP=%s", address(scap));
         console.log("SAFE_CAP_PROXY=%s", scapProxy);
+        vm.stopBroadcast();
+    }
+}
+
+/// @title DeployL2Step2 - L2: deploy SafeCAP and its inner-counter proxy (proxy on L2 for
+/// Counter on MAINNET). Runs after Deploy (which logs COUNTER_L1 on L1).
+contract DeployL2Step2 is Script {
+    function run() external {
+        address managerAddr = vm.envAddress("MANAGER_L2");
+        address counterL1 = vm.envAddress("COUNTER_L1");
+
+        vm.startBroadcast();
+        CrossChainManagerL2 manager = CrossChainManagerL2(managerAddr);
+
+        // Proxy on L2 for Counter@MAINNET — never actually invoked end-to-end because the
+        // L2 LookupCall {failed:true} short-circuits the proxy's reentrant call.
+        address counterProxyL2;
+        try manager.createCrossChainProxy(counterL1, MAINNET_ROLLUP_ID) returns (address p) {
+            counterProxyL2 = p;
+        } catch {
+            counterProxyL2 = manager.computeCrossChainProxyAddress(counterL1, MAINNET_ROLLUP_ID);
+        }
+
+        // SafeCAP on L2 targeting the L2-side counter proxy. When invoked through its
+        // own source-proxy by `_processNCalls`, `target.increment()` dispatches into
+        // managerL2._consumeNestedAction which finds the matching failed=true LookupCall
+        // and reverts. SafeCAP's try/catch sets lastCallFailed=true.
+        SafeCounterAndProxy scapL2 = new SafeCounterAndProxy(Counter(counterProxyL2));
+
+        console.log("COUNTER_PROXY_L2=%s", counterProxyL2);
+        console.log("SAFE_CAP_L2=%s", address(scapL2));
         vm.stopBroadcast();
     }
 }
@@ -222,6 +347,47 @@ contract Batcher {
         rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
         (bool ok,) = scapProxy.call(abi.encodeWithSelector(SafeCounterAndProxy.incrementProxy.selector));
         require(ok, "outer call failed");
+    }
+}
+
+// ExecuteL2 - L2-side mirror. SYSTEM-driven via executeIncomingCrossChainCall:
+// loads the L2 entry + the failed=true LookupCall, then runs SafeCAP (on L2) incrementProxy().
+// SafeCAP's inner reentrant call hits managerL2._consumeNestedAction, falls back to the
+// persistent lookupCalls list (no ExpectedL1ToL2Call match), finds the failed=true
+// LookupCall and reverts with the cached returnData. SafeCAP's try/catch catches it.
+// Final state on L2: SafeCAP.counter=1, SafeCAP.lastCallFailed=true, SafeCAP.targetCounter=0.
+contract ExecuteL2 is Script, NestedCallRevertActions {
+    function run() external {
+        address managerAddr = vm.envAddress("MANAGER_L2");
+        address counterL1 = vm.envAddress("COUNTER_L1");
+        address scapL2 = vm.envAddress("SAFE_CAP_L2");
+
+        vm.startBroadcast();
+        // The L1-side `_l1Entries` was built with `sourceAddress = address(batcher)` — but the
+        // Batcher contract lives on L1 and is created per-tx, so we can't reference it from L2.
+        // Instead we mirror the structural shape: source = msg.sender (the broadcaster acting as
+        // the L1 trigger). The two halves do NOT need identical sourceAddresses because each side
+        // is a separate proof; only the rolling-hash / call-shape / LookupCall key matter.
+        address triggerSource = msg.sender;
+        console.log(
+            "ExecuteL2: manager=%s scapL2=%s triggerSource=%s", managerAddr, scapL2, triggerSource
+        );
+
+        CrossChainManagerL2(managerAddr).executeIncomingCrossChainCall(
+            scapL2,
+            0,
+            abi.encodeWithSelector(SafeCounterAndProxy.incrementProxy.selector),
+            triggerSource,
+            MAINNET_ROLLUP_ID,
+            _l2Entries(scapL2, triggerSource),
+            _l2LookupCalls(counterL1, scapL2)
+        );
+
+        console.log("ExecuteL2: done");
+        console.log("scapL2.counter=%s", SafeCounterAndProxy(scapL2).counter());
+        console.log("scapL2.targetCounter=%s", SafeCounterAndProxy(scapL2).targetCounter());
+        console.log("scapL2.lastCallFailed=%s", SafeCounterAndProxy(scapL2).lastCallFailed());
+        vm.stopBroadcast();
     }
 }
 
@@ -281,13 +447,19 @@ contract ComputeExpected is ComputeExpectedBase, NestedCallRevertActions {
     function run() external view {
         address scapAddr = vm.envAddress("SAFE_CAP");
         address counterL2 = vm.envAddress("COUNTER_L2");
+        address counterL1 = vm.envAddress("COUNTER_L1");
+        address scapL2 = vm.envAddress("SAFE_CAP_L2");
         address alice = msg.sender;
 
         ExecutionEntry[] memory l1 = _l1Entries(scapAddr, alice);
         LookupCall[] memory statics = _l1LookupCalls(counterL2, scapAddr);
+        ExecutionEntry[] memory l2 = _l2Entries(scapL2, alice);
+        LookupCall[] memory l2Statics = _l2LookupCalls(counterL1, scapL2);
         bytes32 l1Hash = _entryHash(l1[0]);
+        bytes32 l2Hash = _entryHash(l2[0]);
 
         console.log("EXPECTED_L1_HASHES=[%s]", vm.toString(l1Hash));
+        console.log("EXPECTED_L2_HASHES=[%s]", vm.toString(l2Hash));
         console.log("");
         console.log(
             "=== EXPECTED L1 TABLE (1 entry, 1 call, 0 nested - reentrant revert via failed=true LookupCall) ==="
@@ -295,5 +467,10 @@ contract ComputeExpected is ComputeExpectedBase, NestedCallRevertActions {
         _logEntry(0, l1[0]);
         console.log("=== EXPECTED L1 STATIC CALLS (1 failed=true entry) ===");
         _logLookupCall(0, statics[0]);
+        console.log("");
+        console.log("=== EXPECTED L2 TABLE (1 entry, 1 call, 0 nested) ===");
+        _logL2Entry(0, l2[0]);
+        console.log("=== EXPECTED L2 STATIC CALLS (1 failed=true entry) ===");
+        _logLookupCall(0, l2Statics[0]);
     }
 }

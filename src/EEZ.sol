@@ -5,7 +5,6 @@ import {IProofSystem} from "./IProofSystem.sol";
 import {IRollupContract} from "./rollupContract/IRollup.sol";
 import {CrossChainProxy} from "./CrossChainProxy.sol";
 import {
-    ICrossChainManager,
     StateDelta,
     L2ToL1Call,
     ExpectedL1ToL2Call,
@@ -13,6 +12,7 @@ import {
     ExecutionEntry,
     ProxyInfo
 } from "./ICrossChainManager.sol";
+import {CrossChainManagerBase} from "./CrossChainManagerBase.sol";
 import {IMetaCrossChainReceiver} from "./interfaces/IMetaCrossChainReceiver.sol";
 
 /// @notice Rollup configuration held by the central registry.
@@ -108,7 +108,7 @@ struct RollupVerification {
 ///
 ///      Deferred consumption: `executeL1ToL2Call` (proxy entry) and `executeL2TX(rid)` route
 ///      to `verificationByRollup[rid].queue[cursor]` and advance the per-rollup cursor.
-contract EEZ is ICrossChainManager {
+contract EEZ is CrossChainManagerBase {
     /// @notice The rollup ID representing L1 mainnet
     uint256 public constant MAINNET_ROLLUP_ID = 0;
 
@@ -128,11 +128,8 @@ contract EEZ is ICrossChainManager {
     /// @notice Mapping of authorized CrossChainProxy contracts to their identity
     mapping(address proxy => ProxyInfo info) public authorizedProxies;
 
-    // ── Rolling hash tag constants ──
-    uint8 internal constant CALL_BEGIN = 1;
-    uint8 internal constant CALL_END = 2;
-    uint8 internal constant NESTED_BEGIN = 3;
-    uint8 internal constant NESTED_END = 4;
+    // Rolling-hash tag constants and the `_rollingHash` transient accumulator live on
+    // `CrossChainManagerBase` (shared with `CrossChainManagerL2`).
 
     // ── Transient-backed execution entries & lookup calls ──
     //
@@ -175,9 +172,6 @@ contract EEZ is ICrossChainManager {
     /// @dev `0` outside execution. Used by `_currentEntryStorage()` to disambiguate which
     ///      persistent queue to route into when `_transientExecutions.length == 0`.
     uint256 transient _currentEntryRollupId;
-
-    /// @notice Transient rolling hash accumulating tagged events across the entire entry
-    bytes32 transient _rollingHash;
 
     /// @notice 1-indexed global call counter and cursor into entry.L2ToL1Calls[]
     /// @dev Also replaces _insideExecution: _currentCallNumber != 0 means inside execution
@@ -1163,53 +1157,8 @@ contract EEZ is ICrossChainManager {
         }
     }
 
-    // ──────────────────────────────────────────────
-    //  Rolling hash
-    // ──────────────────────────────────────────────
-    //
-    // The entry-level `_rollingHash` accumulator is updated at four event points during
-    // entry execution: at the start and end of each top-level call, and at the start and
-    // end of each nested-action frame. Each event is tagged with a domain byte
-    // (CALL_BEGIN/CALL_END/NESTED_BEGIN/NESTED_END) so the same set of inputs can't collide
-    // across event types. The final value is checked against `entry.rollingHash` in
-    // `_applyAndExecute`. See CLAUDE.md §Rolling Hash for the full specification.
-    //
-    // Static-call sub-hashes (`_processNLookupCalls`) use a simpler, untagged formula
-    // because they're verified against `LookupCall.rollingHash`, a separate accumulator.
-
-    /// @notice Folds a CALL_BEGIN event into `_rollingHash` for the given call number.
-    function _rollingHashCallBegin(uint256 callNumber) internal {
-        _rollingHash = keccak256(abi.encodePacked(_rollingHash, CALL_BEGIN, callNumber));
-    }
-
-    /// @notice Folds a CALL_END event into `_rollingHash`, including the call's observed
-    ///         outcome (success flag + raw return/revert data).
-    function _rollingHashCallEnd(uint256 callNumber, bool success, bytes memory retData) internal {
-        _rollingHash = keccak256(abi.encodePacked(_rollingHash, CALL_END, callNumber, success, retData));
-    }
-
-    /// @notice Folds a NESTED_BEGIN event into `_rollingHash` for the given nested-action
-    ///         index (1-indexed).
-    function _rollingHashNestedBegin(uint256 nestedNumber) internal {
-        _rollingHash = keccak256(abi.encodePacked(_rollingHash, NESTED_BEGIN, nestedNumber));
-    }
-
-    /// @notice Folds a NESTED_END event into `_rollingHash` for the given nested-action
-    ///         index (1-indexed).
-    function _rollingHashNestedEnd(uint256 nestedNumber) internal {
-        _rollingHash = keccak256(abi.encodePacked(_rollingHash, NESTED_END, nestedNumber));
-    }
-
-    /// @notice Folds a static sub-call result into a local accumulator. Pure: doesn't touch
-    ///         `_rollingHash` because lookup calls are verified against
-    ///         `LookupCall.rollingHash`, a separate per-LookupCall accumulator.
-    function _rollingHashStaticResult(bytes32 prev, bool success, bytes memory retData)
-        internal
-        pure
-        returns (bytes32)
-    {
-        return keccak256(abi.encodePacked(prev, success, retData));
-    }
+    // Rolling-hash helpers (`_rollingHashCallBegin/End/NestedBegin/NestedEnd/StaticResult`)
+    // and the `_rollingHash` accumulator live on `CrossChainManagerBase`.
 
     // ──────────────────────────────────────────────
     //  Helpers
