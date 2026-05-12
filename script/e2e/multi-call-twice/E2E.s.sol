@@ -3,14 +3,8 @@ pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../../src/EEZ.sol";
-import {CrossChainManagerL2} from "../../../src/L2/CrossChainManagerL2.sol";
-import {
-    StateDelta,
-    L2ToL1Call,
-    ExpectedL1ToL2Call,
-    ExecutionEntry,
-    LookupCall
-} from "../../../src/ICrossChainManager.sol";
+import {EEZL2} from "../../../src/L2/EEZL2.sol";
+import {StateDelta, L2ToL1Call, ExpectedL1ToL2Call, ExecutionEntry, LookupCall} from "../../../src/IEEZ.sol";
 import {Counter} from "../../../test/mocks/CounterContracts.sol";
 import {CallTwice} from "../../../test/mocks/MultiCallContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
@@ -104,12 +98,25 @@ abstract contract MultiCallActions {
     function _l2Entries(address counterL2, address caller) internal pure returns (ExecutionEntry[] memory entries) {
         bytes32 ah = _callHash(counterL2, caller);
 
+        // Both L2 executeIncomingCrossChainCall calls run in the same simulated tx.
+        // `_currentCallNumber` resets to 0 between invocations (manager line 295), but
+        // `_rollingHash` is NOT reset — it threads from entry 0's final hash into entry 1.
+        bytes32 rh0 = _ringRollingHash(bytes32(0), abi.encode(uint256(1)));
+        bytes32 rh1 = _ringRollingHash(rh0, abi.encode(uint256(2)));
+
         entries = new ExecutionEntry[](2);
-        entries[0] = _buildL2Entry(counterL2, caller, ah, abi.encode(uint256(1)));
-        entries[1] = _buildL2Entry(counterL2, caller, ah, abi.encode(uint256(2)));
+        entries[0] = _buildL2Entry(counterL2, caller, ah, abi.encode(uint256(1)), rh0);
+        entries[1] = _buildL2Entry(counterL2, caller, ah, abi.encode(uint256(2)), rh1);
     }
 
-    function _buildL2Entry(address counterL2, address caller, bytes32 ah, bytes memory retData)
+    function _ringRollingHash(bytes32 prev, bytes memory retData) private pure returns (bytes32) {
+        bytes32 rh = prev;
+        rh = RollingHashBuilder.appendCallBegin(rh, 1);
+        rh = RollingHashBuilder.appendCallEnd(rh, 1, true, retData);
+        return rh;
+    }
+
+    function _buildL2Entry(address counterL2, address caller, bytes32 ah, bytes memory retData, bytes32 rh)
         private
         pure
         returns (ExecutionEntry memory)
@@ -123,10 +130,6 @@ abstract contract MultiCallActions {
             sourceRollupId: MAINNET_ROLLUP_ID,
             revertSpan: 0
         });
-
-        bytes32 rh = bytes32(0);
-        rh = RollingHashBuilder.appendCallBegin(rh, 1);
-        rh = RollingHashBuilder.appendCallEnd(rh, 1, true, retData);
 
         return ExecutionEntry({
             stateDeltas: new StateDelta[](0),
@@ -211,7 +214,7 @@ contract Batcher {
             callData: "",
             proofs: proofs
         });
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
+        rollups.postAndVerifyBatch(batch);
         (first, second) = caller.callCounterTwice(counterProxy);
     }
 }
@@ -229,7 +232,7 @@ contract ExecuteL2 is Script, MultiCallActions {
         address callerAddr = vm.envAddress("CALL_TWICE");
 
         vm.startBroadcast();
-        CrossChainManagerL2 m = CrossChainManagerL2(managerAddr);
+        EEZL2 m = EEZL2(managerAddr);
 
         ExecutionEntry[] memory all = _l2Entries(counterL2Addr, callerAddr);
 

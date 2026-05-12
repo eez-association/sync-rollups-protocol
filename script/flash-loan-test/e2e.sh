@@ -50,10 +50,10 @@ ROLLUPS=$(extract "$ROLLUPS_OUTPUT" "ROLLUPS")
 echo "ROLLUPS=$ROLLUPS"
 
 # ══════════════════════════════════════════════
-#  Deploy CrossChainManagerL2 on L2
+#  Deploy EEZL2 on L2
 # ══════════════════════════════════════════════
 echo ""
-echo "====== Deploy CrossChainManagerL2 (L2) ======"
+echo "====== Deploy EEZL2 (L2) ======"
 MANAGER_OUTPUT=$(forge script "$SCRIPT_DIR/DeployInfra.s.sol:DeployManagerL2" \
     --rpc-url "$L2_RPC" --broadcast --private-key "$PK" \
     --sig "run(uint256,address)" "$L2_ROLLUP_ID" "$SYSTEM_ADDRESS" 2>&1)
@@ -109,7 +109,7 @@ L2_BLOCK=$(cast block-number --rpc-url "$L2_RPC")
 echo "L2 execution at block $L2_BLOCK"
 
 # ══════════════════════════════════════════════
-#  Execute L1 phase (postVerifyAndExecuteOrSaveExecutionsFromBatch + flash loan in same block)
+#  Execute L1 phase (postAndVerifyBatch + flash loan in same block)
 # ══════════════════════════════════════════════
 echo ""
 echo "====== Execute L1 Phase ======"

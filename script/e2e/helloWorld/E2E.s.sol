@@ -3,14 +3,8 @@ pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../../src/EEZ.sol";
-import {CrossChainManagerL2} from "../../../src/L2/CrossChainManagerL2.sol";
-import {
-    StateDelta,
-    L2ToL1Call,
-    ExpectedL1ToL2Call,
-    ExecutionEntry,
-    LookupCall
-} from "../../../src/ICrossChainManager.sol";
+import {EEZL2} from "../../../src/L2/EEZL2.sol";
+import {StateDelta, L2ToL1Call, ExpectedL1ToL2Call, ExecutionEntry, LookupCall} from "../../../src/IEEZ.sol";
 import {HelloWorldL1, HelloWorldL2, IHelloWorldL2} from "../../../test/mocks/helloword.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 import {
@@ -168,7 +162,7 @@ contract Batcher {
             callData: "",
             proofs: proofs
         });
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
+        rollups.postAndVerifyBatch(batch);
         greeting = h1.helloL2World();
     }
 }
@@ -182,15 +176,16 @@ contract ExecuteL2 is Script, HelloActions {
         address helloL1Addr = vm.envAddress("HELLO_WORLD_L1");
 
         vm.startBroadcast();
-        bytes memory ret = CrossChainManagerL2(managerAddr).executeIncomingCrossChainCall(
-            helloL2Addr,
-            0,
-            _getWordCallData(),
-            helloL1Addr,
-            MAINNET_ROLLUP_ID,
-            _l2Entries(helloL2Addr, helloL1Addr),
-            noLookupCalls()
-        );
+        bytes memory ret = EEZL2(managerAddr)
+            .executeIncomingCrossChainCall(
+                helloL2Addr,
+                0,
+                _getWordCallData(),
+                helloL1Addr,
+                MAINNET_ROLLUP_ID,
+                _l2Entries(helloL2Addr, helloL1Addr),
+                noLookupCalls()
+            );
 
         console.log("done");
         console.log("L2 ret length=%s", ret.length);
@@ -208,11 +203,7 @@ contract Execute is Script, HelloActions {
         vm.startBroadcast();
         Batcher batcher = new Batcher();
         string memory greeting = batcher.execute(
-            EEZ(rollupsAddr),
-            proofSystemAddr,
-            _l1Entries(helloL2Addr, h1Addr),
-            noLookupCalls(),
-            HelloWorldL1(h1Addr)
+            EEZ(rollupsAddr), proofSystemAddr, _l1Entries(helloL2Addr, h1Addr), noLookupCalls(), HelloWorldL1(h1Addr)
         );
         console.log("done");
         console.log("greeting=%s", greeting);

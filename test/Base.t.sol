@@ -2,18 +2,17 @@
 pragma solidity ^0.8.28;
 
 import {Test, Vm} from "forge-std/Test.sol";
-import {EEZ, RollupConfig, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems, RollupVerification} from "../src/EEZ.sol";
+import {
+    EEZ,
+    RollupConfig,
+    ProofSystemBatchPerVerificationEntries,
+    RollupIdWithProofSystems,
+    RollupVerification
+} from "../src/EEZ.sol";
 import {Rollup} from "../src/rollupContract/Rollup.sol";
 import {IRollupContract} from "../src/rollupContract/IRollup.sol";
 import {IProofSystem} from "../src/IProofSystem.sol";
-import {
-    ExecutionEntry,
-    StateDelta,
-    L2ToL1Call,
-    ExpectedL1ToL2Call,
-    LookupCall,
-    ProxyInfo
-} from "../src/ICrossChainManager.sol";
+import {ExecutionEntry, StateDelta, L2ToL1Call, ExpectedL1ToL2Call, LookupCall, ProxyInfo} from "../src/IEEZ.sol";
 import {CrossChainProxy} from "../src/CrossChainProxy.sol";
 import {MockProofSystem} from "./mocks/MockProofSystem.sol";
 
@@ -62,14 +61,14 @@ abstract contract Base is Test {
         ps = new MockProofSystem();
 
         // Burn rollupId 0 (MAINNET_ROLLUP_ID): the strict-increasing rollupIds check in
-        // postVerifyAndExecuteOrSaveExecutionsFromBatch rejects rid <= prevRid where prevRid starts at MAINNET_ROLLUP_ID (0).
+        // postAndVerifyBatch rejects rid <= prevRid where prevRid starts at MAINNET_ROLLUP_ID (0).
         // So id 0 is unpostable. Register a throwaway rollup first so user rollups land at id >= 1.
         address[] memory psList = new address[](1);
         psList[0] = address(ps);
         bytes32[] memory vks = new bytes32[](1);
         vks[0] = DEFAULT_VK;
         Rollup burn = new Rollup(address(rollups), defaultOwner, 1, psList, vks);
-        rollups.createRollup(address(burn), bytes32(0));
+        rollups.registerRollup(address(burn), bytes32(0));
     }
 
     // ──────────────────────────────────────────────
@@ -89,7 +88,7 @@ abstract contract Base is Test {
         bytes32[] memory vks = new bytes32[](1);
         vks[0] = DEFAULT_VK;
         handle.manager = new Rollup(address(rollups), owner_, 1, psList, vks);
-        handle.id = rollups.createRollup(address(handle.manager), initialState);
+        handle.id = rollups.registerRollup(address(handle.manager), initialState);
     }
 
     /// @notice Custom-shape rollup. Deploys a `Rollup` manager with the given PS/vkey/threshold/owner
@@ -105,7 +104,7 @@ abstract contract Base is Test {
         returns (RollupHandle memory handle)
     {
         handle.manager = new Rollup(address(rollups), owner_, threshold, psList, vks);
-        handle.id = rollups.createRollup(address(handle.manager), initialState);
+        handle.id = rollups.registerRollup(address(handle.manager), initialState);
     }
 
     /// @notice Reads `rollups[rid].stateRoot`.
@@ -179,7 +178,7 @@ abstract contract Base is Test {
         });
     }
 
-    /// @notice Wraps a single batch for `r` and calls `rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch`.
+    /// @notice Wraps a single batch for `r` and calls `rollups.postAndVerifyBatch`.
     function _postBatchOne(
         RollupHandle memory r,
         ExecutionEntry[] memory entries,
@@ -189,9 +188,10 @@ abstract contract Base is Test {
     )
         internal
     {
-        ProofSystemBatchPerVerificationEntries memory batch =
-            _singleSubBatch(r, entries, lookupCalls, transientCount, transientLookupCallCount);
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
+        ProofSystemBatchPerVerificationEntries memory batch = _singleSubBatch(
+            r, entries, lookupCalls, transientCount, transientLookupCallCount
+        );
+        rollups.postAndVerifyBatch(batch);
     }
 
     /// @notice Convenience: post a single-rollup batch with no lookup calls. Auto-detects whether
@@ -243,7 +243,7 @@ abstract contract Base is Test {
 
     /// @notice An immediate entry with no state deltas at all (`proxyEntryHash == 0`,
     ///         empty deltas/calls). Useful for tests that want to verify
-    ///         postVerifyAndExecuteOrSaveExecutionsFromBatch flow without state changes.
+    ///         postAndVerifyBatch flow without state changes.
     function _emptyImmediateEntry(uint256 rid) internal pure returns (ExecutionEntry memory entry) {
         entry.stateDeltas = new StateDelta[](0);
         entry.proxyEntryHash = bytes32(0);

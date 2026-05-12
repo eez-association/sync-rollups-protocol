@@ -189,7 +189,7 @@ export const rollupsAbi = [
   // ── Functions ──
   {
     type: "function",
-    name: "createRollup",
+    name: "registerRollup",
     stateMutability: "nonpayable",
     inputs: [
       { name: "rollupContract", type: "address" },

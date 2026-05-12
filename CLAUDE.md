@@ -22,7 +22,7 @@ forge fmt            # Format code
 - **IProofSystem.sol**: Interface (`verify(bytes proof, bytes32 publicInputsHash) returns (bool)`) for any external proof verifier (ZK or otherwise). Multiple proof systems can attest the same batch — see `ProofSystemBatch` and threshold logic in `Rollups.sol`.
 - **IMetaCrossChainReceiver.sol** (`src/interfaces/`): Callback fired on `postBatch`'s `msg.sender` (when it has code) so the sender can consume transient entries via cross-chain proxy calls in the same transaction.
 - **CrossChainProxy.sol**: Proxy deployed via CREATE2 for each (address, rollupId) pair. Routes incoming calls to the manager via `executeCrossChainCall` (or `staticCallLookup` in static context, detected via a `tstore` self-call), and forwards manager-driven outbound calls via `executeOnBehalf`.
-- **CrossChainManagerL2.sol**: L2-side. No proofs, no rollup registry, no state deltas — a system address loads execution tables consumed sequentially by proxy calls.
+- **EEZL2.sol**: L2-side. No proofs, no rollup registry, no state deltas — a system address loads execution tables consumed sequentially by proxy calls.
 
 ### Data Types
 
@@ -110,7 +110,7 @@ Exposed as `Rollups.computeCrossChainCallHash(...)` (`public pure`).
 
 ### Key Functions (L1 — Rollups)
 
-1. **createRollup(address rollupContract, bytes32 initialState) → uint256 rollupId** — caller pre-deploys a manager (e.g. `Rollup.sol`) with proofSystems/threshold/owner baked in, then registers it. Registry assigns a fresh rollupId, fires `IRollup.rollupContractRegistered(rollupId)` once on the manager.
+1. **registerRollup(address rollupContract, bytes32 initialState) → uint256 rollupId** — caller pre-deploys a manager (e.g. `Rollup.sol`) with proofSystems/threshold/owner baked in, then registers it. Registry assigns a fresh rollupId, fires `IRollup.rollupContractRegistered(rollupId)` once on the manager.
 2. **createCrossChainProxy(originalAddress, originalRollupId)** — deploys a `CrossChainProxy` via CREATE2.
 3. **postBatch(ProofSystemBatch[] batches)** — verifies one or more proof-system bundles in a single tx. Each sub-batch lists the proof systems, the rollupIds covered, the entries/lookupCalls, and the transient prefixes. Rolling rule: across the whole call, the leading transient prefix can immediately execute (entry 0 is run inline if its `crossChainCallHash == 0`), then `IMetaCrossChainReceiver(msg.sender).executeMetaCrossChainTransactions()` runs if `msg.sender` has code. After the transient prefix is fully drained, the remainder publishes to the per-rollup `verificationByRollup[rid].queue`. If the prefix isn't drained cleanly, the remainder is dropped.
 4. **executeCrossChainCall(sourceAddress, callData)** — entry point for proxies. Top-level call → `_consumeAndExecute` (consumes next entry from the routed rollup's queue; advances `verificationByRollup[rid].cursor`). Reentrant call (`_insideExecution() == true`) → `_consumeNestedAction`.
@@ -120,7 +120,7 @@ Exposed as `Rollups.computeCrossChainCallHash(...)` (`public pure`).
 8. **setRollupContract(uint256 rid, address newContract)** — manager-only callback for handoff. Fires `rollupContractRegistered` on the new manager.
 9. **computeCrossChainProxyAddress(originalAddress, originalRollupId)** — deterministic CREATE2 address. (Two parameters; no `domain` / `block.chainid`.)
 
-### Key Functions (L2 — CrossChainManagerL2)
+### Key Functions (L2 — EEZL2)
 
 1. **loadExecutionTable(entries, lookupCalls)** — system-only. Wipes existing tables, loads new entries / lookup calls, sets `lastLoadBlock`.
 2. **executeCrossChainCall(sourceAddress, callData)** — same shape as L1, but `sourceRollupId` in the call hash is forced to `ROLLUP_ID` (not `MAINNET_ROLLUP_ID`), and any `msg.value` is forwarded to `SYSTEM_ADDRESS` (burn). No state deltas, no ether accounting.

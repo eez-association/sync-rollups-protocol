@@ -58,7 +58,7 @@ deploy_infra() {
 
     if [[ -n "$l2_rpc" ]]; then
         echo ""
-        echo "====== Deploy CrossChainManagerL2 (L2) ======"
+        echo "====== Deploy EEZL2 (L2) ======"
         output=$(forge script script/e2e/shared/DeployInfra.s.sol:DeployManagerL2 \
             --rpc-url "$l2_rpc" --broadcast --private-key "$pk" \
             --sig "run(uint256,address)" "$l2_rollup_id" "$system_address" 2>&1)
@@ -182,10 +182,10 @@ get_block_from_broadcast() {
     printf "%d\n" "$(jq -r '.receipts[-1].blockNumber' "$json")"
 }
 
-# ── Extract L2 block numbers from a postVerifyAndExecuteOrSaveExecutionsFromBatch tx's callData ──
+# ── Extract L2 block numbers from a postAndVerifyBatch tx's callData ──
 # OBSOLETE post-refactor — see comment at top of file. Cross-chain block
 # correlation is no longer encoded on-chain; use off-chain indexing if needed.
-# Post-refactor `postVerifyAndExecuteOrSaveExecutionsFromBatch(ProofSystemBatchPerVerificationEntries[] batches)` no longer carries an L2
+# Post-refactor `postAndVerifyBatch(ProofSystemBatchPerVerificationEntries[] batches)` no longer carries an L2
 # block list: the per-prover `callData` field is opaque prover input, not an
 # orchestrator-declared list of L2 blocks. Kept for call-site compat — always
 # returns "[]".

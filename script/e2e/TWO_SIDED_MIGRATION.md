@@ -91,7 +91,7 @@ contract ExecuteL2 is Script, <Scenario>Actions {
         address srcAddr     = vm.envAddress("<SRC_ON_L1>"); // CAP, etc.
 
         vm.startBroadcast();
-        CrossChainManagerL2(managerAddr).executeIncomingCrossChainCall{value: <value>}(
+        EEZL2(managerAddr).executeIncomingCrossChainCall{value: <value>}(
             destAddr,
             <value>,
             <callData>,
@@ -107,9 +107,9 @@ contract ExecuteL2 is Script, <Scenario>Actions {
 }
 ```
 
-`SYSTEM_ADDRESS` is anvil account 0 by default (the broadcaster). The source proxy is lazy-created by `_processNCalls` (`src/L2/CrossChainManagerL2.sol:426-429`) — no explicit `createCrossChainProxy` needed.
+`SYSTEM_ADDRESS` is anvil account 0 by default (the broadcaster). The source proxy is lazy-created by `_processNCalls` (`src/L2/EEZL2.sol:426-429`) — no explicit `createCrossChainProxy` needed.
 
-`msg.value` must equal `<value>` strictly (`ValueMismatch` revert otherwise — `src/L2/CrossChainManagerL2.sol:268`).
+`msg.value` must equal `<value>` strictly (`ValueMismatch` revert otherwise — `src/L2/EEZL2.sol:268`).
 
 ## Pattern B — L2→L1 scenarios (counterL2, bridgeL2 if any, …)
 
@@ -169,7 +169,7 @@ contract DeferredL2TXBatcher {
             callData: "",
             proofs: proofs
         });
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
+        rollups.postAndVerifyBatch(batch);
         rollups.executeL2TX(rollupId);
     }
 }

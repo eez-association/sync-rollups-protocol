@@ -3,14 +3,8 @@ pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../../src/EEZ.sol";
-import {CrossChainManagerL2} from "../../../src/L2/CrossChainManagerL2.sol";
-import {
-    StateDelta,
-    L2ToL1Call,
-    ExpectedL1ToL2Call,
-    ExecutionEntry,
-    LookupCall
-} from "../../../src/ICrossChainManager.sol";
+import {EEZL2} from "../../../src/L2/EEZL2.sol";
+import {StateDelta, L2ToL1Call, ExpectedL1ToL2Call, ExecutionEntry, LookupCall} from "../../../src/IEEZ.sol";
 import {Counter} from "../../../test/mocks/CounterContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 import {
@@ -34,7 +28,7 @@ import {
 //  while the rolling hash still commits to (success=true, retData=1).
 //
 //  L1 side (Execute):
-//    1. postVerifyAndExecuteOrSaveExecutionsFromBatch loads ONE deferred
+//    1. postAndVerifyBatch loads ONE deferred
 //       entry. Its calls[0] targets the real Counter on L1 with
 //       revertSpan=1.
 //    2. Alice triggers consumption by calling counterProxy (L1 proxy for
@@ -83,12 +77,7 @@ abstract contract RevertActions {
     ///      This is just the trigger — it selects which entry to consume.
     function _outerActionHash(address counterL2, address alice) internal pure returns (bytes32) {
         return crossChainCallHash(
-            L2_ROLLUP_ID,
-            counterL2,
-            0,
-            abi.encodeWithSelector(Counter.increment.selector),
-            alice,
-            MAINNET_ROLLUP_ID
+            L2_ROLLUP_ID, counterL2, 0, abi.encodeWithSelector(Counter.increment.selector), alice, MAINNET_ROLLUP_ID
         );
     }
 
@@ -149,11 +138,7 @@ abstract contract RevertActions {
     /// to share alice with the L1 batcher, since the cryptographic tie is the call
     /// hash of the OUTER call (destination + sourceAddress + sourceRollupId), which
     /// each side computes from its own broadcaster.
-    function _l2Entries(address counterL2, address alice)
-        internal
-        pure
-        returns (ExecutionEntry[] memory entries)
-    {
+    function _l2Entries(address counterL2, address alice) internal pure returns (ExecutionEntry[] memory entries) {
         L2ToL1Call[] memory calls = new L2ToL1Call[](1);
         calls[0] = L2ToL1Call({
             targetAddress: counterL2,
@@ -258,7 +243,7 @@ contract Batcher {
             callData: "",
             proofs: proofs
         });
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
+        rollups.postAndVerifyBatch(batch);
         // Trigger: call counterProxy.increment() — consumes the entry.
         // The inner call in the entry runs inside executeInContext and is force-reverted.
         (bool ok,) = counterProxy.call(abi.encodeWithSelector(Counter.increment.selector));
@@ -322,15 +307,16 @@ contract ExecuteL2 is Script, RevertActions {
         vm.startBroadcast();
         address alice = msg.sender;
 
-        CrossChainManagerL2(managerAddr).executeIncomingCrossChainCall(
-            counterL2,
-            0,
-            abi.encodeWithSelector(Counter.increment.selector),
-            alice,
-            MAINNET_ROLLUP_ID,
-            _l2Entries(counterL2, alice),
-            noLookupCalls()
-        );
+        EEZL2(managerAddr)
+            .executeIncomingCrossChainCall(
+                counterL2,
+                0,
+                abi.encodeWithSelector(Counter.increment.selector),
+                alice,
+                MAINNET_ROLLUP_ID,
+                _l2Entries(counterL2, alice),
+                noLookupCalls()
+            );
 
         uint256 finalCounter = Counter(counterL2).counter();
         require(finalCounter == 0, "revertSpan must roll back successful state changes on L2");

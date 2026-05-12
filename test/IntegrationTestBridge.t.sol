@@ -4,16 +4,9 @@ pragma solidity ^0.8.24;
 import {Test, console} from "forge-std/Test.sol";
 import {EEZ, RollupConfig, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../src/EEZ.sol";
 import {Rollup} from "../src/rollupContract/Rollup.sol";
-import {CrossChainManagerL2} from "../src/L2/CrossChainManagerL2.sol";
+import {EEZL2} from "../src/L2/EEZL2.sol";
 import {CrossChainProxy} from "../src/CrossChainProxy.sol";
-import {
-    ExecutionEntry,
-    StateDelta,
-    L2ToL1Call,
-    ExpectedL1ToL2Call,
-    LookupCall,
-    ProxyInfo
-} from "../src/ICrossChainManager.sol";
+import {ExecutionEntry, StateDelta, L2ToL1Call, ExpectedL1ToL2Call, LookupCall, ProxyInfo} from "../src/IEEZ.sol";
 import {MockProofSystem} from "./mocks/MockProofSystem.sol";
 import {Bridge} from "../src/periphery/Bridge.sol";
 import {WrappedToken} from "../src/periphery/WrappedToken.sol";
@@ -35,7 +28,7 @@ contract TestToken is ERC20 {
 ///   - Rolling hash computed with tagged events: CALL_BEGIN(1), CALL_END(2), NESTED_BEGIN(3), NESTED_END(4)
 ///   - No executeIncomingCrossChainCall on L2 -- all entries consumed via proxy calls
 ///   - executeL2TX() takes no args on L1
-///   - postVerifyAndExecuteOrSaveExecutionsFromBatch takes (entries, staticCalls, transientCount, transientLookupCallCount, blobCount, callData, proof)
+///   - postAndVerifyBatch takes (entries, staticCalls, transientCount, transientLookupCallCount, blobCount, callData, proof)
 ///   - loadExecutionTable takes (entries, staticCalls)
 ///
 /// ┌────┬───────────────────────────────────────┬──────────┬──────────────────┐
@@ -52,7 +45,7 @@ contract IntegrationTestBridge is Test {
     Rollup public l2Manager;
 
     // ── L2 contracts ──
-    CrossChainManagerL2 public managerL2;
+    EEZL2 public managerL2;
 
     // ── Bridge contracts ──
     Bridge public bridgeL1;
@@ -87,7 +80,7 @@ contract IntegrationTestBridge is Test {
             bytes32[] memory vks = new bytes32[](1);
             vks[0] = DEFAULT_VK;
             Rollup burnRollup = new Rollup(address(rollups), address(this), 1, psList, vks);
-            rollups.createRollup(address(burnRollup), bytes32(0));
+            rollups.registerRollup(address(burnRollup), bytes32(0));
         }
         {
             address[] memory psList = new address[](1);
@@ -95,12 +88,12 @@ contract IntegrationTestBridge is Test {
             bytes32[] memory vks = new bytes32[](1);
             vks[0] = DEFAULT_VK;
             l2Manager = new Rollup(address(rollups), address(this), 1, psList, vks);
-            uint256 rid = rollups.createRollup(address(l2Manager), keccak256("l2-initial-state"));
+            uint256 rid = rollups.registerRollup(address(l2Manager), keccak256("l2-initial-state"));
             require(rid == L2_ROLLUP_ID, "expected L2_ROLLUP_ID = 1");
         }
 
         // ── L2 infrastructure ──
-        managerL2 = new CrossChainManagerL2(L2_ROLLUP_ID, SYSTEM_ADDRESS);
+        managerL2 = new EEZL2(L2_ROLLUP_ID, SYSTEM_ADDRESS);
 
         // ── Bridge deployment ──
         bridgeL1 = new Bridge();
@@ -190,7 +183,7 @@ contract IntegrationTestBridge is Test {
             callData: "",
             proofs: proofs
         });
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
+        rollups.postAndVerifyBatch(batch);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -627,7 +620,7 @@ contract IntegrationTestBridge is Test {
         //  bridgeL1.receiveTokens → onlyBridgeProxy(L2): proxy for (_bridgeAddress()=bridgeL2, L2) ✓
         //  originalRollupId(MAINNET) == rollupId(MAINNET) → native → release tokens to alice
 
-        vm.roll(block.number + 1); // new block for postVerifyAndExecuteOrSaveExecutionsFromBatch
+        vm.roll(block.number + 1); // new block for postAndVerifyBatch
 
         bytes32 s2 = keccak256("l2-state-after-roundtrip-ret");
 
@@ -666,7 +659,7 @@ contract IntegrationTestBridge is Test {
             _postBatchToL2(entries, 1);
         }
 
-        // The immediate entry (crossChainCallHash==0) was already executed during postVerifyAndExecuteOrSaveExecutionsFromBatch.
+        // The immediate entry (crossChainCallHash==0) was already executed during postAndVerifyBatch.
         // Tokens should be released to alice.
 
         // ── Final assertions ──

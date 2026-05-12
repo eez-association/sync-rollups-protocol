@@ -3,14 +3,8 @@ pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../../src/EEZ.sol";
-import {CrossChainManagerL2} from "../../../src/L2/CrossChainManagerL2.sol";
-import {
-    StateDelta,
-    L2ToL1Call,
-    ExpectedL1ToL2Call,
-    ExecutionEntry,
-    LookupCall
-} from "../../../src/ICrossChainManager.sol";
+import {EEZL2} from "../../../src/L2/EEZL2.sol";
+import {StateDelta, L2ToL1Call, ExpectedL1ToL2Call, ExecutionEntry, LookupCall} from "../../../src/IEEZ.sol";
 import {Counter, CounterAndProxy} from "../../../test/mocks/CounterContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 import {
@@ -25,7 +19,7 @@ import {
 //  Counter scenario — L1-starting, simplest case, two-sided
 //
 //  L1 side (Execute):
-//    1. postVerifyAndExecuteOrSaveExecutionsFromBatch loads ONE deferred L1 entry
+//    1. postAndVerifyBatch loads ONE deferred L1 entry
 //       with precomputed return=uint256(1) and a StateDelta advancing L2's stateRoot
 //    2. User calls CounterAndProxy.incrementProxy() on L1
 //    3. CAP calls CounterProxy (L1 proxy for Counter@L2)
@@ -120,7 +114,7 @@ abstract contract CounterActions {
     }
 }
 
-/// @notice Batcher: postVerifyAndExecuteOrSaveExecutionsFromBatch + incrementProxy in one tx (local mode only).
+/// @notice Batcher: postAndVerifyBatch + incrementProxy in one tx (local mode only).
 contract Batcher {
     function execute(
         EEZ rollups,
@@ -158,7 +152,7 @@ contract Batcher {
             callData: "",
             proofs: proofs
         });
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
+        rollups.postAndVerifyBatch(batch);
         cap.incrementProxy();
     }
 }
@@ -220,15 +214,16 @@ contract ExecuteL2 is Script, CounterActions {
         address capAddr = vm.envAddress("COUNTER_AND_PROXY");
 
         vm.startBroadcast();
-        CrossChainManagerL2(managerAddr).executeIncomingCrossChainCall(
-            counterL2Addr,
-            0,
-            _incrementCallData(),
-            capAddr,
-            MAINNET_ROLLUP_ID,
-            _l2Entries(counterL2Addr, capAddr),
-            noLookupCalls()
-        );
+        EEZL2(managerAddr)
+            .executeIncomingCrossChainCall(
+                counterL2Addr,
+                0,
+                _incrementCallData(),
+                capAddr,
+                MAINNET_ROLLUP_ID,
+                _l2Entries(counterL2Addr, capAddr),
+                noLookupCalls()
+            );
 
         console.log("done");
         console.log("L2 counter=%s", Counter(counterL2Addr).counter());
@@ -236,7 +231,7 @@ contract ExecuteL2 is Script, CounterActions {
     }
 }
 
-/// @title Execute — local mode: postVerifyAndExecuteOrSaveExecutionsFromBatch + incrementProxy via Batcher
+/// @title Execute — local mode: postAndVerifyBatch + incrementProxy via Batcher
 /// Env: ROLLUPS, COUNTER_L2, COUNTER_AND_PROXY
 contract Execute is Script, CounterActions {
     function run() external {

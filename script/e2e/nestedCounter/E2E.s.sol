@@ -3,24 +3,12 @@ pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../../src/EEZ.sol";
-import {CrossChainManagerL2} from "../../../src/L2/CrossChainManagerL2.sol";
-import {ICrossChainManager} from "../../../src/ICrossChainManager.sol";
-import {
-    StateDelta,
-    L2ToL1Call,
-    ExpectedL1ToL2Call,
-    ExecutionEntry,
-    LookupCall
-} from "../../../src/ICrossChainManager.sol";
+import {EEZL2} from "../../../src/L2/EEZL2.sol";
+import {IEEZ} from "../../../src/IEEZ.sol";
+import {StateDelta, L2ToL1Call, ExpectedL1ToL2Call, ExecutionEntry, LookupCall} from "../../../src/IEEZ.sol";
 import {Counter, CounterAndProxy} from "../../../test/mocks/CounterContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
-import {
-    Action,
-    actionHash,
-    noLookupCalls,
-    getOrCreateProxy,
-    RollingHashBuilder
-} from "../shared/E2EHelpers.sol";
+import {Action, actionHash, noLookupCalls, getOrCreateProxy, RollingHashBuilder} from "../shared/E2EHelpers.sol";
 
 // ═══════════════════════════════════════════════════════════════════════
 //  NestedCounter scenario — exercises ExecutionEntry.expectedL1ToL2Calls[] (two-sided)
@@ -231,13 +219,13 @@ contract DeployL2 is Script {
         address counterL1Addr = vm.envAddress("COUNTER_L1");
 
         vm.startBroadcast();
-        CrossChainManagerL2 manager = CrossChainManagerL2(managerAddr);
+        EEZL2 manager = EEZL2(managerAddr);
 
         // counterL2 — destination for the L1 entry's nested cross-chain call
         Counter counterL2 = new Counter();
 
         // Proxy on L2 for counterL1 on MAINNET — used by capL2 to reach back to L1.
-        address counterL1ProxyL2 = getOrCreateProxy(ICrossChainManager(address(manager)), counterL1Addr, MAINNET_ROLLUP_ID);
+        address counterL1ProxyL2 = getOrCreateProxy(IEEZ(address(manager)), counterL1Addr, MAINNET_ROLLUP_ID);
 
         // capL2 — CAP on L2 whose `target` is the L2-side proxy for counterL1.
         // capL2.incrementProxy() reentrant-calls counterL1 via the proxy.
@@ -262,12 +250,12 @@ contract Deploy2 is Script {
         EEZ rollups = EEZ(rollupsAddr);
 
         // L1-side proxy for counterL2 on L2 — CAP.target = this proxy.
-        address counterProxy = getOrCreateProxy(ICrossChainManager(address(rollups)), counterL2Addr, L2_ROLLUP_ID);
+        address counterProxy = getOrCreateProxy(IEEZ(address(rollups)), counterL2Addr, L2_ROLLUP_ID);
 
         CounterAndProxy cap = new CounterAndProxy(Counter(counterProxy));
 
         // Pre-compute CAP's L2-facing proxy on L1 so Execute can trigger it.
-        address capL2Proxy = getOrCreateProxy(ICrossChainManager(address(rollups)), address(cap), L2_ROLLUP_ID);
+        address capL2Proxy = getOrCreateProxy(IEEZ(address(rollups)), address(cap), L2_ROLLUP_ID);
 
         console.log("COUNTER_PROXY=%s", counterProxy);
         console.log("COUNTER_AND_PROXY=%s", address(cap));
@@ -280,7 +268,7 @@ contract Deploy2 is Script {
 //  Executes
 // ═══════════════════════════════════════════════════════════════════════
 
-/// Batcher: postVerifyAndExecuteOrSaveExecutionsFromBatch + trigger the outer entry via capL2Proxy.
+/// Batcher: postAndVerifyBatch + trigger the outer entry via capL2Proxy.
 ///          Alice is the batcher itself (msg.sender into the proxy) in local mode.
 contract Batcher {
     function execute(
@@ -319,7 +307,7 @@ contract Batcher {
             callData: "",
             proofs: proofs
         });
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
+        rollups.postAndVerifyBatch(batch);
         (bool ok,) = capL2Proxy.call(abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector));
         require(ok, "outer call failed");
     }
@@ -340,15 +328,16 @@ contract ExecuteL2 is Script, NestedActions {
         address alice = msg.sender; // SYSTEM_ADDRESS is the broadcaster; it stands in for "alice on MAINNET"
         console.log("ExecuteL2: alice=%s capL2=%s counterL1=%s", alice, capL2Addr, counterL1Addr);
 
-        CrossChainManagerL2(managerAddr).executeIncomingCrossChainCall(
-            capL2Addr,
-            0,
-            abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),
-            alice,
-            MAINNET_ROLLUP_ID,
-            _l2Entries(counterL1Addr, capL2Addr, alice),
-            noLookupCalls()
-        );
+        EEZL2(managerAddr)
+            .executeIncomingCrossChainCall(
+                capL2Addr,
+                0,
+                abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),
+                alice,
+                MAINNET_ROLLUP_ID,
+                _l2Entries(counterL1Addr, capL2Addr, alice),
+                noLookupCalls()
+            );
 
         console.log("done");
         console.log("capL2.counter=%s", CounterAndProxy(capL2Addr).counter());
@@ -357,7 +346,7 @@ contract ExecuteL2 is Script, NestedActions {
     }
 }
 
-/// Execute — local mode: postVerifyAndExecuteOrSaveExecutionsFromBatch + trigger via Batcher.
+/// Execute — local mode: postAndVerifyBatch + trigger via Batcher.
 /// Env: ROLLUPS, PROOF_SYSTEM, COUNTER_L2, COUNTER_AND_PROXY, CAP_L2_PROXY
 contract Execute is Script, NestedActions {
     function run() external {

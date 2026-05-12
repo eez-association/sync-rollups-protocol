@@ -2,20 +2,14 @@
 pragma solidity ^0.8.28;
 
 import {CrossChainProxy} from "../CrossChainProxy.sol";
-import {
-    L2ToL1Call,
-    ExpectedL1ToL2Call,
-    LookupCall,
-    ExecutionEntry,
-    ProxyInfo
-} from "../ICrossChainManager.sol";
-import {CrossChainManagerBase} from "../CrossChainManagerBase.sol";
+import {L2ToL1Call, ExpectedL1ToL2Call, LookupCall, ExecutionEntry, ProxyInfo} from "../IEEZ.sol";
+import {EEZBase} from "../EEZBase.sol";
 
-/// @title CrossChainManagerL2
+/// @title EEZL2
 /// @notice L2-side contract for cross-chain execution via pre-computed execution tables
 /// @dev No rollups, no state deltas, no ZK proofs. System address loads execution tables,
-///      which are consumed sequentially via proxy calls (executeL1ToL2Call).
-contract CrossChainManagerL2 is CrossChainManagerBase {
+///      which are consumed sequentially via proxy calls (executeCrossChainCall).
+contract EEZL2 is EEZBase {
     /// @notice The rollup ID this L2 belongs to
     uint256 public immutable ROLLUP_ID;
 
@@ -38,7 +32,7 @@ contract CrossChainManagerL2 is CrossChainManagerBase {
     uint256 public executionIndex;
 
     // Rolling-hash tag constants and the `_rollingHash` transient accumulator live on
-    // `CrossChainManagerBase` (shared with the L1 `EEZ` contract).
+    // `EEZBase` (shared with the L1 `EEZ` contract).
 
     // ── Transient execution state (3 variables) ──
 
@@ -192,7 +186,7 @@ contract CrossChainManagerL2 is CrossChainManagerBase {
     /// @param sourceAddress The original caller address (msg.sender as seen by the proxy)
     /// @param callData The original calldata sent to the proxy
     /// @return result The return data from the execution
-    function executeL1ToL2Call(address sourceAddress, bytes calldata callData)
+    function executeCrossChainCall(address sourceAddress, bytes calldata callData)
         external
         payable
         returns (bytes memory result)
@@ -325,7 +319,10 @@ contract CrossChainManagerL2 is CrossChainManagerBase {
 
         // 1. ExpectedL1ToL2Call priority. The `++` above is the commit; if we fall through, every
         //    fallback path reverts and the EVM rolls the bump back.
-        if (idx < entry.expectedL1ToL2Calls.length && entry.expectedL1ToL2Calls[idx].crossChainCallHash == crossChainCallHash) {
+        if (
+            idx < entry.expectedL1ToL2Calls.length
+                && entry.expectedL1ToL2Calls[idx].crossChainCallHash == crossChainCallHash
+        ) {
             ExpectedL1ToL2Call storage nested = entry.expectedL1ToL2Calls[idx];
             uint256 nestedNumber = idx + 1; // 1-indexed
             emit NestedActionConsumed(_currentEntryIndex, nestedNumber, crossChainCallHash, nested.callCount);
@@ -368,15 +365,42 @@ contract CrossChainManagerL2 is CrossChainManagerBase {
         return sc.returnData;
     }
 
+    /// @notice Top-level fallback: scan persistent `lookupCalls` for a `LookupCall` with
+    ///         `failed=true` matching `(crossChainCallHash, callNumber=0, lastNestedActionConsumed=0)`.
+    ///         The (0,0) lookup key denotes top-level context — disjoint from the nested
+    ///         fallback path which always observes `callNumber > 0`. On match,
+    ///         `_resolveLookupCall` reverts with the cached `returnData`; on no match,
+    ///         returns so the caller reverts `ExecutionNotFound`.
+    function _tryRevertedTopLevelLookup(bytes32 crossChainCallHash) internal view {
+        for (uint256 i = 0; i < lookupCalls.length; i++) {
+            LookupCall storage sc = lookupCalls[i];
+            if (
+                sc.failed && sc.crossChainCallHash == crossChainCallHash && sc.callNumber == 0
+                    && sc.lastNestedActionConsumed == 0
+            ) {
+                _resolveLookupCall(sc); // always reverts (sc.failed == true)
+            }
+        }
+    }
+
     /// @notice Consumes the next execution entry, executes calls, and verifies rolling hash
+    /// @dev Miss path: when the cursor is out of bounds or the next entry's `proxyEntryHash` doesn't
+    ///      match, `_tryRevertedTopLevelLookup` scans persistent `lookupCalls` for a `failed=true`
+    ///      `LookupCall` keyed by `(crossChainCallHash, callNumber=0, lastNestedActionConsumed=0)`.
+    ///      On match, that helper reverts with the cached `returnData` (so the caller's `try/catch`
+    ///      observes the prover-specified revert). On no match the helper returns and we revert
+    ///      `ExecutionNotFound`. The cursor is NOT advanced on the miss path.
     /// @param crossChainCallHash The expected action input hash for the next entry
     /// @return result The pre-computed return data from the action
     function _consumeAndExecute(bytes32 crossChainCallHash) internal returns (bytes memory result) {
-        uint256 idx = executionIndex++;
-        if (idx >= executions.length) revert ExecutionNotFound();
-
+        uint256 idx = executionIndex;
+        if (idx >= executions.length || executions[idx].proxyEntryHash != crossChainCallHash) {
+            // Try reverted-lookup fallback (always reverts on match); otherwise ExecutionNotFound
+            _tryRevertedTopLevelLookup(crossChainCallHash);
+            revert ExecutionNotFound();
+        }
+        executionIndex = idx + 1;
         ExecutionEntry storage entry = executions[idx];
-        if (entry.proxyEntryHash != crossChainCallHash) revert ExecutionNotFound();
 
         emit ExecutionConsumed(crossChainCallHash, idx);
 

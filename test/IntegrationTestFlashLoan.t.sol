@@ -4,16 +4,9 @@ pragma solidity ^0.8.28;
 import {Test, console} from "forge-std/Test.sol";
 import {EEZ, RollupConfig, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../src/EEZ.sol";
 import {Rollup} from "../src/rollupContract/Rollup.sol";
-import {CrossChainManagerL2} from "../src/L2/CrossChainManagerL2.sol";
+import {EEZL2} from "../src/L2/EEZL2.sol";
 import {CrossChainProxy} from "../src/CrossChainProxy.sol";
-import {
-    ExecutionEntry,
-    StateDelta,
-    L2ToL1Call,
-    ExpectedL1ToL2Call,
-    LookupCall,
-    ProxyInfo
-} from "../src/ICrossChainManager.sol";
+import {ExecutionEntry, StateDelta, L2ToL1Call, ExpectedL1ToL2Call, LookupCall, ProxyInfo} from "../src/IEEZ.sol";
 import {MockProofSystem} from "./mocks/MockProofSystem.sol";
 import {Bridge} from "../src/periphery/Bridge.sol";
 import {WrappedToken} from "../src/periphery/WrappedToken.sol";
@@ -61,7 +54,7 @@ contract IntegrationTestFlashLoan is Test {
     Rollup public l2Manager;
 
     // ── L2 contracts ──
-    CrossChainManagerL2 public managerL2;
+    EEZL2 public managerL2;
 
     // ── Bridge contracts ──
     Bridge public bridgeL1;
@@ -111,7 +104,7 @@ contract IntegrationTestFlashLoan is Test {
             bytes32[] memory vks = new bytes32[](1);
             vks[0] = DEFAULT_VK;
             Rollup burnRollup = new Rollup(address(rollups), address(this), 1, psList, vks);
-            rollups.createRollup(address(burnRollup), bytes32(0));
+            rollups.registerRollup(address(burnRollup), bytes32(0));
         }
         {
             address[] memory psList = new address[](1);
@@ -119,12 +112,12 @@ contract IntegrationTestFlashLoan is Test {
             bytes32[] memory vks = new bytes32[](1);
             vks[0] = DEFAULT_VK;
             l2Manager = new Rollup(address(rollups), address(this), 1, psList, vks);
-            uint256 rid = rollups.createRollup(address(l2Manager), keccak256("l2-initial-state"));
+            uint256 rid = rollups.registerRollup(address(l2Manager), keccak256("l2-initial-state"));
             require(rid == L2_ROLLUP_ID, "expected L2_ROLLUP_ID = 1");
         }
 
         // ── L2 infrastructure ──
-        managerL2 = new CrossChainManagerL2(L2_ROLLUP_ID, SYSTEM_ADDRESS);
+        managerL2 = new EEZL2(L2_ROLLUP_ID, SYSTEM_ADDRESS);
 
         // ── Bridge deployment ──
         bridgeL1 = new Bridge();
@@ -208,7 +201,7 @@ contract IntegrationTestFlashLoan is Test {
             callData: "",
             proofs: proofs
         });
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
+        rollups.postAndVerifyBatch(batch);
     }
 
     function _noLookupCalls() internal pure returns (LookupCall[] memory) {
@@ -475,7 +468,7 @@ contract IntegrationTestFlashLoan is Test {
             revertSpan: 0
         });
 
-        // ── New block for postVerifyAndExecuteOrSaveExecutionsFromBatch ──
+        // ── New block for postAndVerifyBatch ──
         vm.roll(block.number + 1);
 
         // ── Load L2 execution table (must be same block as L1 execution) ──

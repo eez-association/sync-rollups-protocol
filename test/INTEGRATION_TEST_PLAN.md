@@ -2,7 +2,7 @@
 
 ## Context
 
-Integration tests cover cross-chain execution scenarios using the flat calls/rolling-hash model. Each test constructs `ExecutionEntry` structs with flat `calls[]` arrays, computes rolling hashes with the 4 tagged events, and verifies end-to-end execution across L1 (EEZ) and L2 (CrossChainManagerL2).
+Integration tests cover cross-chain execution scenarios using the flat calls/rolling-hash model. Each test constructs `ExecutionEntry` structs with flat `calls[]` arrays, computes rolling hashes with the 4 tagged events, and verifies end-to-end execution across L1 (EEZ) and L2 (EEZL2).
 
 ## Legend
 
@@ -75,7 +75,7 @@ Full lock -> mint -> burn -> release cycle. 4 phases:
 1. L1: lock tokens via Bridge.bridgeTokens (deferred entry)
 2. L2: mint wrapped tokens via Bridge.receiveTokens (system loads entry)
 3. L2: burn wrapped tokens via Bridge.bridgeTokens (deferred entry)
-4. L1: release original tokens via immediate entry in postVerifyAndExecuteOrSaveExecutionsFromBatch
+4. L1: release original tokens via immediate entry in postAndVerifyBatch
 
 ---
 
@@ -108,7 +108,7 @@ For nested actions (wrap inner calls):
 ## API Reference
 
 ```solidity
-postVerifyAndExecuteOrSaveExecutionsFromBatch(ExecutionEntry[] entries, StaticCall[] staticCalls, uint256 transientCount, uint256 transientStaticCallCount, uint256 blobCount, bytes callData, bytes proof)
+postAndVerifyBatch(ExecutionEntry[] entries, StaticCall[] staticCalls, uint256 transientCount, uint256 transientStaticCallCount, uint256 blobCount, bytes callData, bytes proof)
 loadExecutionTable(ExecutionEntry[] entries, StaticCall[] staticCalls)
 executeL2TX()  // no arguments, consumes next entry with actionHash == 0
 ```

@@ -5,7 +5,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
-import {ICrossChainManager} from "../ICrossChainManager.sol";
+import {IEEZ} from "../IEEZ.sol";
 import {WrappedToken} from "./WrappedToken.sol";
 
 /// @title Bridge
@@ -34,8 +34,8 @@ contract Bridge {
     //  State
     // ──────────────────────────────────────────────
 
-    /// @notice The cross-chain manager contract (EEZ on L1, CrossChainManagerL2 on L2)
-    ICrossChainManager public manager;
+    /// @notice The cross-chain manager contract (EEZ on L1, EEZL2 on L2)
+    IEEZ public manager;
 
     /// @notice This chain's rollup ID (0 for L1 mainnet)
     uint256 public rollupId;
@@ -107,7 +107,7 @@ contract Bridge {
         if (address(manager) != address(0)) revert AlreadyInitialized();
         if (_manager == address(0)) revert ZeroAddress();
         if (_admin == address(0)) revert ZeroAddress();
-        manager = ICrossChainManager(_manager);
+        manager = IEEZ(_manager);
         rollupId = _rollupId;
         admin = _admin;
     }

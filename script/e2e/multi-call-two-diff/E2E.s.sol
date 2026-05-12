@@ -3,14 +3,8 @@ pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../../src/EEZ.sol";
-import {CrossChainManagerL2} from "../../../src/L2/CrossChainManagerL2.sol";
-import {
-    StateDelta,
-    L2ToL1Call,
-    ExpectedL1ToL2Call,
-    ExecutionEntry,
-    LookupCall
-} from "../../../src/ICrossChainManager.sol";
+import {EEZL2} from "../../../src/L2/EEZL2.sol";
+import {StateDelta, L2ToL1Call, ExpectedL1ToL2Call, ExecutionEntry, LookupCall} from "../../../src/IEEZ.sol";
 import {Counter} from "../../../test/mocks/CounterContracts.sol";
 import {CallTwoDifferent} from "../../../test/mocks/MultiCallContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
@@ -177,16 +171,14 @@ contract Deploy is Script {
         address proxyA;
         try rollups.createCrossChainProxy(counterA, L2_ROLLUP_ID) returns (address p) {
             proxyA = p;
-        }
-            catch {
+        } catch {
             proxyA = rollups.computeCrossChainProxyAddress(counterA, L2_ROLLUP_ID);
         }
 
         address proxyB;
         try rollups.createCrossChainProxy(counterB, L2_ROLLUP_ID) returns (address p) {
             proxyB = p;
-        }
-            catch {
+        } catch {
             proxyB = rollups.computeCrossChainProxyAddress(counterB, L2_ROLLUP_ID);
         }
 
@@ -238,7 +230,7 @@ contract Batcher {
             callData: "",
             proofs: proofs
         });
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
+        rollups.postAndVerifyBatch(batch);
         (a, b) = caller.callBothCounters(pA, pB);
     }
 }
@@ -258,7 +250,7 @@ contract ExecuteL2 is Script, TwoDiffActions {
         address callerAddr = vm.envAddress("CALL_TWO_DIFF");
 
         vm.startBroadcast();
-        CrossChainManagerL2 m = CrossChainManagerL2(managerAddr);
+        EEZL2 m = EEZL2(managerAddr);
 
         ExecutionEntry[] memory all = _l2Entries(counterA, counterB, callerAddr);
 

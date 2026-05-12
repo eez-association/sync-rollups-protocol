@@ -2,15 +2,9 @@
 pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
-import {CrossChainManagerL2} from "../../../src/L2/CrossChainManagerL2.sol";
+import {EEZL2} from "../../../src/L2/EEZL2.sol";
 import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../../src/EEZ.sol";
-import {
-    StateDelta,
-    L2ToL1Call,
-    ExpectedL1ToL2Call,
-    ExecutionEntry,
-    LookupCall
-} from "../../../src/ICrossChainManager.sol";
+import {StateDelta, L2ToL1Call, ExpectedL1ToL2Call, ExecutionEntry, LookupCall} from "../../../src/IEEZ.sol";
 import {Counter, SelfCallerWithRevert} from "../../../test/mocks/CounterContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 import {
@@ -191,7 +185,7 @@ contract DeployL2 is Script {
         address counterL1Addr = vm.envAddress("COUNTER_L1");
 
         vm.startBroadcast();
-        CrossChainManagerL2 manager = CrossChainManagerL2(managerAddr);
+        EEZL2 manager = EEZL2(managerAddr);
 
         // Proxy for Counter@L1 on L2
         address counterProxy;
@@ -236,8 +230,7 @@ contract ExecuteL2 is Script, RevertContinueL2Actions {
         address alice = msg.sender;
         console.log("ExecuteL2: alice=%s selfCaller=%s selfCallerProxy=%s", alice, selfCallerAddr, selfCallerProxy);
 
-        CrossChainManagerL2(managerAddr)
-            .loadExecutionTable(_l2Entries(selfCallerAddr, counterL1Addr, alice), noLookupCalls());
+        EEZL2(managerAddr).loadExecutionTable(_l2Entries(selfCallerAddr, counterL1Addr, alice), noLookupCalls());
         console.log("ExecuteL2: loadExecutionTable done");
 
         // Trigger: alice calls selfCallerProxy.execute()
@@ -286,7 +279,7 @@ contract DeferredL2TXBatcher {
             callData: "",
             proofs: proofs
         });
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
+        rollups.postAndVerifyBatch(batch);
         rollups.executeL2TX(rollupId);
     }
 }
@@ -303,11 +296,7 @@ contract Execute is Script, RevertContinueL2Actions {
         vm.startBroadcast();
         DeferredL2TXBatcher batcher = new DeferredL2TXBatcher();
         batcher.execute(
-            EEZ(rollupsAddr),
-            proofSystemAddr,
-            L2_ROLLUP_ID,
-            _l1Entries(counterL1, selfCallerL2),
-            noLookupCalls()
+            EEZ(rollupsAddr), proofSystemAddr, L2_ROLLUP_ID, _l1Entries(counterL1, selfCallerL2), noLookupCalls()
         );
 
         console.log("Execute: done");

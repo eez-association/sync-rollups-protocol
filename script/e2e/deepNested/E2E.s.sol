@@ -3,17 +3,18 @@ pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../../src/EEZ.sol";
-import {CrossChainManagerL2} from "../../../src/L2/CrossChainManagerL2.sol";
-import {
-    StateDelta,
-    L2ToL1Call,
-    ExpectedL1ToL2Call,
-    ExecutionEntry,
-    LookupCall
-} from "../../../src/ICrossChainManager.sol";
+import {EEZL2} from "../../../src/L2/EEZL2.sol";
+import {StateDelta, L2ToL1Call, ExpectedL1ToL2Call, ExecutionEntry, LookupCall} from "../../../src/IEEZ.sol";
 import {Counter, CounterAndProxy, NestedCaller} from "../../../test/mocks/CounterContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
-import {Action, actionHash, noStaticCalls, noLookupCalls, crossChainCallHash, RollingHashBuilder} from "../shared/E2EHelpers.sol";
+import {
+    Action,
+    actionHash,
+    noStaticCalls,
+    noLookupCalls,
+    crossChainCallHash,
+    RollingHashBuilder
+} from "../shared/E2EHelpers.sol";
 
 // ═══════════════════════════════════════════════════════════════════════
 //  DeepNested scenario - two levels of nested actions, two-sided.
@@ -123,36 +124,21 @@ abstract contract DeepNestedActions {
     /// @dev L2 nested[1]: CAP on L2 calls counterProxyOnL2 (representing Counter on L2)
     function _l2CounterActionHash(address counterL2, address capL2) internal pure returns (bytes32) {
         return crossChainCallHash(
-            L2_ROLLUP_ID,
-            counterL2,
-            0,
-            abi.encodeWithSelector(Counter.increment.selector),
-            capL2,
-            L2_ROLLUP_ID
+            L2_ROLLUP_ID, counterL2, 0, abi.encodeWithSelector(Counter.increment.selector), capL2, L2_ROLLUP_ID
         );
     }
 
     /// @dev L2 nested[0]: NestedCaller on L2 calls capProxyOnL2 (representing CAP on L2)
     function _l2CapActionHash(address capL2, address ncL2) internal pure returns (bytes32) {
         return crossChainCallHash(
-            L2_ROLLUP_ID,
-            capL2,
-            0,
-            abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),
-            ncL2,
-            L2_ROLLUP_ID
+            L2_ROLLUP_ID, capL2, 0, abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector), ncL2, L2_ROLLUP_ID
         );
     }
 
     /// @dev L2 outer: SYSTEM-driven call to NestedCaller on L2 with source = (alice, MAINNET).
     function _l2OuterActionHash(address ncL2, address alice) internal pure returns (bytes32) {
         return crossChainCallHash(
-            L2_ROLLUP_ID,
-            ncL2,
-            0,
-            abi.encodeWithSelector(NestedCaller.callNested.selector),
-            alice,
-            MAINNET_ROLLUP_ID
+            L2_ROLLUP_ID, ncL2, 0, abi.encodeWithSelector(NestedCaller.callNested.selector), alice, MAINNET_ROLLUP_ID
         );
     }
 
@@ -194,7 +180,8 @@ abstract contract DeepNestedActions {
         });
 
         ExpectedL1ToL2Call[] memory nested = new ExpectedL1ToL2Call[](2);
-        nested[0] = ExpectedL1ToL2Call({crossChainCallHash: _capActionHash(cap, nestedCaller), callCount: 1, returnData: ""});
+        nested[0] =
+            ExpectedL1ToL2Call({crossChainCallHash: _capActionHash(cap, nestedCaller), callCount: 1, returnData: ""});
         nested[1] = ExpectedL1ToL2Call({
             crossChainCallHash: _counterActionHash(counterL2, cap), callCount: 0, returnData: abi.encode(uint256(1))
         });
@@ -245,11 +232,10 @@ abstract contract DeepNestedActions {
         });
 
         ExpectedL1ToL2Call[] memory nested = new ExpectedL1ToL2Call[](2);
-        nested[0] = ExpectedL1ToL2Call({crossChainCallHash: _l2CapActionHash(capL2, ncL2), callCount: 1, returnData: ""});
+        nested[0] =
+            ExpectedL1ToL2Call({crossChainCallHash: _l2CapActionHash(capL2, ncL2), callCount: 1, returnData: ""});
         nested[1] = ExpectedL1ToL2Call({
-            crossChainCallHash: _l2CounterActionHash(counterL2, capL2),
-            callCount: 0,
-            returnData: abi.encode(uint256(1))
+            crossChainCallHash: _l2CounterActionHash(counterL2, capL2), callCount: 0, returnData: abi.encode(uint256(1))
         });
 
         entries = new ExecutionEntry[](1);
@@ -271,7 +257,7 @@ contract DeployL2 is Script {
         address managerAddr = vm.envAddress("MANAGER_L2");
 
         vm.startBroadcast();
-        CrossChainManagerL2 manager = CrossChainManagerL2(managerAddr);
+        EEZL2 manager = EEZL2(managerAddr);
 
         // Real Counter contract on L2 — destination of the deepest reentrant call.
         Counter counter = new Counter();
@@ -394,7 +380,7 @@ contract Batcher {
             callData: "",
             proofs: proofs
         });
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
+        rollups.postAndVerifyBatch(batch);
         (bool ok,) = ncProxy.call(abi.encodeWithSelector(NestedCaller.callNested.selector));
         require(ok, "outer call failed");
     }
@@ -456,15 +442,16 @@ contract ExecuteL2 is Script, DeepNestedActions {
         vm.startBroadcast();
         address alice = msg.sender;
 
-        CrossChainManagerL2(managerAddr).executeIncomingCrossChainCall(
-            ncL2,
-            0,
-            abi.encodeWithSelector(NestedCaller.callNested.selector),
-            alice,
-            MAINNET_ROLLUP_ID,
-            _l2Entries(counterL2, capL2, ncL2, alice),
-            noLookupCalls()
-        );
+        EEZL2(managerAddr)
+            .executeIncomingCrossChainCall(
+                ncL2,
+                0,
+                abi.encodeWithSelector(NestedCaller.callNested.selector),
+                alice,
+                MAINNET_ROLLUP_ID,
+                _l2Entries(counterL2, capL2, ncL2, alice),
+                noLookupCalls()
+            );
 
         console.log("done");
         console.log("nc.counter=%s", NestedCaller(ncL2).counter());

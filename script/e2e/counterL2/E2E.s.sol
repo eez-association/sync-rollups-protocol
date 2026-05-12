@@ -3,14 +3,8 @@ pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../../src/EEZ.sol";
-import {CrossChainManagerL2} from "../../../src/L2/CrossChainManagerL2.sol";
-import {
-    StateDelta,
-    L2ToL1Call,
-    ExpectedL1ToL2Call,
-    ExecutionEntry,
-    LookupCall
-} from "../../../src/ICrossChainManager.sol";
+import {EEZL2} from "../../../src/L2/EEZL2.sol";
+import {StateDelta, L2ToL1Call, ExpectedL1ToL2Call, ExecutionEntry, LookupCall} from "../../../src/IEEZ.sol";
 import {Counter, CounterAndProxy} from "../../../test/mocks/CounterContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 import {
@@ -31,7 +25,7 @@ import {
 //    4. Entry consumed, returns abi.encode(1); CAP (L2): counter=1, targetCounter=1
 //
 //  L1 side (Execute):
-//    1. postVerifyAndExecuteOrSaveExecutionsFromBatch loads ONE deferred entry
+//    1. postAndVerifyBatch loads ONE deferred entry
 //       (proxyEntryHash=0 — no source-side hash to match; system-driven) whose
 //       L2ToL1Calls describe the inbound call from CAP (L2) to Counter (L1)
 //    2. executeL2TX(L2_ROLLUP_ID) drains the entry via _processNCalls
@@ -130,7 +124,7 @@ contract DeployL2 is Script {
         address counterL1Addr = vm.envAddress("COUNTER_L1");
 
         vm.startBroadcast();
-        CrossChainManagerL2 manager = CrossChainManagerL2(managerAddr);
+        EEZL2 manager = EEZL2(managerAddr);
 
         address counterProxy;
         try manager.createCrossChainProxy(counterL1Addr, MAINNET_ROLLUP_ID) returns (address p) {
@@ -166,7 +160,7 @@ contract ExecuteL2 is Script, CounterL2Actions {
         console.log("ExecuteL2: manager=%s counterL1=%s cap=%s", managerAddr, counterL1Addr, capAddr);
 
         vm.startBroadcast();
-        CrossChainManagerL2(managerAddr).loadExecutionTable(_l2Entries(counterL1Addr, capAddr), noLookupCalls());
+        EEZL2(managerAddr).loadExecutionTable(_l2Entries(counterL1Addr, capAddr), noLookupCalls());
         console.log("ExecuteL2: loadExecutionTable done");
 
         CounterAndProxy(capAddr).incrementProxy();
@@ -217,7 +211,7 @@ contract DeferredL2TXBatcher {
             callData: "",
             proofs: proofs
         });
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
+        rollups.postAndVerifyBatch(batch);
         rollups.executeL2TX(rollupId);
     }
 }
@@ -237,11 +231,7 @@ contract Execute is Script, CounterL2Actions {
         vm.startBroadcast();
         DeferredL2TXBatcher batcher = new DeferredL2TXBatcher();
         batcher.execute(
-            EEZ(rollupsAddr),
-            proofSystemAddr,
-            L2_ROLLUP_ID,
-            _l1Entries(counterL1Addr, capL2Addr),
-            noLookupCalls()
+            EEZ(rollupsAddr), proofSystemAddr, L2_ROLLUP_ID, _l1Entries(counterL1Addr, capL2Addr), noLookupCalls()
         );
 
         console.log("done");

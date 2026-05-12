@@ -29,7 +29,7 @@ For the multi-prover design (sub-batch shape, per-PS public-inputs construction,
 
 #### Action hash (off-chain helper)
 
-Tooling computes `crossChainCallHash` from six fields (`targetRollupId, targetAddress, value, data, sourceAddress, sourceRollupId`). The on-chain interface (`ICrossChainManager.sol`) does **not** declare an `Action` struct — contracts call the `public pure` helper `computeCrossChainCallHash(...)` directly with the six fields. A compatibility `Action` struct exists in `script/e2e/shared/E2EHelpers.sol` for tooling that prefers a single-arg `keccak256(abi.encode(action))` form; both routes produce the same preimage.
+Tooling computes `crossChainCallHash` from six fields (`targetRollupId, targetAddress, value, data, sourceAddress, sourceRollupId`). The on-chain interface (`IEEZ.sol`) does **not** declare an `Action` struct — contracts call the `public pure` helper `computeCrossChainCallHash(...)` directly with the six fields. A compatibility `Action` struct exists in `script/e2e/shared/E2EHelpers.sol` for tooling that prefers a single-arg `keccak256(abi.encode(action))` form; both routes produce the same preimage.
 
 #### StateDelta
 
@@ -167,7 +167,7 @@ struct RollupVerification {
 
 `_transientExecutions` and `_transientLookupCalls` are declared as regular storage arrays (not Solidity `transient`) because the `transient` data location does not yet support reference types with nested dynamic arrays. They are cleared at the end of every `postBatch` via `delete`, recovering most of the gas cost via SSTORE-to-zero refunds.
 
-#### CrossChainManagerL2.sol (L2)
+#### EEZL2.sol (L2)
 
 | Slot | Variable | Type | Notes |
 |------|----------|------|-------|
@@ -195,14 +195,14 @@ The transient variables are read by `executeCrossChainCall` (to route to `_consu
 
 ### B.1 Rollups.sol (L1)
 
-#### `createRollup`
+#### `registerRollup`
 
 ```solidity
-function createRollup(address rollupContract, bytes32 initialState)
+function registerRollup(address rollupContract, bytes32 initialState)
     external returns (uint256 rollupId)
 ```
 
-Permissionless. `rollupId = rollupCounter++`; `rollups[rollupId] = RollupConfig(rollupContract, initialState, 0)`. Fires `IRollup(rollupContract).rollupContractRegistered(rollupId)` so the manager learns its id (one-shot init callback). The caller is expected to deploy their `IRollup`-conforming manager (with desired proofSystems / vkeys / threshold / ownership baked in) before calling `createRollup`.
+Permissionless. `rollupId = rollupCounter++`; `rollups[rollupId] = RollupConfig(rollupContract, initialState, 0)`. Fires `IRollup(rollupContract).rollupContractRegistered(rollupId)` so the manager learns its id (one-shot init callback). The caller is expected to deploy their `IRollup`-conforming manager (with desired proofSystems / vkeys / threshold / ownership baked in) before calling `registerRollup`.
 
 Emits `RollupCreated(rollupId, rollupContract, initialState)`.
 
@@ -361,7 +361,7 @@ bytecodeHash = keccak256(abi.encodePacked(
 ))
 address      = address(uint160(uint256(keccak256(abi.encodePacked(
                    bytes1(0xff),
-                   address(this),    // deployer = the manager (Rollups on L1, CrossChainManagerL2 on L2)
+                   address(this),    // deployer = the manager (Rollups on L1, EEZL2 on L2)
                    salt,
                    bytecodeHash
                )))))
@@ -538,7 +538,7 @@ if (!ps.verify(proof, publicInputsHash)) revert InvalidProof();
 
 Each `IProofSystem` is supplied per sub-batch; there is no central `ZK_VERIFIER` immutable.
 
-### B.2 CrossChainManagerL2.sol (L2)
+### B.2 EEZL2.sol (L2)
 
 The L2 contract mirrors the L1 contract's execution logic but with no rollup registry, no state deltas, no proofs, no per-rollup queue map (single rollup), and no transient/deferred split.
 
@@ -606,13 +606,13 @@ Self-only function used to detect STATICCALL context. If `msg.sender == address(
 (detectSuccess, _) = address(this).call(abi.encodeCall(staticCheck, ()))
 if (!detectSuccess):
     // STATICCALL context — look up cached result
-    (success, result) = MANAGER.staticcall(abi.encodeCall(ICrossChainManager.staticCallLookup, (msg.sender, msg.data)))
+    (success, result) = MANAGER.staticcall(abi.encodeCall(IEEZ.staticCallLookup, (msg.sender, msg.data)))
 else:
     // Normal context — execute cross-chain call
-    (success, result) = MANAGER.call{value: msg.value}(abi.encodeCall(ICrossChainManager.executeCrossChainCall, (msg.sender, msg.data)))
+    (success, result) = MANAGER.call{value: msg.value}(abi.encodeCall(IEEZ.executeCrossChainCall, (msg.sender, msg.data)))
 
 if (success):
-    result = abi.decode(result, (bytes))    // unwrap the inner bytes returned by ICrossChainManager.*
+    result = abi.decode(result, (bytes))    // unwrap the inner bytes returned by IEEZ.*
 // assembly return/revert raw result
 ```
 
@@ -1111,7 +1111,7 @@ The two view-only external calls during proof verification (`IRollup.getVkeysFro
 
 | Function | Who can call |
 |---|---|
-| `createRollup` | Anyone |
+| `registerRollup` | Anyone |
 | `postBatch` | Anyone (proofs verify authorization) |
 | `executeCrossChainCall` (L1 / L2) | Registered proxies only |
 | `executeL2TX(rollupId)` (L1) | Anyone (must not be inside execution) |

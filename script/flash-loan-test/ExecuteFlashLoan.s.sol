@@ -3,11 +3,11 @@ pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../src/EEZ.sol";
-import {CrossChainManagerL2} from "../../src/L2/CrossChainManagerL2.sol";
+import {EEZL2} from "../../src/L2/EEZL2.sol";
 import {Bridge} from "../../src/periphery/Bridge.sol";
 import {FlashLoan} from "../../src/periphery/defiMock/FlashLoan.sol";
 import {FlashLoanBridgeExecutor} from "../../src/periphery/defiMock/FlashLoanBridgeExecutor.sol";
-import {ExecutionEntry, StateDelta, L2ToL1Call, ExpectedL1ToL2Call, LookupCall} from "../../src/ICrossChainManager.sol";
+import {ExecutionEntry, StateDelta, L2ToL1Call, ExpectedL1ToL2Call, LookupCall} from "../../src/IEEZ.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
@@ -42,7 +42,7 @@ contract ExecuteFlashLoanL2 is Script {
     )
         external
     {
-        CrossChainManagerL2 manager = CrossChainManagerL2(managerL2);
+        EEZL2 manager = EEZL2(managerL2);
 
         // Forward receiveTokens: L1 -> L2
         bytes memory fwdReceiveTokensCalldata = abi.encodeCall(
@@ -151,7 +151,7 @@ contract ExecuteFlashLoanL2 is Script {
     }
 }
 
-/// @title FlashLoanBatcher -- postVerifyAndExecuteOrSaveExecutionsFromBatch + executor.execute() in single tx
+/// @title FlashLoanBatcher -- postAndVerifyBatch + executor.execute() in single tx
 contract FlashLoanBatcher {
     uint256 constant L2_ROLLUP_ID = 1;
 
@@ -191,7 +191,7 @@ contract FlashLoanBatcher {
             callData: "",
             proofs: proofs
         });
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
+        rollups.postAndVerifyBatch(batch);
         executor.execute();
     }
 }
@@ -348,7 +348,7 @@ contract ExecuteFlashLoanL1 is Script {
 
         LookupCall[] memory noLookupCalls = new LookupCall[](0);
 
-        // Batcher ensures postVerifyAndExecuteOrSaveExecutionsFromBatch + execute happen in the same block
+        // Batcher ensures postAndVerifyBatch + execute happen in the same block
         FlashLoanBatcher batcher = new FlashLoanBatcher();
         batcher.execute(rollups, proofSystemAddr, entries, noLookupCalls, FlashLoanBridgeExecutor(executorL1));
 

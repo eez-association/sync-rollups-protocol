@@ -41,14 +41,14 @@ struct ExpectedL1ToL2Call {
 }
 
 /// @notice Represents an execution entry with pre-computed calls and return hash verification
-/// @dev Execution entries always SUCCEED at the top level — `executeL1ToL2Call` returns
+/// @dev Execution entries always SUCCEED at the top level — `executeCrossChainCall` returns
 ///      `entry.returnData` as success. There is no `failed` flag because **a reverting
 ///      top-level call isn't an execution; it's a lookup**. Reverting cross-chain results
 ///      are expressed via `LookupCall { failed: true }` consumed through `staticCallLookup`
 ///      (static-context entry point) or the failed-reentry fallback in `_consumeNestedAction`.
 ///      Naturally-reverting INNER calls inside an entry are still expressible: the proxy
 ///      `.call` returns `(false, retData)` and the rolling hash captures it via `CALL_END`;
-///      the entry's outer `executeL1ToL2Call` still returns success with `entry.returnData`.
+///      the entry's outer `executeCrossChainCall` still returns success with `entry.returnData`.
 ///      See `src/TODO.md` for the design discussion.
 /// @dev `destinationRollupId` is the rollup whose queue this entry is routed to on L1
 ///      (per-rollup queue model). Must match the rollupId derived from the consumer
@@ -67,7 +67,7 @@ struct ExpectedL1ToL2Call {
 ///        callCount + Σ nestedActions[i].callCount == calls.length
 ///      The on-chain `_currentCallNumber` cursor advances monotonically over `calls[]` —
 ///      there's only one cursor across the whole tree. When a top-level call triggers a
-///      reentrant cross-chain proxy invocation, control re-enters via `executeL1ToL2Call`
+///      reentrant cross-chain proxy invocation, control re-enters via `executeCrossChainCall`
 ///      → `_consumeNestedAction`, which calls `_processNCalls(nestedActions[i].callCount)`
 ///      on the SAME `calls[]` array, advancing the same cursor. Outer iteration resumes
 ///      where the cursor left off after the nested frame returns.
@@ -100,7 +100,7 @@ struct ExecutionEntry {
 
 /// @notice Pre-computed result for a lookup call or a call that reverts
 /// @dev Used for read-only calls and for calls whose revert needs to be replayed.
-///      Loaded via postVerifyAndExecuteOrSaveExecutionsFromBatch (L1) or loadExecutionTable (L2).
+///      Loaded via postAndVerifyBatch (L1) or loadExecutionTable (L2).
 ///      All proxies referenced by `calls` must be deployed before staticCallLookup is called.
 struct LookupCall {
     bytes32 crossChainCallHash;
@@ -132,10 +132,10 @@ struct ProxyInfo {
     uint64 originalRollupId;
 }
 
-/// @title ICrossChainManager
-/// @notice Interface for cross-chain manager contracts (L1 EEZ and L2 CrossChainManagerL2)
-interface ICrossChainManager {
-    function executeL1ToL2Call(address sourceAddress, bytes calldata callData)
+/// @title IEEZ
+/// @notice Interface for cross-chain manager contracts (L1 EEZ and L2 EEZL2)
+interface IEEZ {
+    function executeCrossChainCall(address sourceAddress, bytes calldata callData)
         external
         payable
         returns (bytes memory result);

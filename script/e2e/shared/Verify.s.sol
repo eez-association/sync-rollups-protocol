@@ -3,13 +3,7 @@ pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 import {Vm} from "forge-std/Vm.sol";
-import {
-    StateDelta,
-    L2ToL1Call,
-    ExpectedL1ToL2Call,
-    ExecutionEntry,
-    LookupCall
-} from "../../../src/ICrossChainManager.sol";
+import {StateDelta, L2ToL1Call, ExpectedL1ToL2Call, ExecutionEntry, LookupCall} from "../../../src/IEEZ.sol";
 
 // ══════════════════════════════════════════════════════════════════════
 //  Shared helpers — event signatures + formatting
@@ -66,13 +60,12 @@ abstract contract VerifyHelpers is Script {
     function _printEntryDetailed(uint256 idx, ExecutionEntry memory e) internal pure {
         bool immediate = e.proxyEntryHash == bytes32(0);
         console.log(
-            "  [%s] %s  crossChainCallHash=%s",
-            idx,
-            immediate ? "IMMEDIATE" : "DEFERRED",
-            vm.toString(e.proxyEntryHash)
+            "  [%s] %s  crossChainCallHash=%s", idx, immediate ? "IMMEDIATE" : "DEFERRED", vm.toString(e.proxyEntryHash)
         );
         console.log("      rollingHash: %s", vm.toString(e.rollingHash));
-        console.log("      callCount=%s  calls=%s  nested=%s", e.callCount, e.L2ToL1Calls.length, e.expectedL1ToL2Calls.length);
+        console.log(
+            "      callCount=%s  calls=%s  nested=%s", e.callCount, e.L2ToL1Calls.length, e.expectedL1ToL2Calls.length
+        );
         for (uint256 d = 0; d < e.stateDeltas.length; d++) {
             StateDelta memory sd = e.stateDeltas[d];
             console.log(

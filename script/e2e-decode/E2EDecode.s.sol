@@ -5,7 +5,7 @@ import {Script, console} from "forge-std/Script.sol";
 import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../src/EEZ.sol";
 import {Rollup} from "../../src/rollupContract/Rollup.sol";
 import {IProofSystem} from "../../src/IProofSystem.sol";
-import {ExecutionEntry, StateDelta, L2ToL1Call, ExpectedL1ToL2Call, LookupCall} from "../../src/ICrossChainManager.sol";
+import {ExecutionEntry, StateDelta, L2ToL1Call, ExpectedL1ToL2Call, LookupCall} from "../../src/IEEZ.sol";
 import {Counter, CounterAndProxy} from "../../test/mocks/CounterContracts.sol";
 
 contract MockProofSystem is IProofSystem {
@@ -14,8 +14,8 @@ contract MockProofSystem is IProofSystem {
     }
 }
 
-/// @notice Helper that executes postVerifyAndExecuteOrSaveExecutionsFromBatch + incrementProxy in a single transaction.
-/// @dev Same-block requirement for executeL1ToL2Call after postVerifyAndExecuteOrSaveExecutionsFromBatch.
+/// @notice Helper that executes postAndVerifyBatch + incrementProxy in a single transaction.
+/// @dev Same-block requirement for executeL1ToL2Call after postAndVerifyBatch.
 contract Batcher {
     function execute(
         EEZ rollups,
@@ -49,7 +49,7 @@ contract Batcher {
             callData: "",
             proofs: proofs
         });
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
+        rollups.postAndVerifyBatch(batch);
         cap.incrementProxy();
     }
 }
@@ -71,10 +71,10 @@ contract E2EDeploy is Script {
         vks[0] = DEFAULT_VK;
 
         Rollup burn = new Rollup(address(rollups), msg.sender, 1, psList, vks);
-        rollups.createRollup(address(burn), bytes32(0));
+        rollups.registerRollup(address(burn), bytes32(0));
 
         Rollup l2Manager = new Rollup(address(rollups), msg.sender, 1, psList, vks);
-        uint256 rid = rollups.createRollup(address(l2Manager), keccak256("l2-initial-state"));
+        uint256 rid = rollups.registerRollup(address(l2Manager), keccak256("l2-initial-state"));
         require(rid == 1, "expected L2 rollupId = 1");
 
         Counter counterL2 = new Counter();
@@ -91,7 +91,7 @@ contract E2EDeploy is Script {
     }
 }
 
-/// @title E2EExecute -- postVerifyAndExecuteOrSaveExecutionsFromBatch + incrementProxy via Batcher (single tx)
+/// @title E2EExecute -- postAndVerifyBatch + incrementProxy via Batcher (single tx)
 contract E2EExecute is Script {
     function run(address rollupsAddr, address proofSystemAddr, address counterL2Addr, address counterAndProxyAddr)
         external

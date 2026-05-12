@@ -5,7 +5,7 @@ import {Script, console} from "forge-std/Script.sol";
 import {EEZ} from "../../src/EEZ.sol";
 import {Rollup} from "../../src/rollupContract/Rollup.sol";
 import {IProofSystem} from "../../src/IProofSystem.sol";
-import {CrossChainManagerL2} from "../../src/L2/CrossChainManagerL2.sol";
+import {EEZL2} from "../../src/L2/EEZL2.sol";
 
 /// @notice Mock proof system that accepts all proofs.
 contract MockProofSystem is IProofSystem {
@@ -33,7 +33,7 @@ contract DeployEEZL1 is Script {
             bytes32[] memory vks = new bytes32[](1);
             vks[0] = DEFAULT_VK;
             Rollup burnRollup = new Rollup(address(rollups), msg.sender, 1, psList, vks);
-            rollups.createRollup(address(burnRollup), bytes32(0));
+            rollups.registerRollup(address(burnRollup), bytes32(0));
         }
 
         address[] memory psList2 = new address[](1);
@@ -41,7 +41,7 @@ contract DeployEEZL1 is Script {
         bytes32[] memory vks2 = new bytes32[](1);
         vks2[0] = DEFAULT_VK;
         Rollup l2Manager = new Rollup(address(rollups), msg.sender, 1, psList2, vks2);
-        uint256 rid = rollups.createRollup(address(l2Manager), keccak256("l2-initial-state"));
+        uint256 rid = rollups.registerRollup(address(l2Manager), keccak256("l2-initial-state"));
         require(rid == 1, "expected L2 rollupId = 1");
 
         console.log("PROOF_SYSTEM=%s", address(ps));
@@ -52,11 +52,11 @@ contract DeployEEZL1 is Script {
     }
 }
 
-/// @title DeployManagerL2 — Deploy CrossChainManagerL2
+/// @title DeployManagerL2 — Deploy EEZL2
 contract DeployManagerL2 is Script {
     function run(uint256 rollupId, address systemAddress) external {
         vm.startBroadcast();
-        CrossChainManagerL2 manager = new CrossChainManagerL2(rollupId, systemAddress);
+        EEZL2 manager = new EEZL2(rollupId, systemAddress);
         console.log("MANAGER_L2=%s", address(manager));
         vm.stopBroadcast();
     }

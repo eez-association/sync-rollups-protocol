@@ -3,14 +3,8 @@ pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../../src/EEZ.sol";
-import {CrossChainManagerL2} from "../../../src/L2/CrossChainManagerL2.sol";
-import {
-    StateDelta,
-    L2ToL1Call,
-    ExpectedL1ToL2Call,
-    ExecutionEntry,
-    LookupCall
-} from "../../../src/ICrossChainManager.sol";
+import {EEZL2} from "../../../src/L2/EEZL2.sol";
+import {StateDelta, L2ToL1Call, ExpectedL1ToL2Call, ExecutionEntry, LookupCall} from "../../../src/IEEZ.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 import {
     crossChainCallHash,
@@ -150,7 +144,7 @@ contract Deploy is Script {
     }
 }
 
-/// @notice Batcher: postVerifyAndExecuteOrSaveExecutionsFromBatch + bridge() with value in one tx.
+/// @notice Batcher: postAndVerifyBatch + bridge() with value in one tx.
 contract Batcher {
     function execute(
         EEZ rollups,
@@ -189,7 +183,7 @@ contract Batcher {
             callData: "",
             proofs: proofs
         });
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
+        rollups.postAndVerifyBatch(batch);
         sender.bridge{value: msg.value}();
     }
 }
@@ -205,15 +199,10 @@ contract ExecuteL2 is Script, BridgeActions {
         address senderAddr = vm.envAddress("BRIDGE_SENDER");
 
         vm.startBroadcast();
-        CrossChainManagerL2(managerAddr).executeIncomingCrossChainCall{value: 1 ether}(
-            l2DestAddr,
-            1 ether,
-            "",
-            senderAddr,
-            MAINNET_ROLLUP_ID,
-            _l2Entries(l2DestAddr, senderAddr),
-            noLookupCalls()
-        );
+        EEZL2(managerAddr)
+        .executeIncomingCrossChainCall{
+            value: 1 ether
+        }(l2DestAddr, 1 ether, "", senderAddr, MAINNET_ROLLUP_ID, _l2Entries(l2DestAddr, senderAddr), noLookupCalls());
 
         console.log("done");
         console.log("L2 receiver balance=%s", l2DestAddr.balance);

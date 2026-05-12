@@ -104,7 +104,7 @@ Decide whether to:
 
 - [`docs/MULTI_PROVER_DESIGN.md`](../docs/MULTI_PROVER_DESIGN.md) — multi-prover refactor notes, including:
   - `rollupContractRegistered` reentrancy in `setRollupContract` (callback fires after pointer update).
-  - `createRollup` initial-state overwrite via callback → `setStateRoot`.
+  - `registerRollup` initial-state overwrite via callback → `setStateRoot`.
   - Double-registration of the same manager address for two rollupIds.
   - Handoff back to a previously-used reference manager (`rollupIdSet` permanent latch).
   - `rollupId == 0` (MAINNET) excluded from sub-batches by the strict-increasing check.

@@ -8,7 +8,7 @@
 # Standard contracts in E2E.s.sol (all read args from env vars):
 #   Deploy* contracts  → auto-discovered, run in file order (L2 suffix → L2 RPC)
 #   ExecuteL2          → L2 execution (load table on L2 and trigger any L2 user tx)
-#   Execute            → L1 execution (postVerifyAndExecuteOrSaveExecutionsFromBatch + user action via Batcher)
+#   Execute            → L1 execution (postAndVerifyBatch + user action via Batcher)
 source "$(dirname "$0")/E2EBase.sh"
 
 SOL="$1"; shift || { echo "Usage: run-local.sh <E2E.s.sol>"; exit 1; }

@@ -3,14 +3,8 @@ pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../../src/EEZ.sol";
-import {CrossChainManagerL2} from "../../../src/L2/CrossChainManagerL2.sol";
-import {
-    StateDelta,
-    L2ToL1Call,
-    ExpectedL1ToL2Call,
-    ExecutionEntry,
-    LookupCall
-} from "../../../src/ICrossChainManager.sol";
+import {EEZL2} from "../../../src/L2/EEZL2.sol";
+import {StateDelta, L2ToL1Call, ExpectedL1ToL2Call, ExecutionEntry, LookupCall} from "../../../src/IEEZ.sol";
 import {ReentrantCounter} from "../../../test/mocks/ReentrantCounter.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 import {crossChainCallHash, noLookupCalls, RollingHashBuilder} from "../shared/E2EHelpers.sol";
@@ -291,7 +285,7 @@ contract DeploySetupL2 is Script {
         address rcL2Addr = vm.envAddress("REENTRANT_L2");
 
         vm.startBroadcast();
-        CrossChainManagerL2 manager = CrossChainManagerL2(managerAddr);
+        EEZL2 manager = EEZL2(managerAddr);
 
         // Proxy for rcL1@MAINNET on L2 (rcL2's peer)
         address rcL1ProxyOnL2;
@@ -323,7 +317,7 @@ contract ExecuteL2 is Script, ReentrantActions {
         vm.startBroadcast();
         address alice = msg.sender;
 
-        CrossChainManagerL2(managerAddr).loadExecutionTable(_l2Entries(rcL1Addr, rcL2Addr, alice), noLookupCalls());
+        EEZL2(managerAddr).loadExecutionTable(_l2Entries(rcL1Addr, rcL2Addr, alice), noLookupCalls());
 
         // Trigger: alice calls rcL1ProxyOnL2.deepCall(2)
         (bool ok,) = rcL1ProxyOnL2.call(abi.encodeWithSelector(ReentrantCounter.deepCall.selector, uint256(2)));
@@ -376,7 +370,7 @@ contract Batcher {
             callData: "",
             proofs: proofs
         });
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
+        rollups.postAndVerifyBatch(batch);
         (bool ok,) = rcL1ProxyOnL1.call(abi.encodeWithSelector(ReentrantCounter.deepCall.selector, uint256(3)));
         require(ok, "L1 trigger failed");
     }

@@ -5,7 +5,7 @@ import {Script, console} from "forge-std/Script.sol";
 import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../src/EEZ.sol";
 import {Rollup} from "../../src/rollupContract/Rollup.sol";
 import {IProofSystem} from "../../src/IProofSystem.sol";
-import {ExecutionEntry, StateDelta, L2ToL1Call, ExpectedL1ToL2Call, LookupCall} from "../../src/ICrossChainManager.sol";
+import {ExecutionEntry, StateDelta, L2ToL1Call, ExpectedL1ToL2Call, LookupCall} from "../../src/IEEZ.sol";
 import {Bridge} from "../../src/periphery/Bridge.sol";
 import {_deployBridge} from "../DeployBridge.s.sol";
 
@@ -15,7 +15,7 @@ contract MockProofSystem is IProofSystem {
     }
 }
 
-/// @notice Helper that executes postVerifyAndExecuteOrSaveExecutionsFromBatch + bridgeEther in a single transaction.
+/// @notice Helper that executes postAndVerifyBatch + bridgeEther in a single transaction.
 contract BridgeBatcher {
     function execute(
         EEZ rollups,
@@ -51,7 +51,7 @@ contract BridgeBatcher {
             callData: "",
             proofs: proofs
         });
-        rollups.postVerifyAndExecuteOrSaveExecutionsFromBatch(batch);
+        rollups.postAndVerifyBatch(batch);
         bridge.bridgeEther{value: msg.value}(rollupId, destination);
     }
 }
@@ -73,10 +73,10 @@ contract E2EBridgeDeploy is Script {
         vks[0] = DEFAULT_VK;
 
         Rollup burn = new Rollup(address(rollups), msg.sender, 1, psList, vks);
-        rollups.createRollup(address(burn), bytes32(0));
+        rollups.registerRollup(address(burn), bytes32(0));
 
         Rollup l2Manager = new Rollup(address(rollups), msg.sender, 1, psList, vks);
-        uint256 rid = rollups.createRollup(address(l2Manager), keccak256("l2-initial-state"));
+        uint256 rid = rollups.registerRollup(address(l2Manager), keccak256("l2-initial-state"));
         require(rid == 1, "expected L2 rollupId = 1");
 
         bytes32 salt = keccak256("sync-rollups-bridge-v1");
@@ -92,7 +92,7 @@ contract E2EBridgeDeploy is Script {
     }
 }
 
-/// @title E2EBridgeExecute -- postVerifyAndExecuteOrSaveExecutionsFromBatch + bridgeEther via BridgeBatcher (single tx)
+/// @title E2EBridgeExecute -- postAndVerifyBatch + bridgeEther via BridgeBatcher (single tx)
 contract E2EBridgeExecute is Script {
     function run(address rollupsAddr, address proofSystemAddr, address bridgeAddr) external {
         vm.startBroadcast();

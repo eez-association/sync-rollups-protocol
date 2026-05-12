@@ -4,15 +4,8 @@ pragma solidity ^0.8.28;
 import {IProofSystem} from "./IProofSystem.sol";
 import {IRollupContract} from "./rollupContract/IRollup.sol";
 import {CrossChainProxy} from "./CrossChainProxy.sol";
-import {
-    StateDelta,
-    L2ToL1Call,
-    ExpectedL1ToL2Call,
-    LookupCall,
-    ExecutionEntry,
-    ProxyInfo
-} from "./ICrossChainManager.sol";
-import {CrossChainManagerBase} from "./CrossChainManagerBase.sol";
+import {StateDelta, L2ToL1Call, ExpectedL1ToL2Call, LookupCall, ExecutionEntry, ProxyInfo} from "./IEEZ.sol";
+import {EEZBase} from "./EEZBase.sol";
 import {IMetaCrossChainReceiver} from "./interfaces/IMetaCrossChainReceiver.sol";
 
 /// @notice Rollup configuration held by the central registry.
@@ -69,10 +62,10 @@ struct ProofSystemBatchPerVerificationEntries {
 /// @notice Per-rollup deferred-consumption queue + once-per-block guard
 /// @dev `lastVerifiedBlock` doubles as:
 ///        (a) the once-per-block-per-rollup invariant (a rollup can be verified at most once
-///            per L1 block — required so multiple `postVerifyAndExecuteOrSaveExecutionsFromBatch` calls in the same block are
+///            per L1 block — required so multiple `postAndVerifyBatch` calls in the same block are
 ///            only allowed on disjoint rollup sets);
 ///        (b) read gate for consumers (entries can only be consumed in the block they were
-///            posted — `executeL1ToL2Call` / `executeL2TX` / `staticCallLookup` all gate
+///            posted — `executeCrossChainCall` / `executeL2TX` / `staticCallLookup` all gate
 ///            on `lastVerifiedBlock(rid) == block.number`);
 ///        (c) lockout signal for the registry's owner-escape path `EEZ.setStateRoot`,
 ///            which reverts `RollupBatchActiveThisBlock` when this equals `block.number`;
@@ -87,7 +80,7 @@ struct RollupVerification {
 
 /// @title EEZ
 /// @notice L1 contract managing rollup state roots, multi-prover batch posting, and cross-chain call execution
-/// @dev Execution entries are posted via `postVerifyAndExecuteOrSaveExecutionsFromBatch(batch)`,
+/// @dev Execution entries are posted via `postAndVerifyBatch(batch)`,
 ///      attested by ≥ threshold proof systems per rollup. Atomic verification: if any single
 ///      proof fails, the whole batch reverts.
 ///
@@ -106,9 +99,9 @@ struct RollupVerification {
 ///      whose preconditions were lost with the dropped transient leftover simply fails its
 ///      `StateRootMismatch` check.
 ///
-///      Deferred consumption: `executeL1ToL2Call` (proxy entry) and `executeL2TX(rid)` route
+///      Deferred consumption: `executeCrossChainCall` (proxy entry) and `executeL2TX(rid)` route
 ///      to `verificationByRollup[rid].queue[cursor]` and advance the per-rollup cursor.
-contract EEZ is CrossChainManagerBase {
+contract EEZ is EEZBase {
     /// @notice The rollup ID representing L1 mainnet
     uint256 public constant MAINNET_ROLLUP_ID = 0;
 
@@ -129,7 +122,7 @@ contract EEZ is CrossChainManagerBase {
     mapping(address proxy => ProxyInfo info) public authorizedProxies;
 
     // Rolling-hash tag constants and the `_rollingHash` transient accumulator live on
-    // `CrossChainManagerBase` (shared with `CrossChainManagerL2`).
+    // `EEZBase` (shared with `EEZL2`).
 
     // ── Transient-backed execution entries & lookup calls ──
     //
@@ -138,10 +131,10 @@ contract EEZ is CrossChainManagerBase {
     // consumption. Semantically transient (populated and cleared within a single batch
     // call) but declared as regular storage since Solidity 0.8.34 does not yet support
     // `transient` data location for reference types with nested dynamic arrays. Both are
-    // cleared at the end of every postVerifyAndExecuteOrSaveExecutionsFromBatch, regardless of success.
+    // cleared at the end of every postAndVerifyBatch, regardless of success.
     // TODO: promote to real `transient` once Solidity supports transient reference types
     //       with nested dynamic arrays — until then, we rely on manual `delete` at the
-    //       end of every postVerifyAndExecuteOrSaveExecutionsFromBatch plus SSTORE refunds from zeroing the slots.
+    //       end of every postAndVerifyBatch plus SSTORE refunds from zeroing the slots.
     ExecutionEntry[] public _transientExecutions;
     LookupCall[] public _transientLookupCalls;
 
@@ -150,12 +143,12 @@ contract EEZ is CrossChainManagerBase {
     ///      itself is what flags "inside a transient batch" for `_currentEntryStorage()`
     ///      and `_consumeAndExecute`; this variable just tracks progress. Transient so it
     ///      resets between transactions automatically, and explicitly reset at the end
-    ///      of every postVerifyAndExecuteOrSaveExecutionsFromBatch.
+    ///      of every postAndVerifyBatch.
     uint256 transient _transientExecutionIndex;
 
     // No dedicated `_inPostBatch` flag — `_transientExecutions.length != 0` already
     // identifies the dangerous re-entry window (from `_loadTransient` through cleanup).
-    // Steps 1-3 of `postVerifyAndExecuteOrSaveExecutionsFromBatch` (validate, verify-STATICCALL, mark-verified) have no
+    // Steps 1-3 of `postAndVerifyBatch` (validate, verify-STATICCALL, mark-verified) have no
     // external calls, and step 7 (publish) has no external calls either, so neither
     // needs guarding.
 
@@ -226,7 +219,7 @@ contract EEZ is CrossChainManagerBase {
     /// @notice Emitted after a revert span is processed via executeInContextAndRevert
     event RevertSpanExecuted(uint256 indexed entryIndex, uint256 startCallNumber, uint256 span);
 
-    /// @notice Emitted when an immediate entry's `_applyAndExecute` reverts during postVerifyAndExecuteOrSaveExecutionsFromBatch
+    /// @notice Emitted when an immediate entry's `_applyAndExecute` reverts during postAndVerifyBatch
     ///         step 4. The entry's state changes are rolled back; the cursor advances and the
     ///         loop continues with the next immediate entry. `revertData` carries the inner
     ///         revert payload (custom error or message) for off-chain debugging.
@@ -235,8 +228,8 @@ contract EEZ is CrossChainManagerBase {
     /// @notice Error when proof verification fails
     error InvalidProof();
 
-    /// @notice Reverts when `postVerifyAndExecuteOrSaveExecutionsFromBatch` is re-entered (e.g., via the meta hook calling back
-    ///         into `postVerifyAndExecuteOrSaveExecutionsFromBatch` for a disjoint rollup set, which would otherwise corrupt the
+    /// @notice Reverts when `postAndVerifyBatch` is re-entered (e.g., via the meta hook calling back
+    ///         into `postAndVerifyBatch` for a disjoint rollup set, which would otherwise corrupt the
     ///         shared transient tables)
     error PostBatchReentry();
 
@@ -252,11 +245,11 @@ contract EEZ is CrossChainManagerBase {
     /// @notice Error when execution is not found or crossChainCallHash doesn't match next entry
     error ExecutionNotFound();
 
-    /// @notice Error when a second `postVerifyAndExecuteOrSaveExecutionsFromBatch` tries to verify a rollup already verified this block
+    /// @notice Error when a second `postAndVerifyBatch` tries to verify a rollup already verified this block
     error RollupAlreadyVerifiedThisBlock(uint256 rollupId);
 
     /// @notice Error when the manager's `setStateRoot` escape hatch is invoked in the same
-    ///         block a `postVerifyAndExecuteOrSaveExecutionsFromBatch` already touched the rollup
+    ///         block a `postAndVerifyBatch` already touched the rollup
     /// @dev Conservative gate: once a verified state transition lands in block N, the manager
     ///      must wait until block N+1 to escape-mutate. Avoids invalidating queued entries'
     ///      `currentState` checks and prevents PS-set / threshold mutation from racing the meta hook.
@@ -325,7 +318,7 @@ contract EEZ is CrossChainManagerBase {
     /// @param rollupContract Address of the pre-deployed `IRollupContract` contract
     /// @param initialState Initial state root for this rollup
     /// @return rollupId Newly assigned rollup ID
-    function createRollup(address rollupContract, bytes32 initialState) external returns (uint256 rollupId) {
+    function registerRollup(address rollupContract, bytes32 initialState) external returns (uint256 rollupId) {
         if (rollupContract == address(0) || rollupContract == address(this)) revert InvalidRollupContract();
 
         rollupId = rollupCounter++;
@@ -353,7 +346,7 @@ contract EEZ is CrossChainManagerBase {
     ///         `crossProofSystemInteractions` load-bearing across PSes. These external calls
     ///         are `view` (STATICCALL), so no reentrancy concern.
     ///      3. Mark every touched rollup as verified-this-block. Sets the once-per-block-per-rollup
-    ///         invariant AND the read gate for `executeL1ToL2Call` / `executeL2TX` (which
+    ///         invariant AND the read gate for `executeCrossChainCall` / `executeL2TX` (which
     ///         require `lastVerifiedBlock(rid) == block.number`). Done before the meta hook
     ///         (non-view CALL) so the hook + later proxy calls can read from the queues.
     ///      4. Build the transient stream from `entries[0..transientExecutionEntryCount)`
@@ -379,7 +372,7 @@ contract EEZ is CrossChainManagerBase {
     ///         simply fails at consumption.
     /// @param batch The proof-system batch carrying entries, lookup calls, per-rollup PS
     ///        subsets, proofs, and transient prefix bounds
-    function postVerifyAndExecuteOrSaveExecutionsFromBatch(ProofSystemBatchPerVerificationEntries calldata batch) external {
+    function postAndVerifyBatch(ProofSystemBatchPerVerificationEntries calldata batch) external {
         // Reentrancy guard. Per-rollup `lastVerifiedBlock` blocks same-rollup re-entry, but a
         // disjoint-rollup nested call (e.g., from the meta hook) would otherwise share the
         // same `_transientExecutions` / `_transientLookupCalls` storage and corrupt them.
@@ -407,7 +400,7 @@ contract EEZ is CrossChainManagerBase {
         _verifyProofSystemBatch(batch, vkMatrix);
 
         // 3. Mark all touched rollups as verified-this-block. Sets the once-per-block-per-rollup
-        //    invariant AND the read gate for `executeL1ToL2Call` / `executeL2TX` (which
+        //    invariant AND the read gate for `executeCrossChainCall` / `executeL2TX` (which
         //    require `lastVerifiedBlock(rid) == block.number`). Done before the immediate-entry
         //    `_processNCalls` (which calls into proxies via non-view CALL — those CAN reenter,
         //    so the lastVerifiedBlock guard is what they hit).
@@ -471,19 +464,19 @@ contract EEZ is CrossChainManagerBase {
     }
 
     // ──────────────────────────────────────────────
-    //  postVerifyAndExecuteOrSaveExecutionsFromBatch internals
+    //  postAndVerifyBatch internals
     // ──────────────────────────────────────────────
 
     /// @notice Self-call wrapper that runs `_applyAndExecute` for one immediate entry
-    ///         in an isolated frame. Used by `postVerifyAndExecuteOrSaveExecutionsFromBatch` step 4 to make immediate-entry
+    ///         in an isolated frame. Used by `postAndVerifyBatch` step 4 to make immediate-entry
     ///         execution revertible: if this frame reverts, the surrounding `try/catch`
-    ///         in postVerifyAndExecuteOrSaveExecutionsFromBatch catches and skips to the next entry instead of aborting the
+    ///         in postAndVerifyBatch catches and skips to the next entry instead of aborting the
     ///         whole batch. Unlike `executeInContextAndRevert`, this propagates the inner
     ///         result — succeeds when `_applyAndExecute` succeeds, reverts when it reverts.
     /// @dev Sets `_currentEntryIndex` / `_currentEntryRollupId` here so transient state for
     ///      the entry being processed is set within the same frame as `_applyAndExecute`.
     ///      On revert those writes roll back too, which is fine — the next iteration sets
-    ///      them fresh. The cursor advance in postVerifyAndExecuteOrSaveExecutionsFromBatch happens OUTSIDE this frame.
+    ///      them fresh. The cursor advance in postAndVerifyBatch happens OUTSIDE this frame.
     function attemptApplyImmediate(uint256 transientIdx) public {
         if (msg.sender != address(this)) revert NotSelf();
         ExecutionEntry storage entry = _transientExecutions[transientIdx];
@@ -594,7 +587,8 @@ contract EEZ is CrossChainManagerBase {
                 proofSystemUsed[j] = batch.proofSystems[uint256(indices[j])];
             }
 
-            vkMatrix[r] = IRollupContract(rollups[rps.rollupId].rollupContract).checkProofSystemsAndGetVkeys(proofSystemUsed);
+            vkMatrix[r] =
+                IRollupContract(rollups[rps.rollupId].rollupContract).checkProofSystemsAndGetVkeys(proofSystemUsed);
             // Manager must return exactly one vkey per resolved PS. Without this, a manager
             // returning a short array would OOB-panic when projected into per-PS vkey vectors;
             // a long array would silently ignore tail entries.
@@ -615,10 +609,10 @@ contract EEZ is CrossChainManagerBase {
     ///      Then `publicInputsHash[k] = H(sharedPublicInput, acc_k)`. (blockHash, timestamp)
     ///      are fetched ONCE per rollup via `getTimestampAndBlockHash` ahead of the per-PS
     ///      loop, intentionally OUTSIDE sharedPublicInput so they can be rollup-specific.
-    function _verifyProofSystemBatch(
-        ProofSystemBatchPerVerificationEntries calldata batch,
-        bytes32[][] memory vkMatrix
-    ) internal view {
+    function _verifyProofSystemBatch(ProofSystemBatchPerVerificationEntries calldata batch, bytes32[][] memory vkMatrix)
+        internal
+        view
+    {
         // Selected blob hashes (indexed into the tx-level blob set)
         bytes32[] memory blobHashes = new bytes32[](batch.blobIndices.length);
         for (uint256 i = 0; i < batch.blobIndices.length; i++) {
@@ -657,8 +651,8 @@ contract EEZ is CrossChainManagerBase {
         bytes32[] memory blockHashes = new bytes32[](rollupCount);
         for (uint256 r = 0; r < rollupCount; r++) {
             (timestamps[r], blockHashes[r]) = IRollupContract(
-                rollups[batch.rollupIdsWithProofSystems[r].rollupId].rollupContract
-            ).getTimestampAndBlockHash();
+                    rollups[batch.rollupIdsWithProofSystems[r].rollupId].rollupContract
+                ).getTimestampAndBlockHash();
         }
 
         // Per-PS verification — for each PS k, walk attesting rollups in canonical order
@@ -733,7 +727,7 @@ contract EEZ is CrossChainManagerBase {
     /// @param sourceAddress The original caller address (msg.sender as seen by the proxy)
     /// @param callData The original calldata sent to the proxy
     /// @return result The return data from the execution
-    function executeL1ToL2Call(address sourceAddress, bytes calldata callData)
+    function executeCrossChainCall(address sourceAddress, bytes calldata callData)
         external
         payable
         returns (bytes memory result)
@@ -823,7 +817,10 @@ contract EEZ is CrossChainManagerBase {
         uint256 idx = _lastNestedActionConsumed++;
 
         // 1. ExpectedL1ToL2Call priority
-        if (idx < entry.expectedL1ToL2Calls.length && entry.expectedL1ToL2Calls[idx].crossChainCallHash == crossChainCallHash) {
+        if (
+            idx < entry.expectedL1ToL2Calls.length
+                && entry.expectedL1ToL2Calls[idx].crossChainCallHash == crossChainCallHash
+        ) {
             ExpectedL1ToL2Call storage nested = entry.expectedL1ToL2Calls[idx];
             uint256 nestedNumber = idx + 1;
             emit NestedActionConsumed(_currentEntryIndex, nestedNumber, crossChainCallHash, nested.callCount);
@@ -865,15 +862,20 @@ contract EEZ is CrossChainManagerBase {
 
     /// @notice Consumes the next execution entry, applies state deltas, executes calls, and verifies rolling hash
     /// @dev Consults the transient table first ("always look for transient calls before storage calls").
-    ///      While a postVerifyAndExecuteOrSaveExecutionsFromBatch call is running, `_transientExecutions` is non-empty and ALL consumption
+    ///      While a postAndVerifyBatch call is running, `_transientExecutions` is non-empty and ALL consumption
     ///      is routed through it via a global cursor — entries are NOT popped, only `_transientExecutionIndex`
-    ///      advances. Running past the end inside a transient batch is treated as a hard `ExecutionNotFound`
-    ///      (not a fall-through): the proof sized the batch and the hook trying to consume more than that
-    ///      is a protocol bug. Outside the transient batch, consumption is routed by the destination rollup
-    ///      to `verificationByRollup[destRid].queue` with that rollup's own cursor — `destinationRollupId`
+    ///      advances. Outside the transient batch, consumption is routed by the destination rollup to
+    ///      `verificationByRollup[destRid].queue` with that rollup's own cursor — `destinationRollupId`
     ///      doesn't need a separate consistency check because (a) the proof bound it into the entry hash,
-    ///      and (b) the crossChainCallHash preimage already commits to the target rollup, so a mismatch falls
-    ///      through to the `entry.proxyEntryHash != crossChainCallHash` revert below.
+    ///      and (b) the crossChainCallHash preimage already commits to the target rollup.
+    ///
+    ///      Miss path: when the cursor is out of bounds or the next entry's `proxyEntryHash` doesn't match,
+    ///      `_tryRevertedTopLevelLookup` scans the transient + persistent lookup tables for a
+    ///      `failed=true` `LookupCall` keyed by `(crossChainCallHash, callNumber=0, lastNestedActionConsumed=0)`.
+    ///      On match, that helper reverts with the cached `returnData` (so the caller's `try/catch` observes
+    ///      the prover-specified revert). On no match the helper returns and we revert `ExecutionNotFound`.
+    ///      The cursor is NOT advanced on the miss path — a failed top-level call consumes a `LookupCall`,
+    ///      not an `ExecutionEntry`, so the next consumer still sees the same next entry.
     /// @param destRid The destination rollup whose queue / transient slot to consume from
     /// @param crossChainCallHash The expected action input hash for the next entry
     /// @param etherIn The ETH value received (msg.value) for ether accounting
@@ -886,19 +888,27 @@ contract EEZ is CrossChainManagerBase {
         uint256 idx;
 
         if (_transientExecutions.length != 0) {
-            idx = _transientExecutionIndex++;
-            if (idx >= _transientExecutions.length) revert ExecutionNotFound();
+            idx = _transientExecutionIndex;
+            if (idx >= _transientExecutions.length || _transientExecutions[idx].proxyEntryHash != crossChainCallHash) {
+                // Try reverted-lookup fallback (always reverts on match); otherwise ExecutionNotFound
+                _tryRevertedTopLevelLookup(crossChainCallHash, destRid);
+                revert ExecutionNotFound();
+            }
+            _transientExecutionIndex = idx + 1;
             entry = _transientExecutions[idx];
             _currentEntryRollupId = 0; // marker: transient phase (storage routes via length)
         } else {
             RollupVerification storage rec = verificationByRollup[destRid];
-            idx = rec.cursor++;
-            if (idx >= rec.queue.length) revert ExecutionNotFound();
+            idx = rec.cursor;
+            if (idx >= rec.queue.length || rec.queue[idx].proxyEntryHash != crossChainCallHash) {
+                // Try reverted-lookup fallback (always reverts on match); otherwise ExecutionNotFound
+                _tryRevertedTopLevelLookup(crossChainCallHash, destRid);
+                revert ExecutionNotFound();
+            }
+            rec.cursor = idx + 1;
             entry = rec.queue[idx];
             _currentEntryRollupId = destRid;
         }
-
-        if (entry.proxyEntryHash != crossChainCallHash) revert ExecutionNotFound();
 
         emit ExecutionConsumed(crossChainCallHash, destRid, idx);
 
@@ -1063,7 +1073,7 @@ contract EEZ is CrossChainManagerBase {
 
     /// @notice Owner escape hatch for setting the state root directly. Callable only by the
     ///         registered manager contract for `rollupId`. Locked out for the rest of the block
-    ///         once any postVerifyAndExecuteOrSaveExecutionsFromBatch has touched this rollup (see `RollupBatchActiveThisBlock`).
+    ///         once any postAndVerifyBatch has touched this rollup (see `RollupBatchActiveThisBlock`).
     function setStateRoot(uint256 rollupId, bytes32 newStateRoot) external {
         if (msg.sender != rollups[rollupId].rollupContract) revert NotRollupContract();
         if (verificationByRollup[rollupId].lastVerifiedBlock == block.number) {
@@ -1080,7 +1090,7 @@ contract EEZ is CrossChainManagerBase {
     /// @notice Looks up a pre-computed lookup call result, scanning the transient table
     ///         first then the destination rollup's static queue
     /// @dev Matches by crossChainCallHash + current call number + last nested action consumed.
-    ///      Consults `_transientLookupCalls` first (populated only while a postVerifyAndExecuteOrSaveExecutionsFromBatch is
+    ///      Consults `_transientLookupCalls` first (populated only while a postAndVerifyBatch is
     ///      executing its transient prefix) and falls through to the per-rollup
     ///      `lookupQueue` keyed by `proxyInfo.originalRollupId`. tload works in static
     ///      context, so the transient tracking variables used to compute the match keys
@@ -1146,6 +1156,35 @@ contract EEZ is CrossChainManagerBase {
         return sc.returnData;
     }
 
+    /// @notice Top-level fallback: scan transient table then the routed rollup's persistent
+    ///         `lookupQueue` for a `LookupCall` with `failed=true` matching
+    ///         `(crossChainCallHash, callNumber=0, lastNestedActionConsumed=0)`. The (0,0)
+    ///         lookup key denotes top-level context — disjoint from the nested fallback path
+    ///         which always observes `callNumber > 0`. On match, `_resolveLookupCall` reverts
+    ///         with the cached `returnData`; on no match, returns so the caller reverts
+    ///         `ExecutionNotFound`.
+    function _tryRevertedTopLevelLookup(bytes32 crossChainCallHash, uint256 destRid) internal view {
+        for (uint256 i = 0; i < _transientLookupCalls.length; i++) {
+            LookupCall storage sc = _transientLookupCalls[i];
+            if (
+                sc.failed && sc.crossChainCallHash == crossChainCallHash && sc.callNumber == 0
+                    && sc.lastNestedActionConsumed == 0
+            ) {
+                _resolveLookupCall(sc); // always reverts (sc.failed == true)
+            }
+        }
+        LookupCall[] storage lookupQueue = verificationByRollup[destRid].lookupQueue;
+        for (uint256 i = 0; i < lookupQueue.length; i++) {
+            LookupCall storage sc = lookupQueue[i];
+            if (
+                sc.failed && sc.crossChainCallHash == crossChainCallHash && sc.callNumber == 0
+                    && sc.lastNestedActionConsumed == 0
+            ) {
+                _resolveLookupCall(sc);
+            }
+        }
+    }
+
     /// @notice Executes calls in static context and computes a rolling hash of results
     function _processNLookupCalls(L2ToL1Call[] memory calls) internal view returns (bytes32 computedHash) {
         for (uint256 i = 0; i < calls.length; i++) {
@@ -1158,14 +1197,14 @@ contract EEZ is CrossChainManagerBase {
     }
 
     // Rolling-hash helpers (`_rollingHashCallBegin/End/NestedBegin/NestedEnd/StaticResult`)
-    // and the `_rollingHash` accumulator live on `CrossChainManagerBase`.
+    // and the `_rollingHash` accumulator live on `EEZBase`.
 
     // ──────────────────────────────────────────────
     //  Helpers
     // ──────────────────────────────────────────────
 
     /// @notice Computes the cross-chain call hash from individual fields. Same shape used
-    ///         both when building the hash for a proxy-driven CALL (`executeL1ToL2Call`)
+    ///         both when building the hash for a proxy-driven CALL (`executeCrossChainCall`)
     ///         and for a static lookup (`staticCallLookup`). Public so off-chain tooling can
     ///         call it directly to derive the hash for a planned cross-chain call without
     ///         redoing the abi.encode + keccak off-chain.
@@ -1210,10 +1249,11 @@ contract EEZ is CrossChainManagerBase {
 
     /// @notice Binary-search membership check on the batch's `rollupIdsWithProofSystems[]`,
     ///         which is sorted strictly ascending by `.rollupId`.
-    function _containsRollupInBatch(
-        ProofSystemBatchPerVerificationEntries calldata batch,
-        uint256 rollupId
-    ) internal pure returns (bool) {
+    function _containsRollupInBatch(ProofSystemBatchPerVerificationEntries calldata batch, uint256 rollupId)
+        internal
+        pure
+        returns (bool)
+    {
         uint256 lo = 0;
         uint256 hi = batch.rollupIdsWithProofSystems.length;
         while (lo < hi) {
@@ -1230,7 +1270,7 @@ contract EEZ is CrossChainManagerBase {
     //  Views
     // ──────────────────────────────────────────────
 
-    /// @notice Last block at which `_rollupId` was verified by a postVerifyAndExecuteOrSaveExecutionsFromBatch call
+    /// @notice Last block at which `_rollupId` was verified by a postAndVerifyBatch call
     function lastVerifiedBlock(uint256 _rollupId) external view returns (uint256) {
         return verificationByRollup[_rollupId].lastVerifiedBlock;
     }

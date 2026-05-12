@@ -2,13 +2,7 @@
 pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
-import {
-    StateDelta,
-    L2ToL1Call,
-    ExpectedL1ToL2Call,
-    ExecutionEntry,
-    LookupCall
-} from "../../../src/ICrossChainManager.sol";
+import {StateDelta, L2ToL1Call, ExpectedL1ToL2Call, ExecutionEntry, LookupCall} from "../../../src/IEEZ.sol";
 
 /// @title ComputeExpectedBase — Shared formatting helpers for ComputeExpected contracts
 /// @dev Each test's ComputeExpected inherits this and overrides _name() and _funcName().
@@ -85,10 +79,7 @@ abstract contract ComputeExpectedBase is Script {
         console.log("      proxyEntryHash:  %s", vm.toString(e.proxyEntryHash));
         console.log("      rollingHash: %s", vm.toString(e.rollingHash));
         console.log(
-            "      callCount=%s  calls=%s  nested=%s",
-            e.callCount,
-            e.L2ToL1Calls.length,
-            e.expectedL1ToL2Calls.length
+            "      callCount=%s  calls=%s  nested=%s", e.callCount, e.L2ToL1Calls.length, e.expectedL1ToL2Calls.length
         );
 
         for (uint256 d = 0; d < e.stateDeltas.length; d++) {
@@ -120,10 +111,7 @@ abstract contract ComputeExpectedBase is Script {
         console.log("      proxyEntryHash:  %s", vm.toString(e.proxyEntryHash));
         console.log("      rollingHash: %s", vm.toString(e.rollingHash));
         console.log(
-            "      callCount=%s  calls=%s  nested=%s",
-            e.callCount,
-            e.L2ToL1Calls.length,
-            e.expectedL1ToL2Calls.length
+            "      callCount=%s  calls=%s  nested=%s", e.callCount, e.L2ToL1Calls.length, e.expectedL1ToL2Calls.length
         );
         for (uint256 c = 0; c < e.L2ToL1Calls.length; c++) {
             console.log(string.concat("      ", _fmtCall(e.L2ToL1Calls[c])));

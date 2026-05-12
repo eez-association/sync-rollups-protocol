@@ -20,7 +20,7 @@ Generate a new `script/e2e/<scenario>/E2E.s.sol` that exercises the flatten exec
    - Same actionHash consumed twice: `script/e2e/multi-call-twice/E2E.s.sol`
    - Different actionHashes consumed sequentially: `script/e2e/multi-call-two-diff/E2E.s.sol`
    - `calls[]` + `nestedActions[]` with rolling-hash replay: `script/e2e/nestedCounter/E2E.s.sol`
-3. Read `src/Rollups.sol` and `src/CrossChainManagerL2.sol` — the on-chain bookkeeping is the ground truth for every hash you compute off-chain. `_computeActionInputHash`, `_processNCalls`, `_consumeNestedAction`, and the entry-hash formula in `_computeEntryHashes` should be mirrored exactly by your off-chain builders (use the helpers in `script/e2e/shared/E2EHelpers.sol`).
+3. Read `src/Rollups.sol` and `src/EEZL2.sol` — the on-chain bookkeeping is the ground truth for every hash you compute off-chain. `_computeActionInputHash`, `_processNCalls`, `_consumeNestedAction`, and the entry-hash formula in `_computeEntryHashes` should be mirrored exactly by your off-chain builders (use the helpers in `script/e2e/shared/E2EHelpers.sol`).
 
 ## Design the tables on paper first
 
