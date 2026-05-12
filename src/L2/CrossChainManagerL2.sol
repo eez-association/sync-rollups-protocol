@@ -3,19 +3,19 @@ pragma solidity ^0.8.28;
 
 import {CrossChainProxy} from "../CrossChainProxy.sol";
 import {
-    ICrossChainManager,
     L2ToL1Call,
     ExpectedL1ToL2Call,
     LookupCall,
     ExecutionEntry,
     ProxyInfo
 } from "../ICrossChainManager.sol";
+import {CrossChainManagerBase} from "../CrossChainManagerBase.sol";
 
 /// @title CrossChainManagerL2
 /// @notice L2-side contract for cross-chain execution via pre-computed execution tables
 /// @dev No rollups, no state deltas, no ZK proofs. System address loads execution tables,
 ///      which are consumed sequentially via proxy calls (executeL1ToL2Call).
-contract CrossChainManagerL2 is ICrossChainManager {
+contract CrossChainManagerL2 is CrossChainManagerBase {
     /// @notice The rollup ID this L2 belongs to
     uint256 public immutable ROLLUP_ID;
 
@@ -37,19 +37,13 @@ contract CrossChainManagerL2 is ICrossChainManager {
     /// @notice Index of the next execution entry to consume
     uint256 public executionIndex;
 
-    // ── Rolling hash tag constants ──
-    uint8 internal constant CALL_BEGIN = 1;
-    uint8 internal constant CALL_END = 2;
-    uint8 internal constant NESTED_BEGIN = 3;
-    uint8 internal constant NESTED_END = 4;
+    // Rolling-hash tag constants and the `_rollingHash` transient accumulator live on
+    // `CrossChainManagerBase` (shared with the L1 `EEZ` contract).
 
-    // ── Transient execution state (4 variables) ──
+    // ── Transient execution state (3 variables) ──
 
     /// @notice The current execution entry being processed
     uint256 transient _currentEntryIndex;
-
-    /// @notice Transient rolling hash accumulating tagged events across the entire entry
-    bytes32 transient _rollingHash;
 
     /// @notice 1-indexed global call counter and cursor into entry.L2ToL1Calls[]
     /// @dev Also replaces _insideExecution: _currentCallNumber != 0 means inside execution
@@ -335,9 +329,9 @@ contract CrossChainManagerL2 is ICrossChainManager {
             ExpectedL1ToL2Call storage nested = entry.expectedL1ToL2Calls[idx];
             uint256 nestedNumber = idx + 1; // 1-indexed
             emit NestedActionConsumed(_currentEntryIndex, nestedNumber, crossChainCallHash, nested.callCount);
-            _rollingHash = keccak256(abi.encodePacked(_rollingHash, NESTED_BEGIN, nestedNumber));
+            _rollingHashNestedBegin(nestedNumber);
             _processNCalls(nested.callCount);
-            _rollingHash = keccak256(abi.encodePacked(_rollingHash, NESTED_END, nestedNumber));
+            _rollingHashNestedEnd(nestedNumber);
             return nested.returnData;
         }
 
@@ -421,7 +415,7 @@ contract CrossChainManagerL2 is ICrossChainManager {
                 L2ToL1Call memory cc = entry.L2ToL1Calls[_currentCallNumber];
                 _currentCallNumber++;
 
-                _rollingHash = keccak256(abi.encodePacked(_rollingHash, CALL_BEGIN, _currentCallNumber));
+                _rollingHashCallBegin(_currentCallNumber);
 
                 address sourceProxy = computeCrossChainProxyAddress(cc.sourceAddress, cc.sourceRollupId);
                 if (authorizedProxies[sourceProxy].originalAddress == address(0)) {
@@ -432,7 +426,7 @@ contract CrossChainManagerL2 is ICrossChainManager {
                     value: cc.value
                 }(abi.encodeCall(CrossChainProxy.executeOnBehalf, (cc.targetAddress, cc.data)));
 
-                _rollingHash = keccak256(abi.encodePacked(_rollingHash, CALL_END, _currentCallNumber, success, retData));
+                _rollingHashCallEnd(_currentCallNumber, success, retData);
                 emit CallResult(_currentEntryIndex, _currentCallNumber, success, retData);
                 processed++;
             } else {
@@ -517,7 +511,7 @@ contract CrossChainManagerL2 is ICrossChainManager {
             address sourceProxy = computeCrossChainProxyAddress(cc.sourceAddress, cc.sourceRollupId);
             (bool success, bytes memory retData) =
                 sourceProxy.staticcall(abi.encodeCall(CrossChainProxy.executeOnBehalf, (cc.targetAddress, cc.data)));
-            computedHash = keccak256(abi.encodePacked(computedHash, success, retData));
+            computedHash = _rollingHashStaticResult(computedHash, success, retData);
         }
     }
 

@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../../src/EEZ.sol";
+import {CrossChainManagerL2} from "../../../src/L2/CrossChainManagerL2.sol";
 import {
     StateDelta,
     L2ToL1Call,
@@ -23,21 +24,22 @@ import {
 // ═══════════════════════════════════════════════════════════════════════
 //  RevertCounter scenario — exercises L2ToL1Call.revertSpan as a
 //  FORCED revert: the destination call SUCCEEDS, but its EVM state effects
-//  are rolled back at the protocol layer.
+//  are rolled back at the protocol layer. Two-sided.
 //
 //  Models the canonical use case: an L2→L1 cross-chain call that ran
-//  successfully on L1, but L2's prover output marks it as reverted in the
-//  L2 view of the world (e.g., a higher-level transaction the call was
-//  part of was rolled back on L2). When L1 replays the entry, revertSpan=1
-//  forces the L1 state effects to disappear while the rolling hash still
-//  commits to (success=true, returnData=abi.encode(1)).
+//  successfully on the destination, but its prover output marks it as
+//  reverted in the source-chain view of the world (e.g., a higher-level
+//  transaction the call was part of was rolled back). When the destination
+//  replays the entry, revertSpan=1 forces the state effects to disappear
+//  while the rolling hash still commits to (success=true, retData=1).
 //
-//  Flow:
-//    1. postVerifyAndExecuteOrSaveExecutionsFromBatch loads ONE deferred entry. Its calls[0] targets Counter
-//       on L1 with revertSpan=1.
+//  L1 side (Execute):
+//    1. postVerifyAndExecuteOrSaveExecutionsFromBatch loads ONE deferred
+//       entry. Its calls[0] targets the real Counter on L1 with
+//       revertSpan=1.
 //    2. Alice triggers consumption by calling counterProxy (L1 proxy for
-//       Counter@L2). Trigger and inner call are independent — the trigger
-//       just selects this entry by matching actionHash.
+//       Counter on L2). Trigger and inner call are independent — the
+//       trigger just selects this entry by matching actionHash.
 //    3. _processNCalls sees revertSpan=1 → self-calls executeInContext(1).
 //       Inside that frame, Counter.increment() runs successfully, returns
 //       abi.encode(1), and the rolling hash records CALL_END(true, ...).
@@ -46,6 +48,16 @@ import {
 //       hash + cursors from the revert payload.
 //    5. Net effect: Counter.counter() == 0 on L1, even though the proof
 //       commits to a successful call.
+//
+//  L2 side (ExecuteL2) — system-driven mirror:
+//    1. SYSTEM_ADDRESS calls managerL2.executeIncomingCrossChainCall(
+//         counterL2, 0, increment, alice, MAINNET, l2Entries, lookups
+//       ) which loads ONE entry whose calls[0] targets the real Counter
+//       on L2 with revertSpan=1.
+//    2. _processNCalls runs the inner span; Counter on L2 increments,
+//       executeInContext reverts, state rolled back.
+//    3. Net effect on L2: Counter.counter() == 0, rolling hash commits
+//       to CALL_END(true, abi.encode(1)).
 //
 //  Contrast with revertSpan=0: a naturally-reverting destination already
 //  produces (success=false, retData=revertReason) under revertSpan=0, so
@@ -120,6 +132,41 @@ abstract contract RevertActions {
         entries = new ExecutionEntry[](1);
         entries[0] = ExecutionEntry({
             stateDeltas: deltas,
+            proxyEntryHash: _outerActionHash(counterL2, alice),
+            destinationRollupId: L2_ROLLUP_ID,
+            L2ToL1Calls: calls,
+            expectedL1ToL2Calls: noNestedActions(),
+            callCount: 1,
+            returnData: "",
+            rollingHash: _expectedRollingHash()
+        });
+    }
+
+    /// @dev L2 mirror entry — same shape, with the inner call targeting the real
+    /// Counter on L2. proxyEntryHash matches the outer trigger that SYSTEM passes
+    /// to executeIncomingCrossChainCall (counterL2 destination, alice on Mainnet
+    /// as the source). The mirror is independent of the L1 side; it does not need
+    /// to share alice with the L1 batcher, since the cryptographic tie is the call
+    /// hash of the OUTER call (destination + sourceAddress + sourceRollupId), which
+    /// each side computes from its own broadcaster.
+    function _l2Entries(address counterL2, address alice)
+        internal
+        pure
+        returns (ExecutionEntry[] memory entries)
+    {
+        L2ToL1Call[] memory calls = new L2ToL1Call[](1);
+        calls[0] = L2ToL1Call({
+            targetAddress: counterL2,
+            value: 0,
+            data: abi.encodeWithSelector(Counter.increment.selector),
+            sourceAddress: alice,
+            sourceRollupId: MAINNET_ROLLUP_ID,
+            revertSpan: 1
+        });
+
+        entries = new ExecutionEntry[](1);
+        entries[0] = ExecutionEntry({
+            stateDeltas: new StateDelta[](0),
             proxyEntryHash: _outerActionHash(counterL2, alice),
             destinationRollupId: L2_ROLLUP_ID,
             L2ToL1Calls: calls,
@@ -260,6 +307,40 @@ contract ExecuteNetwork is Script {
     }
 }
 
+/// @title ExecuteL2 — local mode: system-driven L2 mirror via executeIncomingCrossChainCall.
+/// @dev SYSTEM_ADDRESS is the local deployer (anvil account 0), so the broadcaster can call
+///      executeIncomingCrossChainCall directly. The L2 entry's calls[0] targets the real
+///      Counter on L2 with revertSpan=1; the inner span increments it, then state is rolled
+///      back by executeInContext. Net effect: Counter.counter() == 0 on L2 too.
+///      `_processNCalls` lazily creates the source proxy for (alice, MAINNET_ROLLUP_ID).
+/// Env: MANAGER_L2, COUNTER_L2
+contract ExecuteL2 is Script, RevertActions {
+    function run() external {
+        address managerAddr = vm.envAddress("MANAGER_L2");
+        address counterL2 = vm.envAddress("COUNTER_L2");
+
+        vm.startBroadcast();
+        address alice = msg.sender;
+
+        CrossChainManagerL2(managerAddr).executeIncomingCrossChainCall(
+            counterL2,
+            0,
+            abi.encodeWithSelector(Counter.increment.selector),
+            alice,
+            MAINNET_ROLLUP_ID,
+            _l2Entries(counterL2, alice),
+            noLookupCalls()
+        );
+
+        uint256 finalCounter = Counter(counterL2).counter();
+        require(finalCounter == 0, "revertSpan must roll back successful state changes on L2");
+
+        console.log("done");
+        console.log("counterL2.counter=%s (expected 0 -- state rolled back)", finalCounter);
+        vm.stopBroadcast();
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 //  ComputeExpected
 // ═══════════════════════════════════════════════════════════════════════
@@ -284,9 +365,17 @@ contract ComputeExpected is ComputeExpectedBase, RevertActions {
         ExecutionEntry[] memory l1 = _l1Entries(counterL1, counterL2, alice);
         bytes32 l1Hash = _entryHash(l1[0]);
 
+        ExecutionEntry[] memory l2 = _l2Entries(counterL2, alice);
+        bytes32 l2Hash = _entryHash(l2[0]);
+
         console.log("EXPECTED_L1_HASHES=[%s]", vm.toString(l1Hash));
+        console.log("EXPECTED_L2_HASHES=[%s]", vm.toString(l2Hash));
+        console.log("EXPECTED_L1_CALL_HASHES=[%s]", vm.toString(l1[0].proxyEntryHash));
         console.log("");
         console.log("=== EXPECTED L1 TABLE (1 entry, 1 call w/ revertSpan=1, force-reverted success) ===");
         _logEntry(0, l1[0]);
+        console.log("");
+        console.log("=== EXPECTED L2 TABLE (1 entry, 1 call w/ revertSpan=1, system-driven mirror) ===");
+        _logL2Entry(0, l2[0]);
     }
 }
