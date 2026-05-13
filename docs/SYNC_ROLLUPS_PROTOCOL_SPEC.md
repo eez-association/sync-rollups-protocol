@@ -509,6 +509,8 @@ return hash
 
 No `revertSpan` handling — every call executes as-is. Static context cannot deploy proxies, so all referenced proxies must already exist.
 
+This hashing scheme is **intentionally untagged** and is **distinct from** the entry-level rolling hash described in §E (no `CALL_BEGIN`/`CALL_END`/`NESTED_BEGIN`/`NESTED_END` tags, no `callNumber`). It is verified against `LookupCall.rollingHash`, a separate per-`LookupCall` accumulator whose context (entry, position, nesting depth) is already pinned by the lookup key `(crossChainCallHash, destinationRollupId, callNumber, lastNestedActionConsumed)`. See §E.2 for the full rationale.
+
 ##### `computeCrossChainCallHash` (`public pure`)
 
 ```solidity
@@ -774,7 +776,36 @@ The mechanism relies on EIP-1153 `tload` / `tstore` semantics:
 - `tload` is **read-only**, so it works inside a STATICCALL context **and** inside a self-call that is about to revert. The inner self-call therefore observes the outer `_rollingHash`, `_currentCallNumber`, and `_lastNestedActionConsumed` values when it starts.
 - `tstore` writes are part of the EVM journal and are **rolled back** when the call frame reverts. So when `executeInContextAndRevert` reverts with `ContextResult`, every transient write performed inside the span (including the rolling-hash updates and counter increments) is undone — except for the three values that escape via the revert payload, which the caller manually re-applies after decoding.
 
-### E.2 Worked Hash Chain Example
+### E.2 LookupCall Sub-Hash (`LookupCall.rollingHash`)
+
+`LookupCall.rollingHash` is **a separate accumulator**, scoped to a single `LookupCall` and computed only over its optional `calls[]` array (the static sub-calls replayed during lookup resolution). It is **not** the entry-level `_rollingHash`, and it uses a deliberately simpler, **untagged** hashing scheme:
+
+```
+hash = bytes32(0)
+for cc in lookupCall.calls:
+    sourceProxy = computeCrossChainProxyAddress(cc.sourceAddress, cc.sourceRollupId)
+    (success, retData) = sourceProxy.staticcall(executeOnBehalf(cc.targetAddress, cc.data))
+    hash = keccak256(abi.encodePacked(hash, success, retData))
+require(hash == lookupCall.rollingHash);   // RollingHashMismatch
+```
+
+Note the differences from the entry-level scheme:
+
+- **No event tags** (no `CALL_BEGIN` / `CALL_END` / `NESTED_BEGIN` / `NESTED_END` domain bytes).
+- **No `callNumber`** mixed into each fold.
+- **No nesting** at all — `_processNLookupCalls` does not handle reentrancy; STATICCALL forbids state writes, so the proxies' `executeOnBehalf` paths cannot reenter the manager's mutating entrypoints and consume nested actions or further lookup calls.
+
+This simpler schema is safe because the surrounding lookup key already pins the call context that tagged events disambiguate at entry level. The match against the cached `LookupCall` is content-addressed by:
+
+```
+(crossChainCallHash, destinationRollupId, callNumber, lastNestedActionConsumed)
+```
+
+so the entry/call/nesting position is already locked in by the key. The only thing left for `LookupCall.rollingHash` to commit to is the **outcome of the static sub-calls**, in order, which is exactly what the untagged `keccak256(prev, success, retData)` chain captures. There is also no cross-contamination risk with the entry-level accumulator: `_processNLookupCalls` returns the local `computedHash` and never reads or writes `_rollingHash`.
+
+The two accumulators serve different verification scopes and intentionally do not share a schema. If the lookup sub-call list ever needs to commit to richer structure (e.g., nesting), the schema would have to gain tags too — but as of this spec, lookup sub-calls are flat by construction.
+
+### E.3 Worked Hash Chain Example
 
 Setup:
 
