@@ -35,7 +35,7 @@ start_anvil() {
     echo "Anvil running (PID $pid)"
 }
 
-# ── Deploy infrastructure (Rollups on L1, optionally CCManagerL2 on L2) ──
+# ── Deploy infrastructure (EEZ on L1, optionally CCManagerL2 on L2) ──
 # Sets ROLLUPS (and MANAGER_L2 if L2_RPC provided)
 deploy_infra() {
     local l1_rpc="$1"
@@ -45,16 +45,20 @@ deploy_infra() {
     local system_address="${5:-0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266}"
 
     echo ""
-    echo "====== Deploy Rollups (L1) ======"
+    echo "====== Deploy EEZ (L1) ======"
     local output
-    output=$(forge script script/e2e/shared/DeployInfra.s.sol:DeployRollupsL1 \
+    output=$(forge script script/e2e/shared/DeployInfra.s.sol:DeployEEZL1 \
         --rpc-url "$l1_rpc" --broadcast --private-key "$pk" 2>&1)
     ROLLUPS=$(extract "$output" "ROLLUPS")
+    PROOF_SYSTEM=$(extract "$output" "PROOF_SYSTEM")
+    L2_MANAGER=$(extract "$output" "L2_MANAGER")
     echo "ROLLUPS=$ROLLUPS"
+    echo "PROOF_SYSTEM=$PROOF_SYSTEM"
+    echo "L2_MANAGER=$L2_MANAGER"
 
     if [[ -n "$l2_rpc" ]]; then
         echo ""
-        echo "====== Deploy CrossChainManagerL2 (L2) ======"
+        echo "====== Deploy EEZL2 (L2) ======"
         output=$(forge script script/e2e/shared/DeployInfra.s.sol:DeployManagerL2 \
             --rpc-url "$l2_rpc" --broadcast --private-key "$pk" \
             --sig "run(uint256,address)" "$l2_rollup_id" "$system_address" 2>&1)
@@ -64,7 +68,7 @@ deploy_infra() {
 }
 
 # ── Decode events from a block ──
-# Usage: decode_block RPC BLOCK_NUMBER TARGET_CONTRACT
+# Usage: decode_block RPC BLOCK_NUMBER TARGET_CONTRACT [LABEL]
 decode_block() {
     local rpc="$1"
     local block="$2"
@@ -81,7 +85,6 @@ decode_block() {
 }
 
 # ── Auto-export KEY=VALUE lines from forge script output as env vars ──
-# Usage: _export_outputs "$FORGE_OUTPUT"
 _export_outputs() {
     local output="$1"
     local vars
@@ -95,7 +98,6 @@ _export_outputs() {
 
 # ── Auto-discover and run Deploy* contracts in file order ──
 # Contracts with "L2" in name → L2 RPC, others → L1 RPC
-# Usage: deploy_contracts SOL_FILE L1_RPC L2_RPC PK
 deploy_contracts() {
     local sol="$1" l1_rpc="$2" l2_rpc="$3" pk="$4"
     local contracts
@@ -116,14 +118,12 @@ deploy_contracts() {
     done <<< "$contracts"
 }
 
-# ── Strip forge execution traces, keep only console.log output ──
-# Usage: echo "$FORGE_OUTPUT" | strip_traces
+# ── Strip forge execution traces ──
 strip_traces() {
     grep -v '├─\|└─\|│ \|→ new\|\[staticcall\]\|\[Return\]\|\[Stop\]\|\[Revert\]\|::run(' | sed -n '/^  /p'
 }
 
 # ── Trace failed transactions from forge output ──
-# Usage: trace_failed_txs "$FORGE_OUTPUT" RPC
 trace_failed_txs() {
     local output="$1"
     local rpc="$2"
@@ -139,33 +139,24 @@ trace_failed_txs() {
 }
 
 # ── Execute L2 with same-block guarantee (local mode only) ──
-# Disables automine so forge submits all txs to the mempool, then mines
-# them in a single block. This satisfies the ExecutionNotInCurrentBlock check.
-# Usage: EXEC_L2=$(execute_l2_same_block SOL_FILE L2_RPC PK)
 execute_l2_same_block() {
     local sol="$1" l2_rpc="$2" pk="$3"
     local tmpfile
     tmpfile=$(mktemp)
 
-    # Disable automine — txs go to pending pool instead of being mined immediately
     cast rpc evm_setAutomine false --rpc-url "$l2_rpc" > /dev/null 2>&1
 
-    # forge --broadcast (without --slow) sends ALL txs before polling for receipts
     forge script "$sol:ExecuteL2" --rpc-url "$l2_rpc" --broadcast --private-key "$pk" > "$tmpfile" 2>&1 &
     local forge_pid=$!
     _E2E_PIDS+=("$forge_pid")
 
-    # Wait for forge to submit all txs to the pending pool
     sleep 3
 
-    # Mine a single block containing all pending txs
     cast rpc evm_mine --rpc-url "$l2_rpc" > /dev/null 2>&1
 
-    # Wait for forge to finish (it now gets receipts from the mined block)
     wait "$forge_pid" 2>/dev/null
     local exit_code=$?
 
-    # Re-enable automine for subsequent operations
     cast rpc evm_setAutomine true --rpc-url "$l2_rpc" > /dev/null 2>&1
 
     cat "$tmpfile"
@@ -174,8 +165,6 @@ execute_l2_same_block() {
 }
 
 # ── Get block number from forge broadcast JSON ──
-# Reads broadcast/<Script>.s.sol/<chainId>/run-latest.json, returns decimal block of last receipt.
-# Usage: BLOCK=$(get_block_from_broadcast SOL_FILE RPC_URL)
 get_block_from_broadcast() {
     local sol="$1" rpc="$2"
     local chain_id
@@ -193,85 +182,44 @@ get_block_from_broadcast() {
     printf "%d\n" "$(jq -r '.receipts[-1].blockNumber' "$json")"
 }
 
-# ── Extract L2 block numbers from a postBatch tx's callData ──
-# Fetches the tx input, extracts the 3rd param (callData), decodes L2 block numbers.
-# Usage: L2_BLOCKS=$(extract_l2_blocks_from_tx TX_HASH RPC_URL)
-# Returns: "[156,157]" or "[]" if empty
+# ── Extract L2 block numbers from a postAndVerifyBatch tx's callData ──
+# OBSOLETE post-refactor — see comment at top of file. Cross-chain block
+# correlation is no longer encoded on-chain; use off-chain indexing if needed.
+# Post-refactor `postAndVerifyBatch(ProofSystemBatchPerVerificationEntries[] batches)` no longer carries an L2
+# block list: the per-prover `callData` field is opaque prover input, not an
+# orchestrator-declared list of L2 blocks. Kept for call-site compat — always
+# returns "[]".
 extract_l2_blocks_from_tx() {
-    local tx_hash="$1" rpc="$2"
-    local postbatch_sig='postBatch(((uint256,bytes32,bytes32,int256)[],bytes32,(uint8,uint256,address,uint256,bytes,bool,address,uint256,uint256[]))[],uint256,bytes,bytes)'
-
-    local input
-    input=$(cast tx "$tx_hash" input --rpc-url "$rpc" 2>/dev/null) || { echo "[]"; return; }
-
-    # Decode the full postBatch calldata — 3rd line is the callData (bytes) param
-    local calldata_hex
-    calldata_hex=$(cast calldata-decode "$postbatch_sig" "$input" 2>/dev/null | sed -n '3p') || { echo "[]"; return; }
-
-    if [[ -z "$calldata_hex" || "$calldata_hex" == "0x" ]]; then
-        echo "[]"
-        return
-    fi
-
-    local decoded
-    decoded=$(cast abi-decode "f()(uint256[],bytes[])" "$calldata_hex" 2>/dev/null) || { echo "[]"; return; }
-
-    # cast outputs: ([156, 157], [0x...]) — extract the first array
-    local blocks_str
-    blocks_str=$(echo "$decoded" | head -1 | grep -oE '\[[0-9, ]*\]' | head -1)
-    echo "${blocks_str:-[]}"
+    echo "[]"
+    return 0
 }
 
-# ── Find the L1 batch block that references a specific L2 block ──
-# Searches [L1_FROM..L1_TO] for a BatchPosted tx whose callData contains L2_BLOCK.
-# Sets FOUND_L1_BLOCK and FOUND_BATCH_TX on success.
-# Usage: find_batch_block_by_l2_ref L2_BLOCK L1_FROM L1_TO ROLLUPS_ADDR RPC_URL
+# ── Find L1 batch block that references a specific L2 block ──
+# OBSOLETE post-refactor — see comment at top of file. Cross-chain block
+# correlation is no longer encoded on-chain; use off-chain indexing if needed.
+# Computes the new `BatchPosted(uint256)` signature for completeness, but the
+# inner extract_l2_blocks_from_tx call has nothing to find, so the function
+# always reports "not found" (return 1).
 find_batch_block_by_l2_ref() {
-    local l2_block="$1" l1_from="$2" l1_to="$3" rollups="$4" rpc="$5"
-    local SIG_BATCH="0x2f482312f12dceb86aac9ef0e0e1d9421ac62910326b3d50695d63117321b520"
-
-    # Single RPC call to get all BatchPosted logs in range
-    local logs_json
-    logs_json=$(cast logs --from-block "$l1_from" --to-block "$l1_to" \
-        --address "$rollups" --rpc-url "$rpc" --json 2>/dev/null) || return 1
-
-    # Filter BatchPosted events, get unique (txHash, blockNumber) pairs
-    local tx_pairs
-    tx_pairs=$(echo "$logs_json" | jq -r \
-        "[.[] | select(.topics[0] == \"$SIG_BATCH\") | {tx: .transactionHash, block: .blockNumber}] | unique_by(.tx) | .[] | \"\(.tx) \(.block)\"") || return 1
-
-    [[ -z "$tx_pairs" ]] && return 1
-
-    while IFS=' ' read -r tx_hash block_hex; do
-        local l2_blocks
-        l2_blocks=$(extract_l2_blocks_from_tx "$tx_hash" "$rpc")
-        # Check if our L2 block is in the array (e.g. "[51]" or "[49, 51]")
-        if echo "$l2_blocks" | grep -qE "(^|\[|,) *${l2_block} *(,|\]|$)"; then
-            FOUND_L1_BLOCK=$(printf "%d" "$block_hex")
-            FOUND_BATCH_TX="$tx_hash"
-            return 0
-        fi
-    done <<< "$tx_pairs"
-
+    # Correct post-refactor event signature (kept here so callers that grep
+    # this script for the SIG aren't pointed at the old ABI).
+    local SIG_BATCH
+    SIG_BATCH=$(cast keccak 'BatchPosted(uint256)') || true
+    : "$SIG_BATCH"  # silence unused-var lint
     return 1
 }
 
-# ── Publish a pre-signed raw tx and extract receipt info ──
-# Requires RLP_ENCODED_TX env var (set by cast mktx).
-# Sets TX_HASH and TX_BLOCK_NUMBER for the caller.
-# Usage: publish_user_tx RPC_URL
+# ── Publish a pre-signed raw tx ──
 publish_user_tx() {
     local rpc="$1"
 
     local rpc_out tx_hash
-    # Use cast rpc directly instead of cast publish to avoid wrapper hangs
     if ! rpc_out=$(cast rpc eth_sendRawTransaction "$RLP_ENCODED_TX" --rpc-url "$rpc" 2>&1); then
         echo "ERROR: eth_sendRawTransaction failed"
         echo "$rpc_out"
         return 1
     fi
 
-    # cast rpc returns the tx hash wrapped in double quotes — strip them
     tx_hash="${rpc_out%\"}"
     tx_hash="${tx_hash#\"}"
     tx_hash=$(echo "$tx_hash" | tr -d '[:space:]')
@@ -284,14 +232,12 @@ publish_user_tx() {
 
     local receipt block_number status
 
-    # cast receipt will poll the network until the tx is mined
     if ! receipt=$(cast receipt "$tx_hash" --rpc-url "$rpc" --json 2>&1); then
         echo "ERROR: cast receipt failed for tx: $tx_hash"
         echo "$receipt"
         return 1
     fi
 
-    # Extract fields (cast receipt returns blockNumber and status as hex strings)
     block_number=$(echo "$receipt" | jq -r '.blockNumber // empty')
     status=$(echo "$receipt" | jq -r '.status // empty')
 
@@ -304,7 +250,6 @@ publish_user_tx() {
     echo "block: $block_number (status: $status)"
 
     TX_HASH="$tx_hash"
-    # printf "%d" properly converts hex (0x...) to decimal integers
     TX_BLOCK_NUMBER=$(printf "%d" "$block_number")
 }
 
@@ -321,7 +266,6 @@ ensure_create2_factory() {
         return
     fi
     echo "$label: Deploying CREATE2 factory..."
-    # Run twice: first funds the pre-determined signer, second deploys the factory
     forge script script/DeployBridge.s.sol:DeployCreate2Factory \
         --rpc-url "$rpc" --broadcast --private-key "$pk" 2>&1 | tail -1
     forge script script/DeployBridge.s.sol:DeployCreate2Factory \

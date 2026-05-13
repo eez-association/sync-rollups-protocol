@@ -1,143 +1,145 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
+import {StateDelta, L2ToL1Call, ExpectedL1ToL2Call, ExecutionEntry, LookupCall} from "../../../src/interfaces/IEEZ.sol";
 
 /// @title ComputeExpectedBase — Shared formatting helpers for ComputeExpected contracts
 /// @dev Each test's ComputeExpected inherits this and overrides _name() and _funcName().
+///   The flatten model identifies entries by (crossChainCallHash, rollingHash) — both are bound
+///   into the entry hash below and used for subset verification by Verify.s.sol.
 abstract contract ComputeExpectedBase is Script {
-    // ── Entry hash: encodes both actionHash and nextAction ──
+    // ══════════════════════════════════════════════════════════════════
+    //  Entry identity hash used by Verify.s.sol for subset matching.
+    //  The flatten model binds all execution behaviour into rollingHash,
+    //  so (crossChainCallHash, rollingHash) is a stable identifier for an entry.
+    // ══════════════════════════════════════════════════════════════════
 
-    /// @dev Computes the entry hash used by VerifyL1Batch/VerifyL2Blocks for matching.
-    ///   Encodes both the trigger (actionHash) and the response (nextAction).
-    function _entryHash(bytes32 actionHash, Action memory nextAction) internal pure returns (bytes32) {
-        return keccak256(abi.encode(actionHash, keccak256(abi.encode(nextAction))));
+    function _entryHash(bytes32 crossChainCallHash, bytes32 rollingHash) internal pure returns (bytes32) {
+        return keccak256(abi.encode(crossChainCallHash, rollingHash));
     }
 
-    // ── Address-to-name mapping (override per test) ──
+    function _entryHash(ExecutionEntry memory e) internal pure returns (bytes32) {
+        return _entryHash(e.proxyEntryHash, e.rollingHash);
+    }
 
-    /// @dev Override to map deployed addresses to human-readable names.
-    ///   Fallback: short hex address.
+    // ══════════════════════════════════════════════════════════════════
+    //  Address / selector naming — override per test.
+    // ══════════════════════════════════════════════════════════════════
+
     function _name(address a) internal view virtual returns (string memory) {
         return _shortAddr(a);
     }
 
-    /// @dev Override to map 4-byte selectors to function names.
-    ///   Fallback: raw hex selector.
     function _funcName(bytes4 sel) internal pure virtual returns (string memory) {
         return vm.toString(bytes32(sel));
     }
 
-    // ── CALL formatting ──
+    // ══════════════════════════════════════════════════════════════════
+    //  L2ToL1Call formatting (the legacy `Action` struct was removed)
+    // ══════════════════════════════════════════════════════════════════
 
-    function _fmtCall(Action memory a) internal view returns (string memory) {
-        string memory func;
-        if (a.data.length == 0) {
-            func = "(ETH transfer)";
-        } else {
-            bytes4 sel = bytes4(a.data);
-            func = string.concat(".", _funcName(sel), "()");
-        }
-
-        string memory valStr = "";
-        if (a.value > 0) {
-            valStr = string.concat("  value=", _fmtEther(a.value));
-        }
-
+    function _fmtCall(L2ToL1Call memory c) internal view returns (string memory) {
+        string memory func = c.data.length == 0 ? "(ETH transfer)" : string.concat(".", _funcName(bytes4(c.data)), "()");
+        string memory valStr = c.value > 0 ? string.concat("  value=", _fmtEther(c.value)) : "";
+        string memory revertStr = c.revertSpan > 0 ? string.concat("  revertSpan=", vm.toString(c.revertSpan)) : "";
         return string.concat(
             "CALL ",
-            _name(a.destination),
+            _name(c.targetAddress),
             func,
             valStr,
-            "\n                from ",
-            _name(a.sourceAddress),
+            revertStr,
+            "\n          from ",
+            _name(c.sourceAddress),
             " @ rollup ",
-            vm.toString(a.sourceRollup),
-            _fmtScope(a.scope)
+            vm.toString(c.sourceRollupId)
         );
     }
 
-    // ── RESULT formatting ──
-
-    /// @param decoded Human-readable decoded value, e.g. "uint256(1)" or "(void)"
-    function _fmtResult(Action memory a, string memory decoded) internal pure returns (string memory) {
-        return string.concat("RESULT ", a.failed ? "FAILED" : "ok", " -> ", decoded);
-    }
-
-    // ── L2TX formatting ──
-
-    function _fmtL2TX(Action memory a) internal pure returns (string memory) {
+    function _fmtNested(ExpectedL1ToL2Call memory n) internal pure returns (string memory) {
         return string.concat(
-            "L2TX rollup=",
-            vm.toString(a.rollupId),
-            "  rlpTx=",
-            vm.toString(a.data),
-            " (",
-            vm.toString(a.data.length),
-            " bytes)"
+            "NESTED crossChainCallHash=",
+            _shortHash(n.crossChainCallHash),
+            "  callCount=",
+            vm.toString(n.callCount),
+            "  retData=",
+            _shortBytes(n.returnData)
         );
     }
 
-    // ── Full entry formatting ──
+    // ══════════════════════════════════════════════════════════════════
+    //  Entry formatting
+    // ══════════════════════════════════════════════════════════════════
 
-    /// @param triggerDesc What action triggers this entry (the action whose hash = actionHash)
-    /// @param responseDesc What action is returned (nextAction formatted)
-    function _logEntry(
-        uint256 idx,
-        bytes32 hash,
-        StateDelta[] memory deltas,
-        string memory triggerDesc,
-        string memory responseDesc
-    ) internal pure {
-        console.log("  [%s] DEFERRED", idx);
-        console.log(string.concat("      trigger:  ", triggerDesc));
-        console.log("      hash:     %s", _shortHash(hash));
-        for (uint256 d = 0; d < deltas.length; d++) {
+    /// @notice L1 deferred entry (with state deltas + rolling hash).
+    function _logEntry(uint256 idx, ExecutionEntry memory e) internal view {
+        bytes32 hash = _entryHash(e);
+        bool immediate = e.proxyEntryHash == bytes32(0);
+        console.log("  [%s] %s  entryHash=%s", idx, immediate ? "IMMEDIATE" : "DEFERRED", vm.toString(hash));
+        console.log("      proxyEntryHash:  %s", vm.toString(e.proxyEntryHash));
+        console.log("      rollingHash: %s", vm.toString(e.rollingHash));
+        console.log(
+            "      callCount=%s  calls=%s  nested=%s", e.callCount, e.L2ToL1Calls.length, e.expectedL1ToL2Calls.length
+        );
+
+        for (uint256 d = 0; d < e.stateDeltas.length; d++) {
+            StateDelta memory sd = e.stateDeltas[d];
             string memory etherStr =
-                deltas[d].etherDelta == 0 ? "" : string.concat("  ether: ", _fmtEtherSigned(deltas[d].etherDelta));
+                sd.etherDelta == 0 ? "" : string.concat("  ether: ", _fmtEtherSigned(sd.etherDelta));
             console.log(
                 string.concat(
-                    "      state:    rollup ",
-                    vm.toString(deltas[d].rollupId),
-                    "  ",
-                    _shortHash(deltas[d].currentState),
-                    " -> ",
-                    _shortHash(deltas[d].newState),
-                    etherStr
+                    "      state: rollup ", vm.toString(sd.rollupId), " -> ", _shortHash(sd.newState), etherStr
                 )
             );
         }
-        console.log(string.concat("      returns:  ", responseDesc));
-    }
-
-    /// L2 table entry (no state deltas)
-    function _logL2Entry(uint256 idx, bytes32 hash, string memory triggerDesc, string memory responseDesc)
-        internal
-        pure
-    {
-        console.log("  [%s] trigger:  %s", idx, triggerDesc);
-        console.log("      hash:     %s", _shortHash(hash));
-        console.log(string.concat("      returns:  ", responseDesc));
-    }
-
-    /// L2 call entry
-    function _logL2Call(uint256 idx, bytes32 hash, Action memory a) internal view {
-        string memory func;
-        if (a.data.length == 0) {
-            func = "(ETH transfer)";
-        } else {
-            func = string.concat(".", _funcName(bytes4(a.data)), "()");
+        for (uint256 c = 0; c < e.L2ToL1Calls.length; c++) {
+            console.log(string.concat("      ", _fmtCall(e.L2ToL1Calls[c])));
         }
-        string memory valStr = a.value > 0 ? string.concat("  value=", _fmtEther(a.value)) : "";
-        console.log(string.concat("  [", vm.toString(idx), "] ", _name(a.destination), func, valStr));
-        console.log(
-            string.concat("      from ", _name(a.sourceAddress), " @ rollup ", vm.toString(a.sourceRollup))
-        );
-        console.log("      hash: %s", _shortHash(hash));
+        for (uint256 n = 0; n < e.expectedL1ToL2Calls.length; n++) {
+            console.log(string.concat("      ", _fmtNested(e.expectedL1ToL2Calls[n])));
+        }
+        if (e.returnData.length > 0) {
+            console.log("      returnData: %s", _shortBytes(e.returnData));
+        }
+        // POST-REFACTOR: ExecutionEntry.failed removed; reverts via LookupCall.
     }
 
-    // ── Summary helpers ──
+    /// @notice L2 entry (no state deltas, no ether tracking).
+    function _logL2Entry(uint256 idx, ExecutionEntry memory e) internal view {
+        bytes32 hash = _entryHash(e);
+        console.log("  [%s] entryHash=%s", idx, vm.toString(hash));
+        console.log("      proxyEntryHash:  %s", vm.toString(e.proxyEntryHash));
+        console.log("      rollingHash: %s", vm.toString(e.rollingHash));
+        console.log(
+            "      callCount=%s  calls=%s  nested=%s", e.callCount, e.L2ToL1Calls.length, e.expectedL1ToL2Calls.length
+        );
+        for (uint256 c = 0; c < e.L2ToL1Calls.length; c++) {
+            console.log(string.concat("      ", _fmtCall(e.L2ToL1Calls[c])));
+        }
+        for (uint256 n = 0; n < e.expectedL1ToL2Calls.length; n++) {
+            console.log(string.concat("      ", _fmtNested(e.expectedL1ToL2Calls[n])));
+        }
+        if (e.returnData.length > 0) {
+            console.log("      returnData: %s", _shortBytes(e.returnData));
+        }
+    }
+
+    function _logLookupCall(uint256 idx, LookupCall memory sc) internal pure {
+        console.log("  [%s] STATIC crossChainCallHash=%s", idx, vm.toString(sc.crossChainCallHash));
+        console.log(
+            "      callNumber=%s  lastNA=%s  failed=%s",
+            sc.callNumber,
+            sc.lastNestedActionConsumed,
+            sc.failed ? "true" : "false"
+        );
+        if (sc.returnData.length > 0) {
+            console.log("      returnData: %s", _shortBytes(sc.returnData));
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  Summary
+    // ══════════════════════════════════════════════════════════════════
 
     function _chainName(uint256 rollupId) internal pure returns (string memory) {
         if (rollupId == 0) return "L1";
@@ -145,40 +147,24 @@ abstract contract ComputeExpectedBase is Script {
         return string.concat("rollup ", vm.toString(rollupId));
     }
 
-    function _summaryAction(Action memory a) internal view returns (string memory) {
-        if (a.actionType == ActionType.CALL) {
-            string memory func;
-            if (a.data.length == 0) {
-                func = "(ETH transfer)";
-            } else {
-                func = string.concat(_name(a.destination), ".", _funcName(bytes4(a.data)), "()");
-            }
-            return string.concat("Call --> ", _chainName(a.rollupId), " (", func, ")");
-        } else if (a.actionType == ActionType.RESULT) {
-            return string.concat("Result ", a.failed ? "FAILED" : "ok");
-        } else if (a.actionType == ActionType.L2TX) {
-            return string.concat("L2TX rollup ", _chainName(a.rollupId));
-        } else if (a.actionType == ActionType.REVERT) {
-            return "Revert";
-        } else if (a.actionType == ActionType.REVERT_CONTINUE) {
-            return "RevertContinue";
-        }
-        return "?";
-    }
-
-    function _logEntrySummary(uint256 idx, Action memory trigger, Action memory response, bool isTerminal)
-        internal
-        view
-    {
-        string memory terminal = isTerminal ? " (terminal)" : "";
+    function _logEntrySummary(uint256 idx, ExecutionEntry memory e) internal pure {
         console.log(
             string.concat(
-                "  [", vm.toString(idx), "] ", _summaryAction(trigger), ", next: ", _summaryAction(response), terminal
+                "  [",
+                vm.toString(idx),
+                "] proxyEntryHash=",
+                _shortHash(e.proxyEntryHash),
+                "  calls=",
+                vm.toString(e.L2ToL1Calls.length),
+                "  nested=",
+                vm.toString(e.expectedL1ToL2Calls.length)
             )
         );
     }
 
-    // ── Primitives ──
+    // ══════════════════════════════════════════════════════════════════
+    //  Primitives
+    // ══════════════════════════════════════════════════════════════════
 
     function _shortHash(bytes32 h) internal pure returns (string memory) {
         string memory full = vm.toString(h);
@@ -190,29 +176,22 @@ abstract contract ComputeExpectedBase is Script {
         return string.concat(_sub(full, 0, 6), "..", _sub(full, 38, 42));
     }
 
+    function _shortBytes(bytes memory b) internal pure returns (string memory) {
+        if (b.length == 0) return "0x";
+        if (b.length <= 36) return vm.toString(b);
+        string memory full = vm.toString(b);
+        return string.concat(_sub(full, 0, 10), "...(", vm.toString(b.length), " bytes)");
+    }
+
     function _fmtEther(uint256 wei_) internal pure returns (string memory) {
         if (wei_ == 0) return "0";
-        if (wei_ % 1 ether == 0) {
-            return string.concat(vm.toString(wei_ / 1 ether), " ETH");
-        }
+        if (wei_ % 1 ether == 0) return string.concat(vm.toString(wei_ / 1 ether), " ETH");
         return string.concat(vm.toString(wei_), " wei");
     }
 
     function _fmtEtherSigned(int256 wei_) internal pure returns (string memory) {
-        if (wei_ >= 0) {
-            return string.concat("+", _fmtEther(uint256(wei_)));
-        }
+        if (wei_ >= 0) return string.concat("+", _fmtEther(uint256(wei_)));
         return string.concat("-", _fmtEther(uint256(-wei_)));
-    }
-
-    function _fmtScope(uint256[] memory scope) internal pure returns (string memory) {
-        if (scope.length == 0) return "";
-        string memory s = "  scope=[";
-        for (uint256 i = 0; i < scope.length; i++) {
-            if (i > 0) s = string.concat(s, ",");
-            s = string.concat(s, vm.toString(scope[i]));
-        }
-        return string.concat(s, "]");
     }
 
     function _sub(string memory str, uint256 s, uint256 e) internal pure returns (string memory) {

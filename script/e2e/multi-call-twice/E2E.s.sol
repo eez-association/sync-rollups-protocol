@@ -1,239 +1,312 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
-import {Rollups} from "../../../src/Rollups.sol";
-import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
+import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../../src/EEZ.sol";
+import {EEZL2} from "../../../src/L2/EEZL2.sol";
+import {StateDelta, L2ToL1Call, ExpectedL1ToL2Call, ExecutionEntry, LookupCall} from "../../../src/interfaces/IEEZ.sol";
 import {Counter} from "../../../test/mocks/CounterContracts.sol";
 import {CallTwice} from "../../../test/mocks/MultiCallContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
+import {
+    crossChainCallHash,
+    noLookupCalls,
+    noNestedActions,
+    noCalls,
+    RollingHashBuilder
+} from "../shared/E2EHelpers.sol";
 
-/// @dev Centralized action & entry definitions for the multi-call-twice scenario.
-///   Single source of truth — used by Execute, ExecuteL2, and ComputeExpected.
-abstract contract MultiCallTwiceActions {
-    function _callAction(address counterA, address callTwice) internal pure returns (Action memory) {
-        return Action({
-            actionType: ActionType.CALL,
-            rollupId: 1,
-            destination: counterA,
-            value: 0,
-            data: abi.encodeWithSelector(Counter.increment.selector),
-            failed: false,
-            sourceAddress: callTwice,
-            sourceRollup: 0,
-            scope: new uint256[](0)
+// ═══════════════════════════════════════════════════════════════════════
+//  Multi-call scenario: same target twice, two-sided
+//
+//  Source side (Execute on L1):
+//    CallTwice.callCounterTwice(counterProxy) invokes increment() twice on
+//    the SAME L1 proxy. Each invocation consumes an entry sequentially —
+//    two entries with the SAME proxyEntryHash but different returnData
+//    (uint256(1) and uint256(2)).
+//
+//  Destination side (ExecuteL2 on L2):
+//    Counter on L2.increment() is invoked twice via a CallTwiceL2 trigger
+//    contract on L2. SYSTEM loads the L2 table with both entries; CallTwiceL2
+//    then calls a trigger proxy (originalRollupId=MAINNET, originalAddress=
+//    counterL2) twice. Each proxy call forwards to managerL2.executeL1ToL2Call,
+//    which consumes entries[0] then entries[1] sequentially via executionIndex.
+//    _consumeAndExecute resets _rollingHash to 0 between entries, so each
+//    entry's rollingHash starts fresh at CB(1)→CE(1, true, retData).
+//
+//  Note: L1 and L2 proxyEntryHashes DIFFER because the destination-side
+//  sourceAddress is the L2 trigger contract (CallTwiceL2), not the L1
+//  CallTwice. Cross-chain symmetry stops at the destination boundary —
+//  multi-entry sequential consumption requires its own L2 trigger.
+// ═══════════════════════════════════════════════════════════════════════
+
+uint256 constant L2_ROLLUP_ID = 1;
+uint256 constant MAINNET_ROLLUP_ID = 0;
+
+abstract contract MultiCallActions {
+    function _incrementCallData() internal pure returns (bytes memory) {
+        return abi.encodeWithSelector(Counter.increment.selector);
+    }
+
+    function _callHash(address counterL2, address caller) internal pure returns (bytes32) {
+        return crossChainCallHash(L2_ROLLUP_ID, counterL2, 0, _incrementCallData(), caller, MAINNET_ROLLUP_ID);
+    }
+
+    /// @dev L2-side hash: trigger proxy on L2 has originalRollupId=MAINNET, so
+    ///      the manager computes hash(MAINNET, counterL2, ..., source=callTwiceL2, L2).
+    function _l2CallHash(address counterL2, address callTwiceL2) internal pure returns (bytes32) {
+        return crossChainCallHash(MAINNET_ROLLUP_ID, counterL2, 0, _incrementCallData(), callTwiceL2, L2_ROLLUP_ID);
+    }
+
+    function _l1Entries(address counterL2, address caller) internal pure returns (ExecutionEntry[] memory entries) {
+        bytes32 ah = _callHash(counterL2, caller);
+
+        StateDelta[] memory deltasA = new StateDelta[](1);
+        deltasA[0] = StateDelta({
+            rollupId: L2_ROLLUP_ID,
+            currentState: keccak256("l2-initial-state"),
+            newState: keccak256("l2-state-after-twice-1"),
+            etherDelta: 0
+        });
+
+        StateDelta[] memory deltasB = new StateDelta[](1);
+        deltasB[0] = StateDelta({
+            rollupId: L2_ROLLUP_ID,
+            currentState: keccak256("l2-state-after-twice-1"),
+            newState: keccak256("l2-state-after-twice-2"),
+            etherDelta: 0
+        });
+
+        entries = new ExecutionEntry[](2);
+        entries[0] = ExecutionEntry({
+            stateDeltas: deltasA,
+            proxyEntryHash: ah,
+            destinationRollupId: L2_ROLLUP_ID,
+            L2ToL1Calls: noCalls(),
+            expectedL1ToL2Calls: noNestedActions(),
+            callCount: 0,
+            returnData: abi.encode(uint256(1)),
+            rollingHash: bytes32(0)
+        });
+        entries[1] = ExecutionEntry({
+            stateDeltas: deltasB,
+            proxyEntryHash: ah,
+            destinationRollupId: L2_ROLLUP_ID,
+            L2ToL1Calls: noCalls(),
+            expectedL1ToL2Calls: noNestedActions(),
+            callCount: 0,
+            returnData: abi.encode(uint256(2)),
+            rollingHash: bytes32(0)
         });
     }
 
-    function _result1Action() internal pure returns (Action memory) {
-        return Action({
-            actionType: ActionType.RESULT,
-            rollupId: 1,
-            destination: address(0),
-            value: 0,
-            data: abi.encode(uint256(1)),
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-    }
-
-    function _result2Action() internal pure returns (Action memory) {
-        return Action({
-            actionType: ActionType.RESULT,
-            rollupId: 1,
-            destination: address(0),
-            value: 0,
-            data: abi.encode(uint256(2)),
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-    }
-
-    function _l1Entries(address counterA, address callTwice)
+    /// @dev Two L2-side mirror entries — one per inbound call. Each entry has
+    /// a single L2ToL1Call invoking Counter.increment() on counterL2 from
+    /// `caller` (CallTwice on L1). Same proxyEntryHash as the L1 entries.
+    /// returnData and rolling-hash CALL_END payload differ per entry (1 vs 2).
+    function _l2Entries(address counterL2, address callTwiceL2)
         internal
         pure
         returns (ExecutionEntry[] memory entries)
     {
-        Action memory call_ = _callAction(counterA, callTwice);
-        Action memory result1 = _result1Action();
-        Action memory result2 = _result2Action();
+        bytes32 ah = _l2CallHash(counterL2, callTwiceL2);
 
-        bytes32 s0 = keccak256("l2-initial-state");
-        bytes32 s1 = keccak256("l2-state-multicall-after-first");
-        bytes32 s2 = keccak256("l2-state-multicall-after-second");
-
-        StateDelta[] memory deltas1 = new StateDelta[](1);
-        deltas1[0] = StateDelta({rollupId: 1, currentState: s0, newState: s1, etherDelta: 0});
-
-        StateDelta[] memory deltas2 = new StateDelta[](1);
-        deltas2[0] = StateDelta({rollupId: 1, currentState: s1, newState: s2, etherDelta: 0});
-
-        bytes32 actionHash = keccak256(abi.encode(call_));
-
+        // Each L2 entry is consumed by a separate `executeL1ToL2Call` invocation
+        // (driven by callTwiceL2 calling the trigger proxy twice). `_consumeAndExecute`
+        // resets `_rollingHash` to 0 at the start of each entry — so both entries
+        // have rh = CB(1)→CE(1, true, retData) starting fresh.
         entries = new ExecutionEntry[](2);
-        entries[0].stateDeltas = deltas1;
-        entries[0].actionHash = actionHash;
-        entries[0].nextAction = result1;
-
-        entries[1].stateDeltas = deltas2;
-        entries[1].actionHash = actionHash;
-        entries[1].nextAction = result2;
+        entries[0] = _buildL2Entry(counterL2, callTwiceL2, ah, abi.encode(uint256(1)));
+        entries[1] = _buildL2Entry(counterL2, callTwiceL2, ah, abi.encode(uint256(2)));
     }
 
-    function _l2Entries(address counterA, address callTwice)
-        internal
+    function _buildL2Entry(address counterL2, address callTwiceL2, bytes32 ah, bytes memory retData)
+        private
         pure
-        returns (ExecutionEntry[] memory entries)
+        returns (ExecutionEntry memory)
     {
-        Action memory call_ = _callAction(counterA, callTwice);
-        Action memory result1 = _result1Action();
-        Action memory result2 = _result2Action();
+        L2ToL1Call[] memory calls = new L2ToL1Call[](1);
+        calls[0] = L2ToL1Call({
+            targetAddress: counterL2,
+            value: 0,
+            data: _incrementCallData(),
+            sourceAddress: callTwiceL2,
+            sourceRollupId: L2_ROLLUP_ID,
+            revertSpan: 0
+        });
 
-        entries = new ExecutionEntry[](2);
-        entries[0].stateDeltas = new StateDelta[](0);
-        entries[0].actionHash = keccak256(abi.encode(result1));
-        entries[0].nextAction = call_;
+        bytes32 rh = bytes32(0);
+        rh = RollingHashBuilder.appendCallBegin(rh, 1);
+        rh = RollingHashBuilder.appendCallEnd(rh, 1, true, retData);
 
-        entries[1].stateDeltas = new StateDelta[](0);
-        entries[1].actionHash = keccak256(abi.encode(result2));
-        entries[1].nextAction = result2;
+        return ExecutionEntry({
+            stateDeltas: new StateDelta[](0),
+            proxyEntryHash: ah,
+            destinationRollupId: L2_ROLLUP_ID,
+            L2ToL1Calls: calls,
+            expectedL1ToL2Calls: noNestedActions(),
+            callCount: 1,
+            returnData: retData,
+            rollingHash: rh
+        });
     }
 }
 
-/// @notice Batcher: postBatch + callCounterTwice in one tx
-contract Batcher {
-    function execute(
-        Rollups rollups,
-        ExecutionEntry[] calldata entries,
-        CallTwice app,
-        address counterProxy
-    ) external returns (uint256 first, uint256 second) {
-        rollups.postBatch(entries, 0, "", "proof");
-        (first, second) = app.callCounterTwice(counterProxy);
-    }
-}
-
-/// @title DeployL2 — Deploy Counter on L2
-/// @dev Outputs: COUNTER_A
 contract DeployL2 is Script {
     function run() external {
+        address managerAddr = vm.envAddress("MANAGER_L2");
+
         vm.startBroadcast();
-        Counter counterA = new Counter();
-        console.log("COUNTER_A=%s", address(counterA));
+        Counter counter = new Counter();
+
+        // Trigger proxy on L2 for the real counter, tagged as originalRollupId=MAINNET so the
+        // hash computed by managerL2.executeL1ToL2Call matches the L2 entries' proxyEntryHash.
+        EEZL2 manager = EEZL2(managerAddr);
+        address counterTriggerProxy;
+        try manager.createCrossChainProxy(address(counter), MAINNET_ROLLUP_ID) returns (address p) {
+            counterTriggerProxy = p;
+        } catch {
+            counterTriggerProxy = manager.computeCrossChainProxyAddress(address(counter), MAINNET_ROLLUP_ID);
+        }
+
+        // L2-side trigger contract: identical to the L1 CallTwice. Its address is what the
+        // L2 entries' sourceAddress commits to.
+        CallTwice callTwiceL2 = new CallTwice();
+
+        console.log("COUNTER_L2=%s", address(counter));
+        console.log("COUNTER_TRIGGER_PROXY_L2=%s", counterTriggerProxy);
+        console.log("CALL_TWICE_L2=%s", address(callTwiceL2));
         vm.stopBroadcast();
     }
 }
 
-/// @title Deploy — Deploy CallTwice + proxy on L1
-/// @dev Env: ROLLUPS, COUNTER_A
-/// Outputs: CALL_TWICE, PROXY_A
 contract Deploy is Script {
     function run() external {
         address rollupsAddr = vm.envAddress("ROLLUPS");
-        address counterAAddr = vm.envAddress("COUNTER_A");
+        address counterL2Addr = vm.envAddress("COUNTER_L2");
+
         vm.startBroadcast();
+        EEZ rollups = EEZ(rollupsAddr);
 
-        Rollups rollups = Rollups(rollupsAddr);
-        CallTwice callTwice = new CallTwice();
-
-        // Try to create proxy; if it already exists (CreateCollision), compute the address
-        address proxyA;
-        try rollups.createCrossChainProxy(counterAAddr, 1) returns (address p) {
-            proxyA = p;
+        address counterProxy;
+        try rollups.createCrossChainProxy(counterL2Addr, L2_ROLLUP_ID) returns (address p) {
+            counterProxy = p;
         } catch {
-            proxyA = rollups.computeCrossChainProxyAddress(counterAAddr, 1);
+            counterProxy = rollups.computeCrossChainProxyAddress(counterL2Addr, L2_ROLLUP_ID);
         }
 
-        console.log("CALL_TWICE=%s", address(callTwice));
-        console.log("PROXY_A=%s", proxyA);
-
+        CallTwice caller = new CallTwice();
+        console.log("COUNTER_PROXY=%s", counterProxy);
+        console.log("CALL_TWICE=%s", address(caller));
         vm.stopBroadcast();
     }
 }
 
-/// @title ExecuteL2 — Load L2 table + executeIncomingCrossChainCall (chained)
-/// @dev Env: MANAGER_L2, COUNTER_A, CALL_TWICE
-///
-/// L2 execution table (2 entries, chained):
-///   [0] hash(RESULT_1) → CALL(counterA again)     ← result of 1st chains to 2nd call
-///   [1] hash(RESULT_2) → RESULT_2 (terminal)       ← result of 2nd is terminal
-///
-/// 1 executeIncomingCrossChainCall. Chaining handles the second invocation.
-contract ExecuteL2 is Script, MultiCallTwiceActions {
-    function run() external {
-        address managerL2Addr = vm.envAddress("MANAGER_L2");
-        address counterAAddr = vm.envAddress("COUNTER_A");
-        address callTwiceAddr = vm.envAddress("CALL_TWICE");
+contract Batcher {
+    function execute(
+        EEZ rollups,
+        address proofSystem,
+        ExecutionEntry[] calldata entries,
+        LookupCall[] calldata lookupCalls,
+        CallTwice caller,
+        address counterProxy
+    )
+        external
+        returns (uint256 first, uint256 second)
+    {
+        address[] memory psList = new address[](1);
+        psList[0] = proofSystem;
+        uint256[] memory rids = new uint256[](1);
+        rids[0] = L2_ROLLUP_ID;
+        bytes[] memory proofs = new bytes[](1);
+        proofs[0] = "proof";
+        uint64[] memory psIdx = new uint64[](psList.length);
+        for (uint256 _i = 0; _i < psList.length; _i++) {
+            psIdx[_i] = uint64(_i);
+        }
+        RollupIdWithProofSystems[] memory rps = new RollupIdWithProofSystems[](rids.length);
+        for (uint256 _i = 0; _i < rids.length; _i++) {
+            rps[_i] = RollupIdWithProofSystems({rollupId: rids[_i], proofSystemIndex: psIdx});
+        }
 
-        CrossChainManagerL2 manager = CrossChainManagerL2(managerL2Addr);
-
-        vm.startBroadcast();
-
-        manager.loadExecutionTable(_l2Entries(counterAAddr, callTwiceAddr));
-
-        // Single call: chaining handles the second invocation
-        manager.executeIncomingCrossChainCall(
-            counterAAddr, 0, abi.encodeWithSelector(Counter.increment.selector), callTwiceAddr, 0, new uint256[](0)
-        );
-
-        console.log("L2 execution complete");
-        console.log("counter=%s", Counter(counterAAddr).counter());
-
-        vm.stopBroadcast();
+        ProofSystemBatchPerVerificationEntries memory batch = ProofSystemBatchPerVerificationEntries({
+            entries: entries,
+            l1ToL2lookupCalls: lookupCalls,
+            transientExecutionEntryCount: 0,
+            transientLookupCallCount: 0,
+            proofSystems: psList,
+            rollupIdsWithProofSystems: rps,
+            crossProofSystemInteractions: bytes32(0),
+            blobIndices: new uint256[](0),
+            callData: "",
+            proofs: proofs
+        });
+        rollups.postAndVerifyBatch(batch);
+        (first, second) = caller.callCounterTwice(counterProxy);
     }
 }
 
-/// @title Execute — Local mode: postBatch + callCounterTwice via Batcher
-/// @dev Env: ROLLUPS, COUNTER_A, CALL_TWICE, PROXY_A
-contract Execute is Script, MultiCallTwiceActions {
+/// @title ExecuteL2 — local mode: drive Counter.increment() twice on L2 via a trigger contract.
+/// @dev SYSTEM loads the two-entry table; CallTwiceL2 calls the trigger proxy twice.
+///      Each proxy call forwards to managerL2.executeL1ToL2Call which consumes the next
+///      entry sequentially. `_consumeAndExecute` resets `_rollingHash` per entry.
+/// Env: MANAGER_L2, COUNTER_L2, COUNTER_TRIGGER_PROXY_L2, CALL_TWICE_L2
+contract ExecuteL2 is Script, MultiCallActions {
     function run() external {
-        address rollupsAddr = vm.envAddress("ROLLUPS");
-        address counterAAddr = vm.envAddress("COUNTER_A");
-        address callTwiceAddr = vm.envAddress("CALL_TWICE");
-        address proxyAAddr = vm.envAddress("PROXY_A");
+        address managerAddr = vm.envAddress("MANAGER_L2");
+        address counterL2Addr = vm.envAddress("COUNTER_L2");
+        address triggerProxy = vm.envAddress("COUNTER_TRIGGER_PROXY_L2");
+        address callTwiceL2 = vm.envAddress("CALL_TWICE_L2");
 
         vm.startBroadcast();
-
-        Batcher batcher = new Batcher();
-        (uint256 first, uint256 second) = batcher.execute(
-            Rollups(rollupsAddr), _l1Entries(counterAAddr, callTwiceAddr), CallTwice(callTwiceAddr), proxyAAddr
-        );
+        EEZL2(managerAddr).loadExecutionTable(_l2Entries(counterL2Addr, callTwiceL2), noLookupCalls());
+        CallTwice(callTwiceL2).callCounterTwice(triggerProxy);
 
         console.log("done");
-        console.log("first=%s", first);
-        console.log("second=%s", second);
-
+        console.log("L2 counter=%s", Counter(counterL2Addr).counter());
         vm.stopBroadcast();
     }
 }
 
-/// @title ExecuteNetwork — Network mode: user transaction only
-/// @dev Env: CALL_TWICE, PROXY_A
-/// Returns (target, value, calldata) so the runner can send via `cast send`.
-/// We can't use `forge script --broadcast` because the tx reverts in local simulation
-/// (no execution table loaded yet). The system intercepts the tx from the mempool
-/// and inserts postBatch before it in the same block.
-contract ExecuteNetwork is Script {
-    function run() external view {
-        address callTwiceAddr = vm.envAddress("CALL_TWICE");
-        address proxyAAddr = vm.envAddress("PROXY_A");
-        bytes memory data = abi.encodeWithSelector(CallTwice.callCounterTwice.selector, proxyAAddr);
-        console.log("TARGET=%s", callTwiceAddr);
-        console.log("VALUE=0");
-        console.log("CALLDATA=%s", vm.toString(data));
+contract Execute is Script, MultiCallActions {
+    function run() external {
+        address rollupsAddr = vm.envAddress("ROLLUPS");
+        address proofSystemAddr = vm.envAddress("PROOF_SYSTEM");
+        address counterL2Addr = vm.envAddress("COUNTER_L2");
+        address counterProxy = vm.envAddress("COUNTER_PROXY");
+        address callerAddr = vm.envAddress("CALL_TWICE");
+
+        vm.startBroadcast();
+        Batcher batcher = new Batcher();
+        (uint256 first, uint256 second) = batcher.execute(
+            EEZ(rollupsAddr),
+            proofSystemAddr,
+            _l1Entries(counterL2Addr, callerAddr),
+            noLookupCalls(),
+            CallTwice(callerAddr),
+            counterProxy
+        );
+        console.log("done");
+        console.log("first=%s second=%s", first, second);
+        vm.stopBroadcast();
     }
 }
 
-/// @title ComputeExpected — Compute expected hashes for CallTwice scenario
-/// @dev Env: COUNTER_A, CALL_TWICE
-contract ComputeExpected is ComputeExpectedBase, MultiCallTwiceActions {
+contract ExecuteNetwork is Script {
+    function run() external view {
+        address caller = vm.envAddress("CALL_TWICE");
+        address counterProxy = vm.envAddress("COUNTER_PROXY");
+        console.log("TARGET=%s", caller);
+        console.log("VALUE=0");
+        console.log(
+            "CALLDATA=%s", vm.toString(abi.encodeWithSelector(CallTwice.callCounterTwice.selector, counterProxy))
+        );
+    }
+}
+
+contract ComputeExpected is ComputeExpectedBase, MultiCallActions {
     function _name(address a) internal view override returns (string memory) {
-        if (a == vm.envAddress("COUNTER_A")) return "Counter";
+        if (a == vm.envAddress("COUNTER_L2")) return "Counter";
         if (a == vm.envAddress("CALL_TWICE")) return "CallTwice";
         return _shortAddr(a);
     }
@@ -244,70 +317,29 @@ contract ComputeExpected is ComputeExpectedBase, MultiCallTwiceActions {
     }
 
     function run() external view {
-        address counterAAddr = vm.envAddress("COUNTER_A");
-        address callTwiceAddr = vm.envAddress("CALL_TWICE");
+        address counterL2Addr = vm.envAddress("COUNTER_L2");
+        address callerAddr = vm.envAddress("CALL_TWICE");
+        address callTwiceL2Addr = vm.envAddress("CALL_TWICE_L2");
 
-        // Actions (single source of truth)
-        Action memory callAction = _callAction(counterAAddr, callTwiceAddr);
-        Action memory result1 = _result1Action();
-        Action memory result2 = _result2Action();
+        ExecutionEntry[] memory l1 = _l1Entries(counterL2Addr, callerAddr);
+        ExecutionEntry[] memory l2 = _l2Entries(counterL2Addr, callTwiceL2Addr);
+        bytes32 h0 = _entryHash(l1[0]);
+        bytes32 h1 = _entryHash(l1[1]);
+        bytes32 l2h0 = _entryHash(l2[0]);
+        bytes32 l2h1 = _entryHash(l2[1]);
 
-        // Entries (single source of truth)
-        ExecutionEntry[] memory l1 = _l1Entries(counterAAddr, callTwiceAddr);
-        ExecutionEntry[] memory l2 = _l2Entries(counterAAddr, callTwiceAddr);
-
-        // Compute hashes from entries
-        bytes32 l1Entry1 = _entryHash(l1[0].actionHash, l1[0].nextAction);
-        bytes32 l1Entry2 = _entryHash(l1[1].actionHash, l1[1].nextAction);
-        bytes32 l2Entry0 = _entryHash(l2[0].actionHash, l2[0].nextAction);
-        bytes32 l2Entry1 = _entryHash(l2[1].actionHash, l2[1].nextAction);
-
-        // L2 call hash: what executeIncomingCrossChainCall emits
-        bytes32 l2CallHash = l1[0].actionHash;
-
-        console.log("EXPECTED_L1_HASHES=[%s,%s]", vm.toString(l1Entry1), vm.toString(l1Entry2));
-        console.log("EXPECTED_L2_HASHES=[%s,%s]", vm.toString(l2Entry0), vm.toString(l2Entry1));
-        console.log("EXPECTED_L2_CALL_HASHES=[%s]", vm.toString(l2CallHash));
-
-        // Summary
+        console.log("EXPECTED_L1_HASHES=[%s,%s]", vm.toString(h0), vm.toString(h1));
+        console.log("EXPECTED_L2_HASHES=[%s,%s]", vm.toString(l2h0), vm.toString(l2h1));
+        console.log("EXPECTED_L1_CALL_HASHES=[%s]", vm.toString(l1[0].proxyEntryHash));
         console.log("");
-        console.log("=== EXPECTED SUMMARY ===");
-        _logEntrySummary(0, callAction, result1, false);
-        _logEntrySummary(1, callAction, result2, false);
-
-        // ── L1 execution table ──
-        {
-            console.log("");
-            console.log("=== EXPECTED L1 EXECUTION TABLE (2 entries, same action hash) ===");
-            _logEntry(0, l1Entry1, l1[0].stateDeltas, _fmtCall(callAction), _fmtResult(result1, "uint256(1)"));
-            _logEntry(
-                1,
-                l1Entry2,
-                l1[1].stateDeltas,
-                string.concat(_fmtCall(callAction), "  (same hash, 2nd consumption)"),
-                _fmtResult(result2, "uint256(2)")
-            );
+        console.log("=== EXPECTED L1 TABLE (2 entries, same proxyEntryHash) ===");
+        for (uint256 i = 0; i < l1.length; i++) {
+            _logEntry(i, l1[i]);
         }
-
-        // ── L2 execution table (chained) ──
         console.log("");
-        console.log("=== EXPECTED L2 EXECUTION TABLE (2 entries, chained) ===");
-        _logL2Entry(
-            0,
-            l2Entry0,
-            _fmtResult(result1, "uint256(1)"),
-            string.concat(_fmtCall(callAction), "  (chains to 2nd call)")
-        );
-        _logL2Entry(
-            1,
-            l2Entry1,
-            _fmtResult(result2, "uint256(2)"),
-            string.concat(_fmtResult(result2, "uint256(2)"), "  (terminal)")
-        );
-
-        // ── L2 calls ──
-        console.log("");
-        console.log("=== EXPECTED L2 CALLS (1 call) ===");
-        _logL2Call(0, l2CallHash, callAction);
+        console.log("=== EXPECTED L2 TABLE (2 entries, same proxyEntryHash) ===");
+        for (uint256 i = 0; i < l2.length; i++) {
+            _logL2Entry(i, l2[i]);
+        }
     }
 }

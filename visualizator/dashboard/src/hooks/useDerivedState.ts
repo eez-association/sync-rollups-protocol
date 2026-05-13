@@ -46,14 +46,6 @@ function computeActiveForEvent(
       break;
     }
 
-    case "IncomingCrossChainCallExecuted": {
-      const dest = (args.destination as string)?.toLowerCase();
-      if (managerAddr) activeNodes.push(managerAddr);
-      if (dest) activeNodes.push(dest);
-      if (managerAddr && dest) activeEdges.push(`${managerAddr}->${dest}`);
-      break;
-    }
-
     case "CrossChainProxyCreated": {
       const proxy = (args.proxy as string)?.toLowerCase();
       if (proxy) activeNodes.push(proxy);
@@ -63,9 +55,8 @@ function computeActiveForEvent(
     }
 
     case "ExecutionConsumed":
-    case "L2ExecutionPerformed":
     case "RollupCreated":
-    case "StateUpdated":
+    case "RollupContractChanged":
       if (managerAddr) activeNodes.push(managerAddr);
       break;
 
@@ -89,8 +80,8 @@ export function useDerivedState() {
   const contractState = useStore((s) => s.contractState);
   const storeActiveNodes = useStore((s) => s.activeNodes);
   const storeActiveEdges = useStore((s) => s.activeEdges);
-  const rollupsAddress = useStore((s) => s.rollupsAddress);
-  const managerL2Address = useStore((s) => s.managerL2Address);
+  const l1ContractAddress = useStore((s) => s.l1ContractAddress);
+  const l2ContractAddress = useStore((s) => s.l2ContractAddress);
 
   return useMemo(() => {
     // Live mode — use store state directly
@@ -146,8 +137,8 @@ export function useDerivedState() {
 
       // Consume entries
       for (const info of mutations.l1Consumes) {
-        const truncated = truncateHex(info.actionHash);
-        const entry = replayL1.find((e) => e.actionHash === truncated);
+        const truncated = truncateHex(info.crossChainCallHash);
+        const entry = replayL1.find((e) => e.crossChainCallHash === truncated);
         if (entry) {
           entry.status = isCurrent ? "jc" : "consumed";
           if (info.actionDetail && Object.keys(info.actionDetail).length > 0) {
@@ -156,8 +147,8 @@ export function useDerivedState() {
         }
       }
       for (const info of mutations.l2Consumes) {
-        const truncated = truncateHex(info.actionHash);
-        const entry = replayL2.find((e) => e.actionHash === truncated);
+        const truncated = truncateHex(info.crossChainCallHash);
+        const entry = replayL2.find((e) => e.crossChainCallHash === truncated);
         if (entry) {
           entry.status = isCurrent ? "jc" : "consumed";
           if (info.actionDetail && Object.keys(info.actionDetail).length > 0) {
@@ -177,8 +168,8 @@ export function useDerivedState() {
     const selectedEvent = events[selectedIdx];
     const { activeNodes, activeEdges } = computeActiveForEvent(
       selectedEvent,
-      rollupsAddress,
-      managerL2Address,
+      l1ContractAddress,
+      l2ContractAddress,
     );
 
     return {
@@ -197,7 +188,7 @@ export function useDerivedState() {
     contractState,
     storeActiveNodes,
     storeActiveEdges,
-    rollupsAddress,
-    managerL2Address,
+    l1ContractAddress,
+    l2ContractAddress,
   ]);
 }

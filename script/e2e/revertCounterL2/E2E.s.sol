@@ -1,396 +1,334 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
+import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../../src/EEZ.sol";
+import {EEZL2} from "../../../src/L2/EEZL2.sol";
+import {StateDelta, L2ToL1Call, ExpectedL1ToL2Call, ExecutionEntry, LookupCall} from "../../../src/interfaces/IEEZ.sol";
+import {Counter} from "../../../test/mocks/CounterContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
-import {Rollups} from "../../../src/Rollups.sol";
-import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
-import {RevertCounter} from "../../../test/mocks/CounterContracts.sol";
-import {L2TXBatcher, L2TXActionsBase, getOrCreateProxy} from "../shared/E2EHelpers.sol";
+import {
+    crossChainCallHash,
+    noLookupCalls,
+    noNestedActions,
+    noCalls,
+    RollingHashBuilder
+} from "../shared/E2EHelpers.sol";
 
 // ═══════════════════════════════════════════════════════════════════════
-//  revertCounterL2 — L2 -> L1 with REVERT_CONTINUE on L1 (L2TX)
+//  RevertCounterL2 — mirror of revertCounter on the L2 side, two-sided.
 //
-//  RC reverts locally on L1 inside executeL2TX. L2TX applies state deltas
-//  when consuming entries — even though RC failed, the deltas from entry[0]
-//  are committed within the scope. REVERT_CONTINUE is needed so
-//  ScopeReverted can roll back those committed deltas.
+//  Models the canonical use case in the opposite direction: an L1→L2 cross-
+//  chain call whose state effects must be rolled back on L2 even though
+//  the destination call itself succeeds. The L2 manager's revertSpan
+//  mechanism is identical to L1's: self-call into executeInContext, the
+//  inner span runs the call (state mutates, success=true), then reverts
+//  with ContextResult to roll back EVM state while the rolling hash and
+//  cursors propagate out.
 //
-//  Alice calls RevertCounter's proxy on L2
-//    -> executeCrossChainCall -> CALL consumed -> RESULT(failed=true)
-//    -> _resolveScopes reverts (CallExecutionFailed)
-//    -> Alice's call reverts (expected, terminal failure on L2)
+//  L2 side (ExecuteL2):
+//    1. loadExecutionTable installs ONE entry with calls[0].revertSpan=1.
+//    2. Alice calls counterProxy (L2 proxy for Counter on L1) — consumes
+//       the entry by matching actionHash.
+//    3. _processNCalls sees revertSpan=1, self-calls executeInContext(1).
+//       Counter on L2 is incremented inside the span; rolling hash records
+//       CALL_END(true, abi.encode(1)).
+//    4. executeInContext reverts → state rolled back, hash/cursors restored
+//       from ContextResult.
+//    5. Net effect on L2: Counter.counter() == 0, even though the proof
+//       commits to a successful call.
 //
-//  Meanwhile on L1 (system posts batch + executeL2TX):
-//    postBatch stores 3 deferred entries
-//    executeL2TX triggers scope navigation:
-//      -> L2TX consumed (S0→S1) -> CALL(RevertCounter, scope=[0])
-//      -> newScope([0]): RevertCounter.increment() reverts on L1
-//      -> RESULT(failed) consumed (S1→S2) -> REVERT(scope=[0])
-//      -> _getRevertContinuation -> REVERT_CONTINUE consumed (S2→S3)
-//      -> ScopeReverted: rolls back S2,S3 -> state restored to S2
-//      -> continuation RESULT(ok) -> executeL2TX succeeds
+//  L1 side (Execute) — system-driven mirror:
+//    1. postAndVerifyBatch loads a deferred entry
+//       (proxyEntryHash=0; transientExecutionEntryCount=0) routed to the L2
+//       rollup queue. calls[0] targets the real Counter on L1 with
+//       revertSpan=1, source=(alice, L2_ROLLUP_ID).
+//    2. executeL2TX(L2_ROLLUP_ID) drains the entry; _processNCalls handles
+//       revertSpan exactly as L2 does — the inner span successfully calls
+//       Counter on L1, returns abi.encode(1), and executeInContext reverts.
+//    3. Net effect on L1: Counter.counter() == 0, rolling hash records
+//       CALL_END(true, abi.encode(1)), entry verified.
 // ═══════════════════════════════════════════════════════════════════════
 
-/// @dev Centralized action & entry definitions for the revertCounterL2 scenario.
-abstract contract RevertCounterL2Actions is L2TXActionsBase {
-    function _revertData() internal pure returns (bytes memory) {
-        return abi.encodeWithSignature("Error(string)", "always reverts");
+uint256 constant L2_ROLLUP_ID = 1;
+uint256 constant MAINNET_ROLLUP_ID = 0;
+
+abstract contract RevertL2Actions {
+    using RollingHashBuilder for bytes32;
+
+    function _successReturnData() internal pure returns (bytes memory) {
+        return abi.encode(uint256(1));
     }
 
-    /// @dev CALL action as produced by executeCrossChainCall on L2 (scope=[])
-    function _callAction(address revertCounterL1, address sourceAddr) internal pure returns (Action memory) {
-        return Action({
-            actionType: ActionType.CALL,
-            rollupId: 0,
-            destination: revertCounterL1,
-            value: 0,
-            data: abi.encodeWithSelector(RevertCounter.increment.selector),
-            failed: false,
-            sourceAddress: sourceAddr,
-            sourceRollup: L2_ROLLUP_ID,
-            scope: new uint256[](0)
-        });
+    /// @dev Outer action hash: alice calls counterProxy (Counter@L1) on L2.
+    function _outerActionHash(address counterL1, address alice) internal pure returns (bytes32) {
+        return crossChainCallHash(
+            MAINNET_ROLLUP_ID, counterL1, 0, abi.encodeWithSelector(Counter.increment.selector), alice, L2_ROLLUP_ID
+        );
     }
 
-    function _resultFailedAction() internal pure returns (Action memory) {
-        return Action({
-            actionType: ActionType.RESULT,
-            rollupId: 0,
-            destination: address(0),
-            value: 0,
-            data: _revertData(),
-            failed: true,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
+    /// @dev Rolling hash: CALL_BEGIN(1) → CALL_END(1, true, abi.encode(1)).
+    function _expectedRollingHash() internal pure returns (bytes32 h) {
+        h = bytes32(0);
+        h = h.appendCallBegin(1);
+        h = h.appendCallEnd(1, true, _successReturnData());
     }
 
-    /// @dev Same CALL but with scope=[0] for L1 scope navigation
-    function _callActionScoped(address revertCounterL1, address sourceAddr) internal pure returns (Action memory) {
-        uint256[] memory scope0 = new uint256[](1);
-        scope0[0] = 0;
-        return Action({
-            actionType: ActionType.CALL,
-            rollupId: 0,
-            destination: revertCounterL1,
-            value: 0,
-            data: abi.encodeWithSelector(RevertCounter.increment.selector),
-            failed: false,
-            sourceAddress: sourceAddr,
-            sourceRollup: L2_ROLLUP_ID,
-            scope: scope0
-        });
-    }
-
-    function _revertAction() internal pure returns (Action memory) {
-        uint256[] memory scope0 = new uint256[](1);
-        scope0[0] = 0;
-        return Action({
-            actionType: ActionType.REVERT,
-            rollupId: L2_ROLLUP_ID,
-            destination: address(0),
-            value: 0,
-            data: "",
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: scope0
-        });
-    }
-
-    function _revertContinueAction() internal pure returns (Action memory) {
-        return Action({
-            actionType: ActionType.REVERT_CONTINUE,
-            rollupId: L2_ROLLUP_ID,
-            destination: address(0),
-            value: 0,
-            data: "",
-            failed: true,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-    }
-
-    function _finalResultAction() internal pure returns (Action memory) {
-        return Action({
-            actionType: ActionType.RESULT,
-            rollupId: L2_ROLLUP_ID,
-            destination: address(0),
-            value: 0,
-            data: "",
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
-    }
-
-    function _l1Entries(address revertCounterL1, address sourceAddr, bytes memory rlpEncodedTx)
+    function _l2Entries(address counterL2, address counterL1, address alice)
         internal
         pure
         returns (ExecutionEntry[] memory entries)
     {
-        Action memory l2tx = _l2txAction(rlpEncodedTx);
-        Action memory callScoped = _callActionScoped(revertCounterL1, sourceAddr);
-        Action memory resultFailed = _resultFailedAction();
-        Action memory revertAct = _revertAction();
-        Action memory revertCont = _revertContinueAction();
-        Action memory finalResult = _finalResultAction();
-
-        bytes32 s0 = keccak256("l2-initial-state");
-        bytes32 s1 = keccak256("l2-state-revctr-step1");
-        bytes32 s2 = keccak256("l2-state-revctr-step2");
-        bytes32 s3 = keccak256("l2-state-revctr-step3");
-
-        StateDelta[] memory deltas0 = new StateDelta[](1);
-        deltas0[0] = StateDelta({rollupId: L2_ROLLUP_ID, currentState: s0, newState: s1, etherDelta: 0});
-
-        StateDelta[] memory deltas1 = new StateDelta[](1);
-        deltas1[0] = StateDelta({rollupId: L2_ROLLUP_ID, currentState: s1, newState: s2, etherDelta: 0});
-
-        StateDelta[] memory deltas2 = new StateDelta[](1);
-        deltas2[0] = StateDelta({rollupId: L2_ROLLUP_ID, currentState: s2, newState: s3, etherDelta: 0});
-
-        entries = new ExecutionEntry[](3);
-
-        // Entry 0: L2TX -> CALL(RevertCounter, scope=[0])
-        entries[0].stateDeltas = deltas0;
-        entries[0].actionHash = keccak256(abi.encode(l2tx));
-        entries[0].nextAction = callScoped;
-
-        // Entry 1: RESULT(failed) -> REVERT(scope=[0])
-        entries[1].stateDeltas = deltas1;
-        entries[1].actionHash = keccak256(abi.encode(resultFailed));
-        entries[1].nextAction = revertAct;
-
-        // Entry 2: REVERT_CONTINUE -> final RESULT(ok)
-        // L2TX applies deltas on consumption — ScopeReverted needed to roll them back.
-        entries[2].stateDeltas = deltas2;
-        entries[2].actionHash = keccak256(abi.encode(revertCont));
-        entries[2].nextAction = finalResult;
-    }
-
-    function _l2Entries(address revertCounterL1, address sourceAddr)
-        internal
-        pure
-        returns (ExecutionEntry[] memory entries)
-    {
-        Action memory call_ = _callAction(revertCounterL1, sourceAddr);
-        Action memory resultFailed = _resultFailedAction();
+        // Inner call: a Counter.increment() on L2 wrapped in revertSpan=1 to
+        // demonstrate the EVM state effect being rolled back while the rolling
+        // hash still records the successful outcome. sourceRollupId mirrors the
+        // entry's outer source (Alice on L2) per the spec convention.
+        L2ToL1Call[] memory calls = new L2ToL1Call[](1);
+        calls[0] = L2ToL1Call({
+            targetAddress: counterL2,
+            value: 0,
+            data: abi.encodeWithSelector(Counter.increment.selector),
+            sourceAddress: alice,
+            sourceRollupId: L2_ROLLUP_ID,
+            revertSpan: 1
+        });
 
         entries = new ExecutionEntry[](1);
-        entries[0].stateDeltas = new StateDelta[](0);
-        entries[0].actionHash = keccak256(abi.encode(call_));
-        entries[0].nextAction = resultFailed;
+        entries[0] = ExecutionEntry({
+            stateDeltas: new StateDelta[](0),
+            proxyEntryHash: _outerActionHash(counterL1, alice),
+            destinationRollupId: L2_ROLLUP_ID,
+            L2ToL1Calls: calls,
+            expectedL1ToL2Calls: noNestedActions(),
+            callCount: 1,
+            returnData: "",
+            rollingHash: _expectedRollingHash()
+        });
+    }
+
+    /// @dev Single L1 entry — destination-side mirror, system-driven (proxyEntryHash=0).
+    /// `L2ToL1Calls[0]` targets the real Counter on L1 with revertSpan=1; the inner
+    /// span increments it, returns abi.encode(1), and executeInContext rolls back state.
+    /// Source matches the L2-anchored entry: (alice, L2_ROLLUP_ID).
+    function _l1Entries(address counterL1, address counterL2, address alice)
+        internal
+        pure
+        returns (ExecutionEntry[] memory entries)
+    {
+        L2ToL1Call[] memory calls = new L2ToL1Call[](1);
+        calls[0] = L2ToL1Call({
+            targetAddress: counterL1,
+            value: 0,
+            data: abi.encodeWithSelector(Counter.increment.selector),
+            sourceAddress: alice,
+            sourceRollupId: L2_ROLLUP_ID,
+            revertSpan: 1
+        });
+
+        entries = new ExecutionEntry[](1);
+        entries[0] = ExecutionEntry({
+            stateDeltas: new StateDelta[](0),
+            proxyEntryHash: bytes32(0),
+            destinationRollupId: L2_ROLLUP_ID,
+            L2ToL1Calls: calls,
+            expectedL1ToL2Calls: noNestedActions(),
+            callCount: 1,
+            returnData: "",
+            rollingHash: _expectedRollingHash()
+        });
     }
 }
 
-/// @title Deploy — Deploy RevertCounter on L1
-/// @dev Env: (none)
-/// Outputs: REVERT_COUNTER_L1, ALICE
+// ═══════════════════════════════════════════════════════════════════════
+//  Deploys
+// ═══════════════════════════════════════════════════════════════════════
+
+/// @title Deploy — on L1, deploy Counter (address reference for proxy)
 contract Deploy is Script {
     function run() external {
         vm.startBroadcast();
-
-        RevertCounter rc = new RevertCounter();
-        console.log("REVERT_COUNTER_L1=%s", address(rc));
-        console.log("ALICE=%s", msg.sender);
-
+        Counter counterL1 = new Counter();
+        console.log("COUNTER_L1=%s", address(counterL1));
         vm.stopBroadcast();
     }
 }
 
-/// @title DeployL2 — Create proxy for RevertCounter(L1) on L2
-/// @dev Env: MANAGER_L2, REVERT_COUNTER_L1
-/// Outputs: REVERT_COUNTER_PROXY_L2
+/// @title DeployL2 — on L2, deploy Counter (force-revert target) + create trigger proxy
 contract DeployL2 is Script {
     function run() external {
-        address managerL2Addr = vm.envAddress("MANAGER_L2");
-        address revertCounterL1Addr = vm.envAddress("REVERT_COUNTER_L1");
+        address managerAddr = vm.envAddress("MANAGER_L2");
+        address counterL1 = vm.envAddress("COUNTER_L1");
 
         vm.startBroadcast();
+        EEZL2 manager = EEZL2(managerAddr);
 
-        CrossChainManagerL2 manager = CrossChainManagerL2(managerL2Addr);
-        address revertCounterProxyL2 = getOrCreateProxy(manager, revertCounterL1Addr, 0);
+        Counter counterL2 = new Counter();
 
-        console.log("REVERT_COUNTER_PROXY_L2=%s", revertCounterProxyL2);
+        // Trigger proxy: proxy for (Counter@L1, MAINNET_ROLLUP_ID) on L2
+        address counterProxy;
+        try manager.createCrossChainProxy(counterL1, MAINNET_ROLLUP_ID) returns (address p) {
+            counterProxy = p;
+        } catch {
+            counterProxy = manager.computeCrossChainProxyAddress(counterL1, MAINNET_ROLLUP_ID);
+        }
 
+        console.log("COUNTER_L2=%s", address(counterL2));
+        console.log("COUNTER_PROXY_L2=%s", counterProxy);
         vm.stopBroadcast();
     }
 }
 
-/// @notice Helper: wraps Alice's proxy call so the revert doesn't crash the forge script.
-///         The cross-chain RESULT(failed=true) causes CallExecutionFailed, which reverts
-///         executeCrossChainCall. This helper catches it via low-level call.
-contract RevertCallHelper {
-    function callExpectRevert(address proxy, bytes calldata data) external {
-        (bool success,) = proxy.call(data);
-        success; // Expected to revert — suppress unused warning
-    }
-}
+// ═══════════════════════════════════════════════════════════════════════
+//  Executes
+// ═══════════════════════════════════════════════════════════════════════
 
-/// @title ExecuteL2 — Load L2 table + Alice calls RevertCounter proxy (local mode)
-/// @dev Alice's call is expected to revert — executeCrossChainCall returns RESULT(failed=true)
-///      which causes _resolveScopes to revert with CallExecutionFailed.
-///      We deploy RevertCallHelper to wrap the call so forge sees all txs as successful.
-/// Env: MANAGER_L2, REVERT_COUNTER_L1, REVERT_COUNTER_PROXY_L2
-contract ExecuteL2 is Script, RevertCounterL2Actions {
+/// @title ExecuteL2 — loadExecutionTable + trigger in same block
+contract ExecuteL2 is Script, RevertL2Actions {
     function run() external {
-        address managerL2Addr = vm.envAddress("MANAGER_L2");
-        address revertCounterL1Addr = vm.envAddress("REVERT_COUNTER_L1");
-        address revertCounterProxyL2Addr = vm.envAddress("REVERT_COUNTER_PROXY_L2");
-
-        CrossChainManagerL2 manager = CrossChainManagerL2(managerL2Addr);
+        address managerAddr = vm.envAddress("MANAGER_L2");
+        address counterL1 = vm.envAddress("COUNTER_L1");
+        address counterL2 = vm.envAddress("COUNTER_L2");
+        address counterProxy = vm.envAddress("COUNTER_PROXY_L2");
 
         vm.startBroadcast();
+        address alice = msg.sender;
+        console.log("ExecuteL2: alice=%s counterProxy=%s", alice, counterProxy);
 
-        // Predict RevertCallHelper address — it will be the sourceAddress (msg.sender at proxy level)
-        address helperAddr = vm.computeCreateAddress(msg.sender, vm.getNonce(msg.sender));
+        EEZL2(managerAddr).loadExecutionTable(_l2Entries(counterL2, counterL1, alice), noLookupCalls());
+        console.log("ExecuteL2: loadExecutionTable done");
 
-        manager.loadExecutionTable(_l2Entries(revertCounterL1Addr, helperAddr));
+        // Trigger: alice calls counterProxy.increment() — consumes the entry.
+        (bool ok,) = counterProxy.call(abi.encodeWithSelector(Counter.increment.selector));
+        require(ok, "trigger should succeed (revertSpan rolls back inner state, not outer flow)");
 
-        // Alice calls RevertCounter proxy on L2 — expected to revert.
-        // Use RevertCallHelper so forge broadcasts a successful tx (the helper catches the revert).
-        RevertCallHelper helper = new RevertCallHelper();
-        helper.callExpectRevert(revertCounterProxyL2Addr, abi.encodeWithSelector(RevertCounter.increment.selector));
+        // Invariant: counter on L2 stays at 0 — increment ran inside the span,
+        // returned 1, then state was rolled back by executeInContext's revert.
+        uint256 finalCounter = Counter(counterL2).counter();
+        require(finalCounter == 0, "revertSpan must roll back successful state changes");
 
+        console.log("ExecuteL2: trigger done");
         console.log("done");
-
+        console.log("counterL2.counter=%s (expected 0 -- state rolled back)", finalCounter);
         vm.stopBroadcast();
     }
 }
 
-/// @title Execute — Local mode: postBatch + executeL2TX via L2TXBatcher on L1
-/// @dev executeL2TX succeeds — REVERT_CONTINUE handles RC's failure within scope.
-/// Env: ROLLUPS, REVERT_COUNTER_L1, ALICE
-contract Execute is Script, RevertCounterL2Actions {
-    function run() external {
-        address rollupsAddr = vm.envAddress("ROLLUPS");
-        address revertCounterL1Addr = vm.envAddress("REVERT_COUNTER_L1");
-        address alice = vm.envAddress("ALICE");
-
-        vm.startBroadcast();
-
-        bytes memory rlpTx = vm.envBytes("RLP_ENCODED_TX");
-
-        L2TXBatcher batcher = new L2TXBatcher();
-        batcher.execute(Rollups(rollupsAddr), _l1Entries(revertCounterL1Addr, alice, rlpTx), L2_ROLLUP_ID, rlpTx);
-
-        console.log("done");
-        // RevertCounter.counter should still be 0 — increment() reverted inside scope
-        console.log("counter=%s", RevertCounter(revertCounterL1Addr).counter());
-
-        vm.stopBroadcast();
-    }
-}
-
-/// @title ExecuteNetworkL2 — Network mode: user transaction on L2 (trigger)
-/// @dev Env: REVERT_COUNTER_PROXY_L2
-/// The tx reverts on-chain (RESULT failed -> CallExecutionFailed).
-/// The system still processes the L1 side via postBatch + executeL2TX.
+/// @title ExecuteNetworkL2 — network mode output
 contract ExecuteNetworkL2 is Script {
     function run() external view {
-        address target = vm.envAddress("REVERT_COUNTER_PROXY_L2");
-        bytes memory data = abi.encodeWithSelector(RevertCounter.increment.selector);
+        address target = vm.envAddress("COUNTER_PROXY_L2");
         console.log("TARGET=%s", target);
         console.log("VALUE=0");
-        console.log("CALLDATA=%s", vm.toString(data));
+        console.log("CALLDATA=%s", vm.toString(abi.encodeWithSelector(Counter.increment.selector)));
     }
 }
 
-/// @title ComputeExpected — Compute expected hashes + print expected table
-/// @dev Env: REVERT_COUNTER_L1, ALICE
-contract ComputeExpected is ComputeExpectedBase, RevertCounterL2Actions {
+/// @notice Inline L2-TX batcher — postBatch (deferred) + executeL2TX on L1.
+/// @dev Forces transientExecutionEntryCount=0 so the proxyEntryHash=0 entry
+///      stays in the deferred queue and is drained by executeL2TX(rollupId).
+contract DeferredL2TXBatcher {
+    function execute(
+        EEZ rollups,
+        address proofSystem,
+        uint256 rollupId,
+        ExecutionEntry[] calldata entries,
+        LookupCall[] calldata lookupCalls
+    )
+        external
+    {
+        address[] memory psList = new address[](1);
+        psList[0] = proofSystem;
+        bytes[] memory proofs = new bytes[](1);
+        proofs[0] = "proof";
+
+        uint64[] memory psIdx = new uint64[](1);
+        psIdx[0] = 0;
+        RollupIdWithProofSystems[] memory rps = new RollupIdWithProofSystems[](1);
+        rps[0] = RollupIdWithProofSystems({rollupId: rollupId, proofSystemIndex: psIdx});
+
+        ProofSystemBatchPerVerificationEntries memory batch = ProofSystemBatchPerVerificationEntries({
+            entries: entries,
+            l1ToL2lookupCalls: lookupCalls,
+            transientExecutionEntryCount: 0,
+            transientLookupCallCount: 0,
+            proofSystems: psList,
+            rollupIdsWithProofSystems: rps,
+            crossProofSystemInteractions: bytes32(0),
+            blobIndices: new uint256[](0),
+            callData: "",
+            proofs: proofs
+        });
+        rollups.postAndVerifyBatch(batch);
+        rollups.executeL2TX(rollupId);
+    }
+}
+
+/// @title Execute — local mode: postBatch (deferred) + executeL2TX on L1.
+/// @dev Destination-side mirror of the L2-originated cross-chain call. The L1
+///      anvil holds the real Counter contract; the deferred entry contains a
+///      revertSpan=1 call targeting it. _processNCalls runs Counter.increment()
+///      inside executeInContext, which reverts and rolls back the state — net
+///      effect: Counter.counter() == 0 on L1.
+/// Env: ROLLUPS, PROOF_SYSTEM, COUNTER_L1, COUNTER_L2
+contract Execute is Script, RevertL2Actions {
+    function run() external {
+        address rollupsAddr = vm.envAddress("ROLLUPS");
+        address proofSystemAddr = vm.envAddress("PROOF_SYSTEM");
+        address counterL1 = vm.envAddress("COUNTER_L1");
+        address counterL2 = vm.envAddress("COUNTER_L2");
+
+        vm.startBroadcast();
+        address alice = msg.sender;
+
+        DeferredL2TXBatcher batcher = new DeferredL2TXBatcher();
+        batcher.execute(
+            EEZ(rollupsAddr), proofSystemAddr, L2_ROLLUP_ID, _l1Entries(counterL1, counterL2, alice), noLookupCalls()
+        );
+
+        uint256 finalCounter = Counter(counterL1).counter();
+        require(finalCounter == 0, "revertSpan must roll back successful state changes on L1");
+
+        console.log("done");
+        console.log("counterL1.counter=%s (expected 0 -- state rolled back)", finalCounter);
+        vm.stopBroadcast();
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  ComputeExpected
+// ═══════════════════════════════════════════════════════════════════════
+
+contract ComputeExpected is ComputeExpectedBase, RevertL2Actions {
     function _name(address a) internal view override returns (string memory) {
-        if (a == vm.envAddress("REVERT_COUNTER_L1")) return "RevertCounter";
-        if (a == vm.envAddress("ALICE")) return "Alice";
+        if (a == vm.envAddress("COUNTER_L1")) return "Counter(L1)";
+        if (a == vm.envAddress("COUNTER_L2")) return "Counter(L2)";
         return _shortAddr(a);
     }
 
     function _funcName(bytes4 sel) internal pure override returns (string memory) {
-        if (sel == RevertCounter.increment.selector) return "increment";
+        if (sel == Counter.increment.selector) return "increment";
         return ComputeExpectedBase._funcName(sel);
     }
 
     function run() external view {
-        _logHashes();
-        _logSummary();
-        _logL1Table();
-        _logL2Table();
-    }
+        address counterL1 = vm.envAddress("COUNTER_L1");
+        address counterL2 = vm.envAddress("COUNTER_L2");
+        address alice = msg.sender;
 
-    function _logHashes() internal view {
-        address rc = vm.envAddress("REVERT_COUNTER_L1");
-        address alice = vm.envAddress("ALICE");
-        bytes memory rlpTx = vm.envBytes("RLP_ENCODED_TX");
+        ExecutionEntry[] memory l2 = _l2Entries(counterL2, counterL1, alice);
+        bytes32 l2Hash = _entryHash(l2[0]);
 
-        ExecutionEntry[] memory l1 = _l1Entries(rc, alice, rlpTx);
-        ExecutionEntry[] memory l2 = _l2Entries(rc, alice);
+        ExecutionEntry[] memory l1 = _l1Entries(counterL1, counterL2, alice);
+        bytes32 l1Hash = _entryHash(l1[0]);
 
-        bytes32 l1eh0 = _entryHash(l1[0].actionHash, l1[0].nextAction);
-        bytes32 l1eh1 = _entryHash(l1[1].actionHash, l1[1].nextAction);
-        bytes32 l1eh2 = _entryHash(l1[2].actionHash, l1[2].nextAction);
-        bytes32 l2eh0 = _entryHash(l2[0].actionHash, l2[0].nextAction);
-
-        console.log("EXPECTED_L1_HASHES=[%s,%s,%s]", vm.toString(l1eh0), vm.toString(l1eh1), vm.toString(l1eh2));
-        console.log("EXPECTED_L2_HASHES=[%s]", vm.toString(l2eh0));
-    }
-
-    function _logSummary() internal view {
-        address rc = vm.envAddress("REVERT_COUNTER_L1");
-        address alice = vm.envAddress("ALICE");
-        bytes memory rlpTx = vm.envBytes("RLP_ENCODED_TX");
-
+        console.log("EXPECTED_L2_HASHES=[%s]", vm.toString(l2Hash));
+        console.log("EXPECTED_L1_HASHES=[%s]", vm.toString(l1Hash));
+        console.log("EXPECTED_L2_CALL_HASHES=[%s]", vm.toString(l2[0].proxyEntryHash));
         console.log("");
-        console.log("=== EXPECTED SUMMARY ===");
-        _logEntrySummary(0, _l2txAction(rlpTx), _callActionScoped(rc, alice), false);
-        _logEntrySummary(1, _resultFailedAction(), _revertAction(), false);
-        _logEntrySummary(2, _revertContinueAction(), _finalResultAction(), false);
-    }
-
-    function _logL1Table() internal view {
-        address rc = vm.envAddress("REVERT_COUNTER_L1");
-        address alice = vm.envAddress("ALICE");
-        bytes memory rlpTx = vm.envBytes("RLP_ENCODED_TX");
-
-        ExecutionEntry[] memory l1 = _l1Entries(rc, alice, rlpTx);
-
+        console.log("=== EXPECTED L2 TABLE (1 entry, 1 call w/ revertSpan=1, force-reverted success) ===");
+        _logL2Entry(0, l2[0]);
         console.log("");
-        console.log("=== EXPECTED L1 EXECUTION TABLE (3 entries) ===");
-        _logEntry(
-            0, l1[0].actionHash, l1[0].stateDeltas, _fmtL2TX(_l2txAction(rlpTx)), _fmtCall(_callActionScoped(rc, alice))
-        );
-        _logEntry(
-            1,
-            l1[1].actionHash,
-            l1[1].stateDeltas,
-            _fmtResult(_resultFailedAction(), "(revert data)"),
-            "REVERT rollupId=1 scope=[0]"
-        );
-        _logEntry(
-            2,
-            l1[2].actionHash,
-            l1[2].stateDeltas,
-            "REVERT_CONTINUE rollupId=1",
-            _fmtResult(_finalResultAction(), "(void)  (continuation)")
-        );
-    }
-
-    function _logL2Table() internal view {
-        address rc = vm.envAddress("REVERT_COUNTER_L1");
-        address alice = vm.envAddress("ALICE");
-
-        ExecutionEntry[] memory l2 = _l2Entries(rc, alice);
-        bytes32 l2eh0 = _entryHash(l2[0].actionHash, l2[0].nextAction);
-
-        console.log("");
-        console.log("=== EXPECTED L2 EXECUTION TABLE (1 entry) ===");
-        _logL2Entry(0, l2eh0, _fmtCall(_callAction(rc, alice)), _fmtResult(_resultFailedAction(), "(revert data)"));
-
-        // No L2 calls for L2->L1 scenario
+        console.log("=== EXPECTED L1 TABLE (1 entry, 1 call w/ revertSpan=1, system-driven mirror) ===");
+        _logEntry(0, l1[0]);
     }
 }

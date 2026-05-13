@@ -1,24 +1,23 @@
 #!/usr/bin/env bash
-# ═══════════════════════════════════════════════════════════════════════
-# Cross-chain block decoder
-# ═══════════════════════════════════════════════════════════════════════
+# Cross-chain block decoder.
 #
-# Given an L1 block, decodes:
-#   1. L1 events: BatchPosted entries, consumed executions, triggers
-#   2. Extracts L2 block numbers from the postBatch tx calldata
-#   3. L2 events: ExecutionTableLoaded, consumed executions, calls
+# NOTE: Post-multi-prover-refactor, the orchestrator no longer encodes L2 block
+# numbers in postAndVerifyBatch callData. The cross-chain block correlation that was the
+# main feature of this script is no longer available on-chain. The single-block
+# decoder still works (decodes events on the given chain at the given block) —
+# if you only need that, just call:
+#   forge script script/DecodeExecutions.s.sol:DecodeExecutions \
+#     --rpc-url <RPC> --sig "runBlock(uint256,address)" <BLOCK> <ADDR>
 #
 # Usage:
 #   bash script/e2e/shared/decode-block.sh \
 #     --l1-block <N> --l1-rpc <RPC> --l2-rpc <RPC> \
 #     --rollups <ADDR> --manager-l2 <ADDR>
-#
 set -euo pipefail
 export FOUNDRY_DISABLE_NIGHTLY_WARNING=1
 
 source "$(dirname "$0")/E2EBase.sh"
 
-# ── Parse args ──
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --l1-block)     L1_BLOCK="$2"; shift 2;;
@@ -39,58 +38,21 @@ done
 
 DECODE_SCRIPT="script/DecodeExecutions.s.sol:DecodeExecutions"
 
-# ══════════════════════════════════════════════
-#  1. Decode L1 block
-# ══════════════════════════════════════════════
+# 1. Decode L1 block
 echo ""
-echo "====== L1 Block $L1_BLOCK (Rollups @ $ROLLUPS) ======"
+echo "====== L1 Block $L1_BLOCK (EEZ @ $ROLLUPS) ======"
 echo ""
 forge script "$DECODE_SCRIPT" \
     --rpc-url "$L1_RPC" \
     --sig "runBlock(uint256,address)" "$L1_BLOCK" "$ROLLUPS" 2>&1 \
     | sed -n '/^  /p'
 
-# ══════════════════════════════════════════════
-#  2. Extract L2 blocks from postBatch tx
-# ══════════════════════════════════════════════
-SIG_BATCH_POSTED="0x2f482312f12dceb86aac9ef0e0e1d9421ac62910326b3d50695d63117321b520"
-
-# Find the postBatch tx hash from BatchPosted event
-BATCH_TX=$(cast logs \
-    --from-block "$L1_BLOCK" --to-block "$L1_BLOCK" \
-    --address "$ROLLUPS" \
-    --rpc-url "$L1_RPC" --json 2>/dev/null \
-    | jq -r "[.[] | select(.topics[0] == \"$SIG_BATCH_POSTED\")] | .[0].transactionHash // empty")
-
-L2_BLOCKS="[]"
-if [[ -n "$BATCH_TX" ]]; then
-    L2_BLOCKS=$(extract_l2_blocks_from_tx "$BATCH_TX" "$L1_RPC")
-fi
-
 echo ""
-echo "====== L2 Blocks extracted: $L2_BLOCKS (from tx $BATCH_TX) ======"
+echo "(L2-block correlation no longer available post-refactor — see header comment)"
 
-# ══════════════════════════════════════════════
-#  3. Decode each L2 block
-# ══════════════════════════════════════════════
-if [[ "$L2_BLOCKS" != "[]" ]]; then
-    # Strip brackets and iterate
-    BLOCKS_CSV=$(echo "$L2_BLOCKS" | tr -d '[] ')
-    IFS=',' read -ra BLOCK_ARR <<< "$BLOCKS_CSV"
-    for b in "${BLOCK_ARR[@]}"; do
-        [[ -z "$b" ]] && continue
-        echo ""
-        echo "====== L2 Block $b (ManagerL2 @ $MANAGER_L2) ======"
-        echo ""
-        forge script "$DECODE_SCRIPT" \
-            --rpc-url "$L2_RPC" \
-            --sig "runBlock(uint256,address)" "$b" "$MANAGER_L2" 2>&1 \
-            | sed -n '/^  /p'
-    done
-else
-    echo ""
-    echo "(no L2 blocks found in postBatch callData)"
-fi
+# Post-refactor event sig — kept for documentation/callers that grep this file.
+SIG_BATCH_POSTED=$(cast keccak 'BatchPosted(uint256)')
+: "$SIG_BATCH_POSTED"
 
 echo ""
 echo "====== Done ======"

@@ -14,8 +14,8 @@ type Props = {
 export const BundleDetail: React.FC<Props> = ({ bundle, onClose }) => {
   const events = useStore((s) => s.events);
   const knownAddresses = useStore((s) => s.knownAddresses);
-  const l1Contract = useStore((s) => s.rollupsAddress);
-  const l2Contract = useStore((s) => s.managerL2Address);
+  const l1Contract = useStore((s) => s.l1ContractAddress);
+  const l2Contract = useStore((s) => s.l2ContractAddress);
   const [activeStep, setActiveStep] = useState(0);
 
   // Get events in this bundle
@@ -121,7 +121,7 @@ export const BundleDetail: React.FC<Props> = ({ bundle, onClose }) => {
               <StatusDot status={bundle.status} />
             </div>
             <div style={{ fontSize: "0.5rem", color: COLORS.dim, marginTop: 2 }}>
-              {bundle.events.length} events | {bundle.actionHashes.length} action hashes |
+              {bundle.events.length} events | {bundle.crossChainCallHashes.length} cross-chain call hashes |
               blocks {bundle.blockRange.from.toString()}-{bundle.blockRange.to.toString()} |
               arrow keys to navigate
             </div>
@@ -297,14 +297,12 @@ export const BundleDetail: React.FC<Props> = ({ bundle, onClose }) => {
 
 type MiniEntry = {
   stepStatus: string;
-  actionHash: string;
-  nextActionHash: string;
+  crossChainCallHash: string;
   delta: string | null;
   stateDeltas?: string[];
   actionDetail?: Record<string, string>;
-  nextActionDetail?: Record<string, string>;
-  fullActionHash?: string;
-  fullNextActionHash?: string;
+  entryMeta?: Record<string, string>;
+  fullCrossChainCallHash?: string;
 };
 
 const TablePanel: React.FC<{
@@ -356,14 +354,14 @@ const TableEntryMini: React.FC<{
   const borderColor = isJa ? COLORS.add : isJc ? COLORS.rm : COLORS.brd;
   const opacity = isConsumed ? 0.3 : 1;
 
-  // Extract decoded fields (skip computedHash/actionHash keys — shown as the header hash)
+  // Extract decoded fields (skip crossChainCallHash key — shown as the header hash)
   const actionFields = entry.actionDetail
-    ? Object.entries(entry.actionDetail).filter(([k]) => k !== "computedHash" && k !== "actionHash")
+    ? Object.entries(entry.actionDetail).filter(([k]) => k !== "crossChainCallHash")
     : [];
-  const nextActionFields = entry.nextActionDetail
-    ? Object.entries(entry.nextActionDetail).filter(([k]) => k !== "computedHash" && k !== "actionHash")
+  const metaFields = entry.entryMeta
+    ? Object.entries(entry.entryMeta)
     : [];
-  const hasDecodedFields = actionFields.length > 0 || nextActionFields.length > 0;
+  const hasDecodedFields = actionFields.length > 0 || metaFields.length > 0;
 
   return (
     <div
@@ -391,9 +389,7 @@ const TableEntryMini: React.FC<{
         }}
       >
         <span style={{ color: COLORS.dim, fontWeight: 700 }}>#{index + 1}</span>
-        <span style={{ color: COLORS.add }}>{entry.actionHash}</span>
-        <span style={{ color: COLORS.dim }}>→</span>
-        <span style={{ color: COLORS.warn, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{entry.nextActionHash}</span>
+        <span style={{ color: COLORS.add, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{entry.crossChainCallHash}</span>
         {isJa && (
           <span style={{ fontSize: "0.48rem", color: COLORS.add, fontWeight: 700, flexShrink: 0 }}>+added</span>
         )}
@@ -420,28 +416,28 @@ const TableEntryMini: React.FC<{
           {actionFields.length > 0 && (
             <div style={{ marginBottom: 5 }}>
               <div style={{ fontSize: "0.48rem", fontWeight: 700, color: COLORS.acc, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 3 }}>
-                Action (hashed as actionHash)
+                Action Hash Details
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "85px 1fr", gap: "2px 8px", fontSize: "0.52rem" }}>
                 {actionFields.map(([k, v]) => (
                   <React.Fragment key={k}>
                     <span style={{ color: COLORS.dim }}>{k}</span>
-                    <span style={{ color: k === "actionType" || (k === "data" && v !== "0x") ? COLORS.add : COLORS.tx, wordBreak: "break-all" }}>{v}</span>
+                    <span style={{ color: k === "data" && v !== "0x" ? COLORS.add : COLORS.tx, wordBreak: "break-all" }}>{v}</span>
                   </React.Fragment>
                 ))}
               </div>
             </div>
           )}
-          {nextActionFields.length > 0 && (
+          {metaFields.length > 0 && (
             <div>
               <div style={{ fontSize: "0.48rem", fontWeight: 700, color: COLORS.acc, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 3 }}>
-                Next Action (returned on match)
+                Entry Metadata
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "85px 1fr", gap: "2px 8px", fontSize: "0.52rem" }}>
-                {nextActionFields.map(([k, v]) => (
+                {metaFields.map(([k, v]) => (
                   <React.Fragment key={k}>
                     <span style={{ color: COLORS.dim }}>{k}</span>
-                    <span style={{ color: k === "actionType" || (k === "data" && v !== "0x") ? COLORS.add : COLORS.tx, wordBreak: "break-all" }}>{v}</span>
+                    <span style={{ color: COLORS.tx, wordBreak: "break-all" }}>{v}</span>
                   </React.Fragment>
                 ))}
               </div>

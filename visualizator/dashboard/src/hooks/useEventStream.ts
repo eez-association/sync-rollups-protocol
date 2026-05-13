@@ -11,8 +11,8 @@ import { truncateHex } from "../lib/actionFormatter";
 export function useEventStream() {
   const l1RpcUrl = useStore((s) => s.l1RpcUrl);
   const l2RpcUrl = useStore((s) => s.l2RpcUrl);
-  const rollupsAddress = useStore((s) => s.rollupsAddress);
-  const managerL2Address = useStore((s) => s.managerL2Address);
+  const l1ContractAddress = useStore((s) => s.l1ContractAddress);
+  const l2ContractAddress = useStore((s) => s.l2ContractAddress);
   const connected = useStore((s) => s.connected);
 
   const addEvent = useStore((s) => s.addEvent);
@@ -33,8 +33,8 @@ export function useEventStream() {
       const tableMutations = processEventForTables(event);
       if (tableMutations.l1Adds.length > 0) addL1Entries(tableMutations.l1Adds);
       if (tableMutations.l2Adds.length > 0) addL2Entries(tableMutations.l2Adds);
-      for (const info of tableMutations.l1Consumes) consumeL1Entry(truncateHex(info.actionHash), info.actionDetail);
-      for (const info of tableMutations.l2Consumes) consumeL2Entry(truncateHex(info.actionHash), info.actionDetail);
+      for (const info of tableMutations.l1Consumes) consumeL1Entry(truncateHex(info.crossChainCallHash), info.actionDetail);
+      for (const info of tableMutations.l2Consumes) consumeL2Entry(truncateHex(info.crossChainCallHash), info.actionDetail);
 
       // Process architecture discovery
       const store = useStore.getState();
@@ -46,8 +46,8 @@ export function useEventStream() {
         event,
         store.knownAddresses,
         existingNodeIds,
-        rollupsAddress,
-        managerL2Address,
+        l1ContractAddress,
+        l2ContractAddress,
       );
       if (discovery.newNodes.length > 0) addNodes(discovery.newNodes);
       if (discovery.newEdges.length > 0) addEdges(discovery.newEdges);
@@ -69,13 +69,11 @@ export function useEventStream() {
       if (event.args.sourceAddress) {
         activeNodes.push((event.args.sourceAddress as string).toLowerCase());
       }
-      if (event.args.destination) {
-        activeNodes.push((event.args.destination as string).toLowerCase());
-      }
+      // No more IncomingCrossChainCallExecuted event with destination field
       const managerAddr =
         event.chain === "l1"
-          ? rollupsAddress.toLowerCase()
-          : managerL2Address.toLowerCase();
+          ? l1ContractAddress.toLowerCase()
+          : l2ContractAddress.toLowerCase();
       if (managerAddr) activeNodes.push(managerAddr);
 
       if (activeNodes.length > 0) {
@@ -97,26 +95,26 @@ export function useEventStream() {
       addEdges,
       addKnownAddresses,
       updateContractState,
-      rollupsAddress,
-      managerL2Address,
+      l1ContractAddress,
+      l2ContractAddress,
     ],
   );
 
   useChainWatcher({
     rpcUrl: l1RpcUrl,
-    contractAddress: rollupsAddress as `0x${string}`,
+    contractAddress: l1ContractAddress as `0x${string}`,
     abi: rollupsAbi,
     chain: "l1",
     onEvent: handleEvent,
-    enabled: connected && !!rollupsAddress,
+    enabled: connected && !!l1ContractAddress,
   });
 
   useChainWatcher({
     rpcUrl: l2RpcUrl,
-    contractAddress: managerL2Address as `0x${string}`,
+    contractAddress: l2ContractAddress as `0x${string}`,
     abi: crossChainManagerL2Abi,
     chain: "l2",
     onEvent: handleEvent,
-    enabled: connected && !!managerL2Address,
+    enabled: connected && !!l2ContractAddress,
   });
 }

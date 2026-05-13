@@ -18,9 +18,6 @@ contract ReentrantCounter {
     }
 
     /// @notice Makes a cross-chain call if remainingCalls > 0, then increments and returns count.
-    /// @dev Increment happens AFTER the nested call, so the innermost call (remainingCalls=0)
-    ///      gets count=1 and the outermost gets the highest. Due to reentrancy on each
-    ///      chain, L1 count = 3 and L2 count = 3 for 5 reentrant cross-chain calls.
     function deepCall(uint256 remainingCalls) external returns (uint256) {
         if (remainingCalls > 0) {
             ReentrantCounter(peer).deepCall(remainingCalls - 1);

@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.28;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
-import {ICrossChainManager} from "../ICrossChainManager.sol";
+import {IEEZ} from "../interfaces/IEEZ.sol";
 import {WrappedToken} from "./WrappedToken.sol";
 
 /// @title Bridge
@@ -34,8 +34,8 @@ contract Bridge {
     //  State
     // ──────────────────────────────────────────────
 
-    /// @notice The cross-chain manager contract (Rollups on L1, CrossChainManagerL2 on L2)
-    ICrossChainManager public manager;
+    /// @notice The cross-chain manager contract (EEZ on L1, EEZL2 on L2)
+    IEEZ public manager;
 
     /// @notice This chain's rollup ID (0 for L1 mainnet)
     uint256 public rollupId;
@@ -87,7 +87,7 @@ contract Bridge {
 
     event Initialized(address indexed manager, uint256 rollupId, address indexed admin);
     event CanonicalBridgeAddressSet(address indexed addr);
-    event EtherBridged(address indexed destinationAddress, uint256 indexed rollupId, uint256 amount);
+    event EtherBridged(address indexed sender, uint256 indexed rollupId, uint256 amount);
     event TokensBridged(address indexed token, address indexed sender, uint256 indexed rollupId, uint256 amount);
     event TokensReleased(address indexed token, address indexed to, uint256 amount);
     event WrappedTokensMinted(address indexed wrappedToken, address indexed to, uint256 amount);
@@ -107,7 +107,7 @@ contract Bridge {
         if (address(manager) != address(0)) revert AlreadyInitialized();
         if (_manager == address(0)) revert ZeroAddress();
         if (_admin == address(0)) revert ZeroAddress();
-        manager = ICrossChainManager(_manager);
+        manager = IEEZ(_manager);
         rollupId = _rollupId;
         admin = _admin;
     }
@@ -165,11 +165,8 @@ contract Bridge {
             WrappedToken(token).burn(msg.sender, amount);
             originalToken = info.originalToken;
             originalRollupId = info.originalRollupId;
-            (name, symbol, tokenDecimals) = (
-                IERC20Metadata(token).name(),
-                IERC20Metadata(token).symbol(),
-                IERC20Metadata(token).decimals()
-            );
+            (name, symbol, tokenDecimals) =
+                (IERC20Metadata(token).name(), IERC20Metadata(token).symbol(), IERC20Metadata(token).decimals());
         } else {
             // Native token: lock in this contract
             IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
@@ -213,7 +210,10 @@ contract Bridge {
         string calldata symbol,
         uint8 tokenDecimals,
         uint256 sourceRollupId
-    ) external onlyBridgeProxy(sourceRollupId) {
+    )
+        external
+        onlyBridgeProxy(sourceRollupId)
+    {
         if (originalRollupId == rollupId) {
             // Token is native to this chain → release locked tokens
             IERC20(originalToken).safeTransfer(to, amount);
@@ -259,19 +259,17 @@ contract Bridge {
         string calldata name,
         string calldata symbol,
         uint8 tokenDecimals
-    ) internal returns (address wrappedAddr) {
+    )
+        internal
+        returns (address wrappedAddr)
+    {
         // Check if a WrappedToken already exists for this (token, rollup) pair
         bytes32 salt = _wrappedSalt(originalToken, originalRollupId);
         wrappedAddr = wrappedTokens[salt];
         if (wrappedAddr != address(0)) return wrappedAddr;
 
         // First bridge for this token — deploy a new WrappedToken via CREATE2
-        WrappedToken wrapped = new WrappedToken{salt: salt}(
-            name,
-            symbol,
-            tokenDecimals,
-            address(this)
-        );
+        WrappedToken wrapped = new WrappedToken{salt: salt}(name, symbol, tokenDecimals, address(this));
 
         // Register in both lookup directions: salt → address and address → origin info
         wrappedAddr = address(wrapped);

@@ -33,7 +33,7 @@ fi
 
 # ── Constants ──
 L2_CONTEXT="0x5FbDB2315678afecb367f032d93F642f64180aa3"
-SIG_BATCH_POSTED="0x2f482312f12dceb86aac9ef0e0e1d9421ac62910326b3d50695d63117321b520"
+SIG_BATCH_POSTED="0xd6f8d71ce42a799b91f399271f4b0e91f85eb87fac7bb2cedd4b3a52fad36182"
 
 # ── Parse args ──
 TX_HASH=""
@@ -70,8 +70,8 @@ done
 declare -A LABEL_MAP
 
 # Core contracts
-LABEL_MAP["$(echo "$ROLLUPS" | tr '[:upper:]' '[:lower:]')"]="Rollups"
-LABEL_MAP["$(echo "$MANAGER_L2" | tr '[:upper:]' '[:lower:]')"]="ManagerL2"
+LABEL_MAP["$(echo "$ROLLUPS" | tr '[:upper:]' '[:lower:]')"]="EEZ"
+LABEL_MAP["$(echo "$MANAGER_L2" | tr '[:upper:]' '[:lower:]')"]="EEZL2"
 LABEL_MAP["$(echo "$L2_CONTEXT" | tr '[:upper:]' '[:lower:]')"]="L2Context"
 
 # Auto-detect from env vars (any VAR=0x... address)
@@ -470,7 +470,7 @@ if [[ "$CHAIN" == "L1" ]]; then
     # 2. L1 batch tx (if different from user tx)
     BATCH_TX=$(find_l1_batch_tx "$L1_BLOCK_DEC")
     if [[ -n "$BATCH_TX" && "$BATCH_TX" != "$TX_HASH" ]]; then
-        run_trace "$BATCH_TX" "$L1_RPC" "L1 Batch (postBatch)"
+        run_trace "$BATCH_TX" "$L1_RPC" "L1 Batch (postAndVerifyBatch)"
     fi
 
     # 3. Find L2 blocks and show L2 traces
@@ -488,7 +488,7 @@ if [[ "$CHAIN" == "L1" ]]; then
 
             L2_TXS=$(find_l2_manager_txs "$b")
             if [[ -z "$L2_TXS" ]]; then
-                echo -e "  ${DIM}(no ManagerL2 txs in block $b)${NC}"
+                echo -e "  ${DIM}(no EEZL2 txs in block $b)${NC}"
                 continue
             fi
 
@@ -529,7 +529,7 @@ elif [[ "$CHAIN" == "L2" ]]; then
 
             discover_cross_chain_addresses "$FOUND_BATCH_TX" "$L1_RPC"
 
-            run_trace "$FOUND_BATCH_TX" "$L1_RPC" "L1 Batch (postBatch, block $FOUND_L1_BLOCK)"
+            run_trace "$FOUND_BATCH_TX" "$L1_RPC" "L1 Batch (postAndVerifyBatch, block $FOUND_L1_BLOCK)"
 
             # Find other user txs in same L1 block
             BLOCK_JSON=$(cast block "$FOUND_L1_BLOCK" --json --rpc-url "$L1_RPC" 2>/dev/null)

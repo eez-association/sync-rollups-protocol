@@ -76,9 +76,7 @@ export const TableEntryRow: React.FC<Props> = ({ entry, index }) => {
           {index + 1}
         </div>
         <div style={{ flex: 1, lineHeight: 1.4, minWidth: 0 }}>
-          <span style={{ color: COLORS.dim }}>{entry.actionHash}</span>
-          <span style={{ color: COLORS.warn, margin: "0 3px" }}>{" -> "}</span>
-          <span style={{ color: COLORS.ok }}>{entry.nextActionHash}</span>
+          <span style={{ color: COLORS.dim }}>{entry.crossChainCallHash}</span>
           {entry.delta && (
             <span
               style={{
@@ -116,22 +114,28 @@ export const TableEntryRow: React.FC<Props> = ({ entry, index }) => {
             fontSize: "0.55rem",
           }}
         >
-          {/* Action Hash section */}
+          {/* Cross-Chain Call Hash section */}
           {entry.actionDetail && (
             <HashSection
-              title="Action (hashed as actionHash)"
+              title="Cross-Chain Call Hash"
               detail={entry.actionDetail}
-              fullHash={entry.fullActionHash}
+              fullHash={entry.fullCrossChainCallHash}
             />
           )}
 
-          {/* Next Action section */}
-          {entry.nextActionDetail && (
-            <HashSection
-              title="Next Action (returned on match)"
-              detail={entry.nextActionDetail}
-              fullHash={entry.fullNextActionHash}
-            />
+          {/* Entry Metadata */}
+          {entry.entryMeta && (
+            <div style={{ marginBottom: 6 }}>
+              <SectionHeader>Entry Metadata</SectionHeader>
+              <KVGrid>
+                {Object.entries(entry.entryMeta).map(([k, v]) => (
+                  <React.Fragment key={k}>
+                    <span style={{ color: COLORS.dim }}>{k}</span>
+                    <span style={{ color: COLORS.tx, wordBreak: "break-all" }}>{v}</span>
+                  </React.Fragment>
+                ))}
+              </KVGrid>
+            </div>
           )}
 
           {/* State Deltas */}
@@ -182,9 +186,9 @@ const HashSection: React.FC<{
 }> = ({ title, detail, fullHash }) => {
   const [showFull, setShowFull] = useState(false);
 
-  // Separate computedHash from the rest
-  const { computedHash, actionHash, ...fields } = detail;
-  const displayHash = computedHash || actionHash;
+  // Separate crossChainCallHash from the rest
+  const { crossChainCallHash, ...fields } = detail;
+  const displayHash = crossChainCallHash;
   const hasDecodedFields = Object.keys(fields).length > 0;
 
   return (
@@ -194,9 +198,7 @@ const HashSection: React.FC<{
         {/* Show the hash */}
         {displayHash && (
           <>
-            <span style={{ color: COLORS.dim }}>
-              {computedHash ? "computedHash" : "actionHash"}
-            </span>
+            <span style={{ color: COLORS.dim }}>crossChainCallHash</span>
             <span style={{ wordBreak: "break-all" }}>
               <span
                 style={{ color: COLORS.add, cursor: "pointer" }}
@@ -221,7 +223,7 @@ const HashSection: React.FC<{
             <span style={{ color: COLORS.dim }}>{k}</span>
             <span
               style={{
-                color: isHighlightField(k, v) ? COLORS.add : COLORS.tx,
+                color: COLORS.tx,
                 wordBreak: "break-all",
               }}
             >
@@ -229,16 +231,6 @@ const HashSection: React.FC<{
             </span>
           </React.Fragment>
         ))}
-
-        {/* If no decoded fields (action hash only), show hint */}
-        {!hasDecodedFields && actionHash && (
-          <>
-            <span style={{ color: COLORS.dim }}>decoded</span>
-            <span style={{ color: COLORS.dim, fontStyle: "italic", opacity: 0.5 }}>
-              available when consumed (ExecutionConsumed event)
-            </span>
-          </>
-        )}
       </KVGrid>
     </div>
   );
@@ -270,9 +262,3 @@ const CopyButton: React.FC<{ text: string }> = ({ text }) => {
     </button>
   );
 };
-
-function isHighlightField(key: string, value: string): boolean {
-  if (key === "actionType") return true;
-  if (key === "data" && value !== "0x" && value !== "0x00") return true;
-  return false;
-}

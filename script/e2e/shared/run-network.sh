@@ -121,8 +121,8 @@ echo "====== Compute Expected Entries ======"
 _SENDER=$(cast wallet address --private-key "$PK")
 COMPUTE_OUT=$(forge script "$SOL:ComputeExpected" --rpc-url "$RPC" --sender "$_SENDER" 2>&1)
 
-EXPECTED_L1_HASHES=$(extract "$COMPUTE_OUT" "EXPECTED_L1_HASHES")
-echo "L1 expected: $EXPECTED_L1_HASHES"
+EXPECTED_L1_CALL_HASHES=$(extract "$COMPUTE_OUT" "EXPECTED_L1_CALL_HASHES")
+echo "L1 expected calls: $EXPECTED_L1_CALL_HASHES"
 
 EXPECTED_L2_HASHES=$(extract "$COMPUTE_OUT" "EXPECTED_L2_HASHES")
 if [[ -n "$EXPECTED_L2_HASHES" ]]; then
@@ -229,7 +229,7 @@ if $L1_OK; then
     L1_VERIFY=$(forge script script/e2e/shared/Verify.s.sol:VerifyL1Batch \
         --rpc-url "$RPC" \
         --sig "run(uint256,address,bytes32[])" \
-        "$L1_BLOCK" "$ROLLUPS" "$EXPECTED_L1_HASHES" 2>&1) \
+        "$L1_BLOCK" "$ROLLUPS" "$EXPECTED_L1_CALL_HASHES" 2>&1) \
         && L1_OK=true || L1_OK=false
 
     if $L1_OK; then

@@ -10,9 +10,27 @@
 //   node decode-trace.mjs --tx <HASH> --l1-rpc <RPC> --l2-rpc <RPC>
 //     [--l1-explorer <URL>] [--l2-explorer <URL>] [--no-explorer]
 //
-// Rollups/ManagerL2 addresses are auto-discovered from the trace
+// EEZ (L1) / EEZL2 addresses are auto-discovered from the trace
 // (the contract receiving executeCrossChainCall). Env vars with
 // 0x addresses are auto-picked up as labels.
+//
+// ─── PORTING STATUS (feature/multi-prover-flatten) ────────────────────
+// This decoder was authored against main's pre-flatten data model.
+// Surface renames have been applied (Rollups → EEZ, ManagerL2 → EEZL2,
+// postBatch → postAndVerifyBatch). The deep walker logic still assumes
+// the old shape and WILL NOT produce correct cross-chain joins on this
+// branch:
+//   - L1↔L2 matching uses `actionHash`; our model emits `proxyEntryHash`
+//     / `crossChainCallHash` via different events.
+//   - `ActionType` enum decoding (CALL/RESULT/L2TX/REVERT/REVERT_CONTINUE)
+//     has no analogue here — we use flat CrossChainCall[] + NestedAction[]
+//     with a rolling-hash accumulator.
+//   - `postBatch(entries, blobCount, callData, proof)` calldata parser
+//     no longer matches `postAndVerifyBatch(ProofSystemBatchPerVerificationEntries)`.
+// Treat this file as a starting point for a flatten-aware decoder, not
+// a working tool. The shell wrapper `script/e2e/shared/decode-trace.sh`
+// covers most debug needs in the meantime via `cast run --la`.
+// ───────────────────────────────────────────────────────────────────────
 
 import { ethers } from "ethers";
 import fs from "fs";
@@ -86,7 +104,7 @@ function discoverSystemContracts(trace, opts) {
     if (node._funcName === "executeIncomingCrossChainCall" && node.to) {
       if (!opts.managerL2) opts.managerL2 = node.to;
     }
-    if (node._funcName === "postBatch" && node.to) {
+    if (node._funcName === "postAndVerifyBatch" && node.to) {
       if (!opts.rollups) opts.rollups = node.to;
     }
     if (node._funcName === "loadExecutionTable" && node.to) {
@@ -261,13 +279,13 @@ function label(addr) {
 }
 
 function buildLabels(opts) {
-  if (opts.rollups) labels.set(opts.rollups.toLowerCase(), "Rollups");
-  if (opts.managerL2) labels.set(opts.managerL2.toLowerCase(), "ManagerL2");
+  if (opts.rollups) labels.set(opts.rollups.toLowerCase(), "EEZ");
+  if (opts.managerL2) labels.set(opts.managerL2.toLowerCase(), "EEZL2");
 }
 
 function refreshSystemLabels(opts) {
-  if (opts.rollups) labels.set(opts.rollups.toLowerCase(), "Rollups");
-  if (opts.managerL2) labels.set(opts.managerL2.toLowerCase(), "ManagerL2");
+  if (opts.rollups) labels.set(opts.rollups.toLowerCase(), "EEZ");
+  if (opts.managerL2) labels.set(opts.managerL2.toLowerCase(), "EEZL2");
 }
 
 // Auto-label all addresses in a trace using Blockscout names + local ABI matching
@@ -399,7 +417,7 @@ async function extractL2BlocksFromTx(txHash, provider) {
     const tx = await provider.getTransaction(txHash);
     if (!tx) return [];
     const parsed = decodeFunctionCall(tx.data);
-    if (!parsed || parsed.name !== "postBatch") return [];
+    if (!parsed || parsed.name !== "postAndVerifyBatch") return [];
     const callDataBytes = parsed.args[2]; // 3rd param: bytes callData
     if (!callDataBytes || callDataBytes === "0x") return [];
     const decoded = ethers.AbiCoder.defaultAbiCoder().decode(
@@ -688,14 +706,14 @@ function collectAllAddresses(node) {
 // Find the actual user-contract call inside an L2 trace
 // (skip executeIncomingCrossChainCall wrapper, scope navigation, proxy plumbing)
 function findUserExecution(node) {
-  const systemLabels = new Set(["Rollups", "ManagerL2", "CrossChainProxy", "CrossChainManagerL2"]);
+  const systemLabels = new Set(["EEZ", "EEZL2", "CrossChainProxy"]);
   const systemFuncs = new Set([
     "executeCrossChainCall",
     "executeIncomingCrossChainCall",
     "loadExecutionTable",
     "executeOnBehalf",
     "newScope",
-    "postBatch",
+    "postAndVerifyBatch",
   ]);
 
   // DFS: find the deepest non-system call

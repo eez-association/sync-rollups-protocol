@@ -1,8 +1,7 @@
 import type { EventRecord } from "../types/events";
 import type { ArchNode, ArchEdge, Chain, NodeType, TableEntry } from "../types/visualization";
 import type { AddressInfo } from "./autoDiscovery";
-import { truncateAddress, actionTypeName } from "./actionFormatter";
-import { actionFromEventArgs } from "./actionHashDecoder";
+import { truncateAddress } from "./actionFormatter";
 import { processEventForTables } from "./eventProcessor";
 
 /**
@@ -77,7 +76,7 @@ export function buildBundleArchitecture(
     }
   }
 
-  // Node registry: chain-prefixed ID → info
+  // Node registry: chain-prefixed ID -> info
   const addrSet = new Map<string, { chain: Chain; type: NodeType; label: string; rawAddr: string }>();
 
   /**
@@ -132,8 +131,9 @@ export function buildBundleArchitecture(
   // Reorder events: setup (BatchPosted, ExecutionTableLoaded) first, then actions
   const EVENT_PRIORITY: Record<string, number> = {
     BatchPosted: 0, ExecutionTableLoaded: 1, CrossChainProxyCreated: 2,
-    L2ExecutionPerformed: 3, ExecutionConsumed: 4, CrossChainCallExecuted: 5,
-    L2TXExecuted: 5, IncomingCrossChainCallExecuted: 6,
+    RollupContractChanged: 3, ExecutionConsumed: 4, CrossChainCallExecuted: 5,
+    L2TXExecuted: 5, ImmediateEntrySkipped: 5, CallResult: 6, NestedActionConsumed: 6,
+    EntryExecuted: 7, RevertSpanExecuted: 6,
   };
   const orderedEvents = [...bundleEvents].sort((a, b) => {
     const pa = EVENT_PRIORITY[a.eventName] ?? 3;
@@ -170,53 +170,6 @@ export function buildBundleArchitecture(
         // Return arrows
         addEdge(mgrId, proxyId, "result", { back: true });
         addEdge(proxyId, srcId, "return", { back: true });
-        break;
-      }
-      case "IncomingCrossChainCallExecuted": {
-        const dest = event.args.destination as string;
-        const srcAddr = event.args.sourceAddress as string;
-        const ch = event.chain;
-        addAddr(dest, ch, "contract");
-        const destId = nid(ch, dest);
-        const mgrId = ch === "l1" ? l1MgrId : l2MgrId;
-
-        if (srcAddr && srcAddr !== "0x0000000000000000000000000000000000000000") {
-          const srcChain: Chain = ch === "l1" ? "l2" : "l1";
-          addAddr(srcAddr, srcChain, "contract");
-
-          // Find proxy for src on this chain
-          const proxyAddr = findProxyForOriginal(srcAddr, ch, proxyMap);
-          if (proxyAddr) {
-            addAddr(proxyAddr, ch, "proxy");
-            const proxyId = nid(ch, proxyAddr);
-            addEdge(mgrId, proxyId, "execOnBehalf");
-            addEdge(proxyId, destId, "call");
-            addEdge(destId, proxyId, "return", { back: true });
-            addEdge(proxyId, mgrId, "result", { back: true });
-          } else {
-            addEdge(mgrId, destId, "execIncoming");
-            addEdge(destId, mgrId, "return", { back: true });
-          }
-        }
-        break;
-      }
-      case "ExecutionConsumed": {
-        try {
-          const actionArg = event.args.action as Record<string, unknown>;
-          if (actionArg) {
-            const fields = actionFromEventArgs(actionArg);
-            if (fields.actionType === 0) { // CALL
-              const dest = fields.destination as string;
-              const src = fields.sourceAddress as string;
-              const targetChain: Chain = fields.rollupId === 0n ? "l1" : "l2";
-              addAddr(dest, targetChain, "contract");
-              if (src !== "0x0000000000000000000000000000000000000000") {
-                const srcChain: Chain = fields.sourceRollup === 0n ? "l1" : "l2";
-                addAddr(src, srcChain, "contract");
-              }
-            }
-          }
-        } catch { /* skip */ }
         break;
       }
       case "CrossChainProxyCreated": {
@@ -300,9 +253,9 @@ export function buildBundleArchitecture(
         const proxyId = nid(ch, (event.args.proxy as string));
         const mgrId = ch === "l1" ? l1MgrId : l2MgrId;
         nodes.push(srcId, proxyId, mgrId);
-        // Forward: caller → proxy → manager
+        // Forward: caller -> proxy -> manager
         edges.push(`${srcId}->${proxyId}`, `${proxyId}->${mgrId}`);
-        // Return: manager → proxy → caller (back edge IDs use to->from-back)
+        // Return: manager -> proxy -> caller (back edge IDs use to->from-back)
         edges.push(`${proxyId}->${mgrId}-back`, `${srcId}->${proxyId}-back`);
         const srcLabel = addrSet.get(srcId)?.label ?? "caller";
         const proxyLabel = addrSet.get(proxyId)?.label ?? "proxy";
@@ -313,44 +266,8 @@ export function buildBundleArchitecture(
         const ch = event.chain;
         const mgrId = ch === "l1" ? l1MgrId : l2MgrId;
         nodes.push(mgrId);
-        try {
-          const actionArg = event.args.action as Record<string, unknown>;
-          if (actionArg) {
-            const fields = actionFromEventArgs(actionArg);
-            const typeName = actionTypeName(fields.actionType);
-            if (fields.actionType === 0) { // CALL
-              const targetChain: Chain = fields.rollupId === 0n ? "l1" : "l2";
-              const destId = nid(targetChain, fields.destination);
-              nodes.push(destId);
-              desc = `${typeName}: consumed on ${ch.toUpperCase()}`;
-            } else {
-              desc = `${typeName}: consumed on ${ch.toUpperCase()}`;
-            }
-          }
-        } catch { /* skip */ }
-        break;
-      }
-      case "IncomingCrossChainCallExecuted": {
-        const ch = event.chain;
-        const destId = nid(ch, (event.args.destination as string));
-        const srcAddr = (event.args.sourceAddress as string).toLowerCase();
-        const mgrId = ch === "l1" ? l1MgrId : l2MgrId;
-        nodes.push(mgrId, destId);
-
-        const proxyAddr = findProxyForOriginal(srcAddr, ch, proxyMap);
-        if (proxyAddr) {
-          const proxyId = nid(ch, proxyAddr);
-          nodes.push(proxyId);
-          // Forward: manager → proxy → dest
-          edges.push(`${mgrId}->${proxyId}`, `${proxyId}->${destId}`);
-          // Return: dest → proxy → manager (back edge IDs use to->from-back)
-          edges.push(`${proxyId}->${destId}-back`, `${mgrId}->${proxyId}-back`);
-        } else {
-          edges.push(`${mgrId}->${destId}`);
-          edges.push(`${mgrId}->${destId}-back`);
-        }
-        const destLabel = addrSet.get(destId)?.label ?? "contract";
-        desc = `Incoming call: ${destLabel} executes`;
+        const cursor = event.args.cursor ?? event.args.entryIndex ?? "";
+        desc = `Entry consumed on ${ch.toUpperCase()} (cursor ${String(cursor)})`;
         break;
       }
       case "CrossChainProxyCreated": {
@@ -363,9 +280,19 @@ export function buildBundleArchitecture(
         desc = `Proxy created: ${proxyLabel}`;
         break;
       }
-      case "L2ExecutionPerformed": {
-        nodes.push(l1MgrId);
-        desc = `State updated for rollup ${String(event.args.rollupId)}`;
+      case "CallResult": {
+        const ch = event.chain;
+        const mgrId = ch === "l1" ? l1MgrId : l2MgrId;
+        nodes.push(mgrId);
+        const success = event.args.success ? "success" : "failed";
+        desc = `Call #${String(event.args.callNumber ?? "")} ${success}`;
+        break;
+      }
+      case "EntryExecuted": {
+        const ch = event.chain;
+        const mgrId = ch === "l1" ? l1MgrId : l2MgrId;
+        nodes.push(mgrId);
+        desc = `Entry executed (${String(event.args.callsProcessed ?? 0)} calls, ${String(event.args.nestedActionsConsumed ?? 0)} nested)`;
         break;
       }
       default:
@@ -375,14 +302,14 @@ export function buildBundleArchitecture(
     stepHighlights.push({ activeNodes: nodes, activeEdges: edges, description: desc });
   }
 
-  // ─── Compute per-step execution table states ───
+  // ---- Compute per-step execution table states ----
   const tableStates = computeTableStates(orderedEvents);
 
-  // ─── Compute per-step contract state ───
+  // ---- Compute per-step contract state ----
   const contractStates = computeContractStates(orderedEvents);
 
-  // ─── Merge ExecutionConsumed steps into parent call steps (same txHash) ───
-  const MERGE_TARGETS = new Set(["CrossChainCallExecuted", "IncomingCrossChainCallExecuted", "L2TXExecuted"]);
+  // ---- Merge ExecutionConsumed steps into parent call steps (same txHash) ----
+  const MERGE_TARGETS = new Set(["CrossChainCallExecuted", "L2TXExecuted"]);
   const mergeInto = new Array<number>(orderedEvents.length).fill(-1);
 
   for (let i = 0; i < orderedEvents.length; i++) {
@@ -407,6 +334,7 @@ export function buildBundleArchitecture(
 
   // Apply merges
   for (let i = 0; i < bundleEvents.length; i++) {
+    if (i >= mergeInto.length) continue;
     const target = mergeInto[i];
     if (target === -1) continue;
     // Merge highlights (union of active nodes/edges)
@@ -490,7 +418,7 @@ function computeTableStates(events: EventRecord[]): StepTableState[] {
 
     // Mark consumed entries
     for (const info of result.l1Consumes) {
-      const entry = l1Entries.find(e => e.fullActionHash === info.actionHash && e.stepStatus !== "consumed");
+      const entry = l1Entries.find(e => e.fullCrossChainCallHash === info.crossChainCallHash && e.stepStatus !== "consumed");
       if (entry) {
         entry.stepStatus = "jc";
         if (info.actionDetail && Object.keys(info.actionDetail).length > 0) {
@@ -499,7 +427,7 @@ function computeTableStates(events: EventRecord[]): StepTableState[] {
       }
     }
     for (const info of result.l2Consumes) {
-      const entry = l2Entries.find(e => e.fullActionHash === info.actionHash && e.stepStatus !== "consumed");
+      const entry = l2Entries.find(e => e.fullCrossChainCallHash === info.crossChainCallHash && e.stepStatus !== "consumed");
       if (entry) {
         entry.stepStatus = "jc";
         if (info.actionDetail && Object.keys(info.actionDetail).length > 0) {
@@ -536,41 +464,24 @@ function computeContractStates(events: EventRecord[]): StepContractState[] {
       case "RollupCreated": {
         const rid = String(event.args.rollupId);
         const k1 = `Rollup ${rid} state`;
-        const k2 = `Rollup ${rid} owner`;
+        const k2 = `Rollup ${rid} contract`;
         stateMap.set(k1, truncateHash(event.args.initialState as string));
-        stateMap.set(k2, truncateAddress(event.args.owner as string));
+        stateMap.set(k2, truncateAddress(event.args.rollupContract as string));
         changedKeys.add(k1);
         changedKeys.add(k2);
         break;
       }
+      case "RollupContractChanged": {
+        const rid = String(event.args.rollupId);
+        const k = `Rollup ${rid} contract`;
+        stateMap.set(k, truncateAddress(event.args.newContract as string));
+        changedKeys.add(k);
+        break;
+      }
       case "BatchPosted": {
-        const entries = event.args.entries as Array<{
-          stateDeltas: Array<{ rollupId: bigint; currentState: string; newState: string }>;
-          actionHash: string;
-        }>;
-        if (entries) {
-          for (const entry of entries) {
-            for (const sd of entry.stateDeltas) {
-              const k = `Rollup ${sd.rollupId} state`;
-              stateMap.set(k, truncateHash(sd.newState));
-              changedKeys.add(k);
-            }
-          }
-        }
-        break;
-      }
-      case "L2ExecutionPerformed": {
-        const rid = String(event.args.rollupId);
-        const k = `Rollup ${rid} state`;
-        stateMap.set(k, truncateHash(event.args.newState as string));
-        changedKeys.add(k);
-        break;
-      }
-      case "StateUpdated": {
-        const rid = String(event.args.rollupId);
-        const k = `Rollup ${rid} state`;
-        stateMap.set(k, truncateHash(event.args.newStateRoot as string));
-        changedKeys.add(k);
+        // TODO(user-decision): post-refactor BatchPosted no longer carries entries;
+        // state-delta visibility for the batch must be reconstructed from tx input or
+        // an alternative event stream.
         break;
       }
     }

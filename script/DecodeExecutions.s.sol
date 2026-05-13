@@ -1,62 +1,58 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
-import {ActionType, Action, StateDelta, ExecutionEntry} from "../src/ICrossChainManager.sol";
 import {Vm} from "forge-std/Vm.sol";
 
 /// @title DecodeExecutions
-/// @notice Decodes cross-chain events from a block and shows execution flow
-/// @dev Usage:
-///   forge script script/DecodeExecutions.s.sol:DecodeExecutions --rpc-url <RPC> --sig "runBlock(uint256,address)" <BLOCK> <CONTRACT>
+/// @notice Decodes cross-chain events from a block (or recorded logs) and shows the
+///         execution flow. Works against the post-multi-prover ABI: events on both
+///         L1 (EEZ.sol) and L2 (EEZL2.sol).
+///
+/// NOTE: Pre-execution entry payload is NOT decoded by this script.
+///       Post-refactor, `BatchPosted(uint256 subBatchCount)` carries only the
+///       sub-batch count; the full `ExecutionEntry[]` payload lives in the
+///       `postAndVerifyBatch` transaction input calldata. Decoding tx input from inside
+///       a Forge script is awkward (no direct cheatcode for it), so this
+///       decoder reports execution flow purely from emitted events. The events
+///       it relies on are rich enough for almost all debugging use cases:
+///       BatchPosted, RollupCreated, RollupContractChanged, StateUpdated,
+///       L2ExecutionPerformed, ImmediateEntrySkipped, ExecutionConsumed,
+///       L2TXExecuted, EntryExecuted, CrossChainCallExecuted, CallResult,
+///       NestedActionConsumed, RevertSpanExecuted, CrossChainProxyCreated,
+///       and the L2-only ExecutionTableLoaded / IncomingCrossChainCallExecuted.
+///       For a full pre-execution dump of entries, decode the postAndVerifyBatch tx
+///       input off-chain (e.g. with `cast calldata-decode`).
+///
+/// Usage:
+///   forge script script/DecodeExecutions.s.sol:DecodeExecutions \
+///     --rpc-url <RPC> --sig "runBlock(uint256,address)" <BLOCK> <CONTRACT>
 contract DecodeExecutions is Script {
-    bytes32 constant SIG_CROSSCHAIN_CALL = keccak256("CrossChainCallExecuted(bytes32,address,address,bytes,uint256)");
-    bytes32 constant SIG_EXECUTION_CONSUMED =
-        keccak256("ExecutionConsumed(bytes32,(uint8,uint256,address,uint256,bytes,bool,address,uint256,uint256[]))");
-    bytes32 constant SIG_L2TX_EXECUTED = keccak256("L2TXExecuted(bytes32,uint256,bytes)");
-    bytes32 constant SIG_L2_EXECUTION_PERFORMED = keccak256("L2ExecutionPerformed(uint256,bytes32,bytes32)");
-    bytes32 constant SIG_BATCH_POSTED = keccak256(
-        "BatchPosted(((uint256,bytes32,bytes32,int256)[],bytes32,(uint8,uint256,address,uint256,bytes,bool,address,uint256,uint256[]))[],bytes32)"
-    );
+    // ── Event signatures (L1 + L2 share most of these) ──
+    bytes32 constant SIG_BATCH_POSTED = keccak256("BatchPosted(uint256)");
+    bytes32 constant SIG_ROLLUP_CREATED = keccak256("RollupCreated(uint256,address,bytes32)");
+    bytes32 constant SIG_ROLLUP_CONTRACT_CHANGED = keccak256("RollupContractChanged(uint256,address,address)");
+    bytes32 constant SIG_STATE_UPDATED = keccak256("StateUpdated(uint256,bytes32)");
+    bytes32 constant SIG_L2_EXEC_PERFORMED = keccak256("L2ExecutionPerformed(uint256,bytes32)");
+    bytes32 constant SIG_IMMEDIATE_SKIPPED = keccak256("ImmediateEntrySkipped(uint256,bytes)");
+    bytes32 constant SIG_EXECUTION_CONSUMED_L1 = keccak256("ExecutionConsumed(bytes32,uint256,uint256)");
+    bytes32 constant SIG_EXECUTION_CONSUMED_L2 = keccak256("ExecutionConsumed(bytes32,uint256)");
+    bytes32 constant SIG_L2TX_EXECUTED = keccak256("L2TXExecuted(uint256,uint256)");
+    bytes32 constant SIG_ENTRY_EXECUTED = keccak256("EntryExecuted(uint256,bytes32,uint256,uint256)");
+    bytes32 constant SIG_CROSSCHAIN_CALL_EXECUTED =
+        keccak256("CrossChainCallExecuted(bytes32,address,address,bytes,uint256)");
+    bytes32 constant SIG_CALL_RESULT = keccak256("CallResult(uint256,uint256,bool,bytes)");
+    bytes32 constant SIG_NESTED_ACTION_CONSUMED = keccak256("NestedActionConsumed(uint256,uint256,bytes32,uint256)");
+    bytes32 constant SIG_REVERT_SPAN = keccak256("RevertSpanExecuted(uint256,uint256,uint256)");
+    bytes32 constant SIG_PROXY_CREATED = keccak256("CrossChainProxyCreated(address,address,uint256)");
+    // L2-only:
     bytes32 constant SIG_TABLE_LOADED = keccak256(
-        "ExecutionTableLoaded(((uint256,bytes32,bytes32,int256)[],bytes32,(uint8,uint256,address,uint256,bytes,bool,address,uint256,uint256[]))[])"
+        "ExecutionTableLoaded(((uint256,bytes32,bytes32,int256)[],bytes32,uint256,(address,uint256,bytes,address,uint256,uint256)[],(bytes32,uint256,bytes)[],uint256,bytes,bytes32)[])"
     );
     bytes32 constant SIG_INCOMING_CALL =
-        keccak256("IncomingCrossChainCallExecuted(bytes32,address,uint256,bytes,address,uint256,uint256[])");
+        keccak256("IncomingCrossChainCallExecuted(bytes32,address,uint256,bytes,address,uint256)");
 
-    // ── Collected data per tx ──
-    struct TxData {
-        bytes32 txHash;
-        // Batch entries (actionHash → nextAction mapping)
-        ExecutionEntry[] batchEntries;
-        // Ordered consumed actions
-        Action[] consumedActions;
-        bytes32[] consumedHashes;
-        // Trigger info
-        bool hasL2TX;
-        uint256 l2txRollupId;
-        bytes l2txRlpData;
-        bytes32 l2txActionHash;
-        bool hasCrossChainCall;
-        address ccProxy;
-        address ccSourceAddress;
-        bytes ccCallData;
-        uint256 ccValue;
-        bytes32 ccActionHash;
-        // L2: table loaded
-        bool hasTableLoaded;
-        ExecutionEntry[] tableEntries;
-        // L2: incoming call
-        bool hasIncomingCall;
-        bytes32 incomingCallHash;
-        address incomingDest;
-        uint256 incomingValue;
-        bytes incomingData;
-        address incomingSource;
-        uint256 incomingSourceRollup;
-    }
-
-    // ──────────────────── Entry point ────────────────────
+    // ──────────────────── Public entry points ────────────────────
 
     function runBlock(uint256 blockNumber, address target) external view {
         bytes32[] memory topics = new bytes32[](0);
@@ -66,510 +62,430 @@ contract DecodeExecutions is Script {
         console.log("BLOCK %s | %s logs | target %s", blockNumber, logs.length, vm.toString(target));
         console.log("================================================================");
 
-        // Group logs by tx
         _processBlock(logs);
     }
 
+    /// @notice Decode a Vm.Log[] array (e.g. from vm.recordLogs / vm.getRecordedLogs).
     function decodeRecordedLogs(Vm.Log[] memory logs) external view {
-        // Convert Vm.Log[] to a common format and process
         console.log("================================================================");
         console.log("RECORDED LOGS | %s logs", logs.length);
         console.log("================================================================");
 
-        // Collect all data
-        uint256 batchEntryCount;
-        ExecutionEntry[] memory batchEntries;
-        Action[] memory consumed = new Action[](logs.length);
-        bytes32[] memory consumedHashes = new bytes32[](logs.length);
-        uint256 consumedCount;
-
-        // Trigger
-        bool hasL2TX;
-        uint256 l2txRollupId;
-        bytes memory l2txRlpData;
-        bytes32 l2txActionHash;
-        bool hasCCCall;
-        address ccProxy;
-        address ccSource;
-        bytes memory ccCallData;
-        uint256 ccValue;
-        bytes32 ccActionHash;
-        // L2 events
-        ExecutionEntry[] memory tableEntries;
-        bool hasIncomingCall;
-        bytes32 incomingCallHash;
-
+        // Convert Vm.Log[] to a uniform shape — recorded logs have no tx hash,
+        // so we lump everything into one synthetic "tx".
         for (uint256 i = 0; i < logs.length; i++) {
-            bytes32 t0 = logs[i].topics[0];
-            if (t0 == SIG_BATCH_POSTED) {
-                (batchEntries,) = abi.decode(logs[i].data, (ExecutionEntry[], bytes32));
-                batchEntryCount = batchEntries.length;
-            } else if (t0 == SIG_TABLE_LOADED) {
-                tableEntries = abi.decode(logs[i].data, (ExecutionEntry[]));
-            } else if (t0 == SIG_EXECUTION_CONSUMED) {
-                consumed[consumedCount] = abi.decode(logs[i].data, (Action));
-                consumedHashes[consumedCount] = logs[i].topics[1];
-                consumedCount++;
-            } else if (t0 == SIG_L2TX_EXECUTED) {
-                hasL2TX = true;
-                l2txActionHash = logs[i].topics[1];
-                l2txRollupId = uint256(logs[i].topics[2]);
-                l2txRlpData = abi.decode(logs[i].data, (bytes));
-            } else if (t0 == SIG_CROSSCHAIN_CALL) {
-                hasCCCall = true;
-                ccActionHash = logs[i].topics[1];
-                ccProxy = address(uint160(uint256(logs[i].topics[2])));
-                (ccSource, ccCallData, ccValue) = abi.decode(logs[i].data, (address, bytes, uint256));
-            } else if (t0 == SIG_INCOMING_CALL) {
-                hasIncomingCall = true;
-                incomingCallHash = logs[i].topics[1];
-            }
+            _printLog(logs[i].topics, logs[i].data, logs[i].emitter, "    ");
         }
-
-        // Print table loaded (L2)
-        if (tableEntries.length > 0) {
-            _printTableLoaded(tableEntries);
-        }
-
-        // Print full detail
-        _printFullDetail(batchEntries, consumed, consumedHashes, consumedCount, hasL2TX, l2txRollupId, l2txRlpData,
-            l2txActionHash, hasCCCall, ccProxy, ccSource, ccCallData, ccValue, ccActionHash);
-
-        // Print incoming call (L2)
-        if (hasIncomingCall) {
-            console.log("");
-            console.log("  TRIGGER: IncomingCrossChainCall");
-            console.log("    actionHash: %s", vm.toString(incomingCallHash));
-        }
-
-        // Print flow
-        _printFlow(batchEntries, consumed, consumedHashes, consumedCount, hasL2TX, l2txRollupId, l2txRlpData,
-            hasCCCall, ccSource, ccCallData);
     }
 
     // ──────────────────── Block processing ────────────────────
 
     function _processBlock(Vm.EthGetLogs[] memory logs) internal view {
         if (logs.length == 0) {
-            console.log("  (no events)");
+            console.log("(no logs)");
             return;
         }
 
-        // First pass: collect ALL batch/table entries from the block so cross-tx lookups work
-        uint256 totalBatchCount;
+        // Group sequentially by tx hash (logs from eth_getLogs come in order).
+        bytes32 currentTx = bytes32(0);
         for (uint256 i = 0; i < logs.length; i++) {
-            if (logs[i].topics[0] == SIG_BATCH_POSTED) {
-                (ExecutionEntry[] memory entries,) = abi.decode(logs[i].data, (ExecutionEntry[], bytes32));
-                totalBatchCount += entries.length;
-            } else if (logs[i].topics[0] == SIG_TABLE_LOADED) {
-                ExecutionEntry[] memory entries = abi.decode(logs[i].data, (ExecutionEntry[]));
-                totalBatchCount += entries.length;
+            if (logs[i].transactionHash != currentTx) {
+                if (i > 0) console.log("");
+                console.log("---- tx %s ----", vm.toString(logs[i].transactionHash));
+                currentTx = logs[i].transactionHash;
             }
-        }
-        ExecutionEntry[] memory allBatchEntries = new ExecutionEntry[](totalBatchCount);
-        uint256 idx;
-        for (uint256 i = 0; i < logs.length; i++) {
-            if (logs[i].topics[0] == SIG_BATCH_POSTED) {
-                (ExecutionEntry[] memory entries,) = abi.decode(logs[i].data, (ExecutionEntry[], bytes32));
-                for (uint256 j = 0; j < entries.length; j++) {
-                    allBatchEntries[idx++] = entries[j];
-                }
-            } else if (logs[i].topics[0] == SIG_TABLE_LOADED) {
-                ExecutionEntry[] memory entries = abi.decode(logs[i].data, (ExecutionEntry[]));
-                for (uint256 j = 0; j < entries.length; j++) {
-                    allBatchEntries[idx++] = entries[j];
-                }
-            }
+            _printLog(logs[i].topics, logs[i].data, logs[i].emitter, "    ");
         }
 
-        // Second pass: process each TX
-        bytes32 currentTx = logs[0].transactionHash;
-        uint256 txStart = 0;
+        // One-line summary
+        console.log("");
+        console.log("  SUMMARY: %s", _buildSummary(logs));
+    }
 
-        for (uint256 i = 0; i <= logs.length; i++) {
-            bool newTx = (i == logs.length) || (logs[i].transactionHash != currentTx);
-            if (newTx) {
-                _processTxLogs(currentTx, logs, txStart, i, allBatchEntries);
-                if (i < logs.length) {
-                    currentTx = logs[i].transactionHash;
-                    txStart = i;
-                }
-            }
+    // ──────────────────── Per-log dispatcher ────────────────────
+
+    function _printLog(bytes32[] memory topics, bytes memory data, address emitter, string memory p) internal pure {
+        if (topics.length == 0) {
+            console.log(string.concat(p, "(anonymous log from ", _shortAddr(emitter), ")"));
+            return;
+        }
+
+        bytes32 sig = topics[0];
+
+        if (sig == SIG_BATCH_POSTED) {
+            _printBatchPosted(topics, p);
+        } else if (sig == SIG_ROLLUP_CREATED) {
+            _printRollupCreated(topics, data, p);
+        } else if (sig == SIG_ROLLUP_CONTRACT_CHANGED) {
+            _printRollupContractChanged(topics, p);
+        } else if (sig == SIG_STATE_UPDATED) {
+            _printStateUpdated(topics, data, p);
+        } else if (sig == SIG_L2_EXEC_PERFORMED) {
+            _printL2ExecPerformed(topics, data, p);
+        } else if (sig == SIG_IMMEDIATE_SKIPPED) {
+            _printImmediateSkipped(topics, data, p);
+        } else if (sig == SIG_EXECUTION_CONSUMED_L1) {
+            _printExecutionConsumedL1(topics, p);
+        } else if (sig == SIG_EXECUTION_CONSUMED_L2) {
+            _printExecutionConsumedL2(topics, p);
+        } else if (sig == SIG_L2TX_EXECUTED) {
+            _printL2TXExecuted(topics, p);
+        } else if (sig == SIG_ENTRY_EXECUTED) {
+            _printEntryExecuted(topics, data, p);
+        } else if (sig == SIG_CROSSCHAIN_CALL_EXECUTED) {
+            _printCrossChainCallExecuted(topics, data, p);
+        } else if (sig == SIG_CALL_RESULT) {
+            _printCallResult(topics, data, p);
+        } else if (sig == SIG_NESTED_ACTION_CONSUMED) {
+            _printNestedActionConsumed(topics, data, p);
+        } else if (sig == SIG_REVERT_SPAN) {
+            _printRevertSpan(topics, data, p);
+        } else if (sig == SIG_PROXY_CREATED) {
+            _printProxyCreated(topics, p);
+        } else if (sig == SIG_TABLE_LOADED) {
+            console.log(string.concat(p, "ExecutionTableLoaded (full entries in tx input)"));
+        } else if (sig == SIG_INCOMING_CALL) {
+            _printIncomingCall(topics, data, p);
+        } else {
+            console.log(string.concat(p, "(unknown event sig=", _shortHash(sig), " from ", _shortAddr(emitter), ")"));
         }
     }
 
-    function _processTxLogs(bytes32 txHash, Vm.EthGetLogs[] memory logs, uint256 from, uint256 to, ExecutionEntry[] memory allBatchEntries) internal view {
-        // Collect data from this tx's logs
-        ExecutionEntry[] memory localBatchEntries;
-        Action[] memory consumed = new Action[](to - from);
-        bytes32[] memory consumedHashes = new bytes32[](to - from);
-        uint256 consumedCount;
+    // ──────────────────── Per-event formatters ────────────────────
 
-        bool hasL2TX;
-        uint256 l2txRollupId;
-        bytes memory l2txRlpData;
-        bytes32 l2txActionHash;
-        bool hasCCCall;
-        address ccProxy;
-        address ccSource;
-        bytes memory ccCallData;
-        uint256 ccValue;
-        bytes32 ccActionHash;
-        // L2 events
-        ExecutionEntry[] memory tableEntries;
-        bool hasIncomingCall;
-        bytes32 incomingCallHash;
-
-        for (uint256 i = from; i < to; i++) {
-            bytes32 t0 = logs[i].topics[0];
-            if (t0 == SIG_BATCH_POSTED) {
-                (localBatchEntries,) = abi.decode(logs[i].data, (ExecutionEntry[], bytes32));
-            } else if (t0 == SIG_TABLE_LOADED) {
-                tableEntries = abi.decode(logs[i].data, (ExecutionEntry[]));
-            } else if (t0 == SIG_EXECUTION_CONSUMED) {
-                consumed[consumedCount] = abi.decode(logs[i].data, (Action));
-                consumedHashes[consumedCount] = logs[i].topics[1];
-                consumedCount++;
-            } else if (t0 == SIG_L2TX_EXECUTED) {
-                hasL2TX = true;
-                l2txActionHash = logs[i].topics[1];
-                l2txRollupId = uint256(logs[i].topics[2]);
-                l2txRlpData = abi.decode(logs[i].data, (bytes));
-            } else if (t0 == SIG_CROSSCHAIN_CALL) {
-                hasCCCall = true;
-                ccActionHash = logs[i].topics[1];
-                ccProxy = address(uint160(uint256(logs[i].topics[2])));
-                (ccSource, ccCallData, ccValue) = abi.decode(logs[i].data, (address, bytes, uint256));
-            } else if (t0 == SIG_INCOMING_CALL) {
-                hasIncomingCall = true;
-                incomingCallHash = logs[i].topics[1];
-            }
-        }
-
-        console.log("");
-        console.log("========================================");
-        console.log("TX %s", vm.toString(txHash));
-        console.log("========================================");
-
-        // Table loaded (L2)
-        if (tableEntries.length > 0) {
-            _printTableLoaded(tableEntries);
-        }
-
-        // Full detail uses local batch entries (what was posted in THIS tx)
-        _printFullDetail(localBatchEntries, consumed, consumedHashes, consumedCount, hasL2TX, l2txRollupId, l2txRlpData,
-            l2txActionHash, hasCCCall, ccProxy, ccSource, ccCallData, ccValue, ccActionHash);
-
-        // Incoming call (L2)
-        if (hasIncomingCall) {
-            console.log("");
-            console.log("  TRIGGER: IncomingCrossChainCall");
-            console.log("    actionHash: %s", vm.toString(incomingCallHash));
-        }
-
-        // Flow/summary uses ALL batch entries from the block (cross-tx lookup)
-        _printFlow(allBatchEntries, consumed, consumedHashes, consumedCount, hasL2TX, l2txRollupId, l2txRlpData,
-            hasCCCall, ccSource, ccCallData);
+    function _printBatchPosted(bytes32[] memory topics, string memory p) internal pure {
+        // event BatchPosted(uint256 indexed subBatchCount)
+        uint256 count = uint256(topics[1]);
+        console.log(string.concat(p, "BatchPosted(subBatches=", vm.toString(count), ")"));
     }
 
-    // ──────────────────── Full detail section ────────────────────
-
-    function _printFullDetail(
-        ExecutionEntry[] memory batchEntries,
-        Action[] memory consumed,
-        bytes32[] memory consumedHashes,
-        uint256 consumedCount,
-        bool hasL2TX,
-        uint256 l2txRollupId,
-        bytes memory l2txRlpData,
-        bytes32 l2txActionHash,
-        bool hasCCCall,
-        address ccProxy,
-        address ccSource,
-        bytes memory ccCallData,
-        uint256 ccValue,
-        bytes32 ccActionHash
-    ) internal pure {
-        // ── Batch entries ──
-        if (batchEntries.length > 0) {
-            console.log("");
-            console.log("  BATCH POSTED (%s entries)", batchEntries.length);
-            for (uint256 e = 0; e < batchEntries.length; e++) {
-                _logBatchEntry(e, batchEntries[e]);
-            }
-        }
-
-        // ── Trigger ──
-        if (hasL2TX) {
-            console.log("");
-            console.log("  TRIGGER: L2TX");
-            console.log("    actionHash: %s", vm.toString(l2txActionHash));
-            console.log("    rollupId:   %s", l2txRollupId);
-            console.log("    rlpData:    %s", vm.toString(l2txRlpData));
-        }
-        if (hasCCCall) {
-            console.log("");
-            console.log("  TRIGGER: CrossChainCall");
-            console.log("    actionHash:    %s", vm.toString(ccActionHash));
-            console.log("    proxy:         %s", vm.toString(ccProxy));
-            console.log("    sourceAddress: %s", vm.toString(ccSource));
-            console.log("    value:         %s", ccValue);
-            console.log("    callData:      %s", vm.toString(ccCallData));
-            _logSelector(ccCallData, "    ");
-        }
-
-        // ── Consumed executions ──
-        if (consumedCount > 0) {
-            console.log("");
-            console.log("  EXECUTIONS CONSUMED (%s)", consumedCount);
-            for (uint256 c = 0; c < consumedCount; c++) {
-                console.log("    [%s] actionHash: %s", c, vm.toString(consumedHashes[c]));
-                _logAction(consumed[c], "        ");
-            }
-        }
-    }
-
-    // ──────────────────── Flow chain section ────────────────────
-
-    function _printFlow(
-        ExecutionEntry[] memory batchEntries,
-        Action[] memory consumed,
-        bytes32[] memory consumedHashes,
-        uint256 consumedCount,
-        bool hasL2TX,
-        uint256 l2txRollupId,
-        bytes memory l2txRlpData,
-        bool hasCCCall,
-        address ccSource,
-        bytes memory ccCallData
-    ) internal pure {
-        if (!hasL2TX && !hasCCCall) return;
-        if (consumedCount == 0) return;
-
-        console.log("");
-        console.log("  ============ EXECUTION FLOW ============");
-        console.log("");
-
-        // Step 0: the trigger (only for L2TX — CrossChainCall IS the consumed CALL)
-        if (hasL2TX) {
-            console.log("  L2TX(rollup %s, %s)", l2txRollupId, vm.toString(l2txRlpData));
-        }
-
-        // Walk the chain: consumed[0] is the trigger action, its entry's nextAction leads to next step
-        for (uint256 c = 0; c < consumedCount; c++) {
-            Action memory act = consumed[c];
-            bytes32 hash = consumedHashes[c];
-
-            // Find the batch entry for this hash to get nextAction and stateDeltas
-            (bool found, ExecutionEntry memory entry) = _findBatchEntry(batchEntries, hash);
-
-            console.log("    |");
-
-            // Print the consumed action as a step
-            string memory stepLabel = _formatActionOneLiner(act);
-            if (found && entry.stateDeltas.length > 0) {
-                string memory deltaStr = _formatDeltas(entry.stateDeltas);
-                console.log("    +-- [consumed] %s  %s", stepLabel, deltaStr);
-            } else {
-                console.log("    +-- [consumed] %s", stepLabel);
-            }
-
-            // Show what the next action will be (from batch)
-            if (found) {
-                string memory nextLabel = _formatActionOneLiner(entry.nextAction);
-                console.log("    |     next -> %s", nextLabel);
-            }
-        }
-
-        console.log("    |");
-        console.log("    +-- END");
-
-        // One-liner summary
-        console.log("");
-        console.log("  SUMMARY: %s", _buildSummaryLine(consumed, consumedHashes, consumedCount, batchEntries, hasL2TX, l2txRollupId, l2txRlpData, hasCCCall, ccSource, ccCallData));
-        console.log("");
-    }
-
-    // ──────────────────── Flow formatting helpers ────────────────────
-
-    function _formatActionOneLiner(Action memory a) internal pure returns (string memory) {
-        string memory typeName = _actionTypeName(a.actionType);
-
-        if (a.actionType == ActionType.CALL) {
-            string memory valStr = a.value > 0 ? string.concat(", val=", vm.toString(a.value)) : "";
-            return string.concat(
-                typeName, "(rollup ", vm.toString(a.rollupId),
-                ", ", _shortAddr(a.destination),
-                ".", _selectorName(a.data),
-                ", from ", _shortAddr(a.sourceAddress),
-                valStr, ")"
-            );
-        } else if (a.actionType == ActionType.RESULT) {
-            return string.concat(
-                typeName, "(rollup ", vm.toString(a.rollupId),
-                a.failed ? ", FAILED" : ", ok",
-                ", data=", _shortBytes(a.data),
+    function _printRollupCreated(bytes32[] memory topics, bytes memory data, string memory p) internal pure {
+        // event RollupCreated(uint256 indexed rollupId, address indexed rollupContract, bytes32 initialState)
+        uint256 rollupId = uint256(topics[1]);
+        address rollupContract = address(uint160(uint256(topics[2])));
+        bytes32 initialState = abi.decode(data, (bytes32));
+        console.log(
+            string.concat(
+                p,
+                "RollupCreated(id=",
+                vm.toString(rollupId),
+                ", contract=",
+                _shortAddr(rollupContract),
+                ", initState=",
+                _shortHash(initialState),
                 ")"
-            );
-        } else if (a.actionType == ActionType.L2TX) {
-            return string.concat(
-                typeName, "(rollup ", vm.toString(a.rollupId),
-                ", data=", _shortBytes(a.data), ")"
-            );
-        } else if (a.actionType == ActionType.REVERT || a.actionType == ActionType.REVERT_CONTINUE) {
-            return string.concat(typeName, "(rollup ", vm.toString(a.rollupId), ")");
-        }
-        return typeName;
+            )
+        );
     }
 
-    function _formatDeltas(StateDelta[] memory deltas) internal pure returns (string memory) {
-        string memory s = "[";
-        for (uint256 i = 0; i < deltas.length; i++) {
-            if (i > 0) s = string.concat(s, ", ");
-            s = string.concat(s,
-                "r", vm.toString(deltas[i].rollupId), ":",
-                _shortHash(deltas[i].currentState), "->", _shortHash(deltas[i].newState)
-            );
-        }
-        return string.concat(s, "]");
+    function _printRollupContractChanged(bytes32[] memory topics, string memory p) internal pure {
+        // RollupContractChanged(uint256 indexed rollupId, address indexed previous, address indexed new)
+        uint256 rollupId = uint256(topics[1]);
+        address prev = address(uint160(uint256(topics[2])));
+        address next = address(uint160(uint256(topics[3])));
+        console.log(
+            string.concat(
+                p,
+                "RollupContractChanged(id=",
+                vm.toString(rollupId),
+                ", ",
+                _shortAddr(prev),
+                " -> ",
+                _shortAddr(next),
+                ")"
+            )
+        );
     }
 
-    function _buildSummaryLine(
-        Action[] memory consumed,
-        bytes32[] memory,
-        uint256 consumedCount,
-        ExecutionEntry[] memory batchEntries,
-        bool hasL2TX,
-        uint256 l2txRollupId,
-        bytes memory l2txRlpData,
-        bool hasCCCall,
-        address ccSource,
-        bytes memory ccCallData
-    ) internal pure returns (string memory line) {
-        // Start with trigger (only for L2TX — CrossChainCall IS the consumed CALL, no separate prefix)
-        if (hasL2TX) {
-            line = string.concat("L2TX(r", vm.toString(l2txRollupId), ",", _shortBytes(l2txRlpData), ")");
-        }
+    function _printStateUpdated(bytes32[] memory topics, bytes memory data, string memory p) internal pure {
+        // StateUpdated(uint256 indexed rollupId, bytes32 newStateRoot)
+        uint256 rollupId = uint256(topics[1]);
+        bytes32 newState = abi.decode(data, (bytes32));
+        console.log(
+            string.concat(p, "StateUpdated(id=", vm.toString(rollupId), ", newState=", _shortHash(newState), ")")
+        );
+    }
 
-        // Chain consumed actions with their next actions
-        for (uint256 c = 0; c < consumedCount; c++) {
-            if (bytes(line).length > 0) {
-                line = string.concat(line, " -> ", _tinyAction(consumed[c]));
-            } else {
-                line = _tinyAction(consumed[c]);
+    function _printL2ExecPerformed(bytes32[] memory topics, bytes memory data, string memory p) internal pure {
+        // L2ExecutionPerformed(uint256 indexed rollupId, bytes32 newState)
+        uint256 rollupId = uint256(topics[1]);
+        bytes32 newState = abi.decode(data, (bytes32));
+        console.log(
+            string.concat(
+                p, "L2ExecutionPerformed(rollup=", vm.toString(rollupId), ", newState=", _shortHash(newState), ")"
+            )
+        );
+    }
+
+    function _printImmediateSkipped(bytes32[] memory topics, bytes memory data, string memory p) internal pure {
+        // ImmediateEntrySkipped(uint256 indexed transientIdx, bytes revertData)
+        uint256 idx = uint256(topics[1]);
+        bytes memory revertData = abi.decode(data, (bytes));
+        console.log(
+            string.concat(
+                p, "ImmediateEntrySkipped(idx=", vm.toString(idx), ", revertData=", _shortBytes(revertData), ")"
+            )
+        );
+    }
+
+    function _printExecutionConsumedL1(bytes32[] memory topics, string memory p) internal pure {
+        // ExecutionConsumed(bytes32 indexed crossChainCallHash, uint256 indexed rollupId, uint256 indexed cursor)
+        bytes32 cchash = topics[1];
+        uint256 rollupId = uint256(topics[2]);
+        uint256 cursor = uint256(topics[3]);
+        console.log(
+            string.concat(
+                p,
+                "ExecutionConsumed(hash=",
+                _shortHash(cchash),
+                ", rollup=",
+                vm.toString(rollupId),
+                ", cursor=",
+                vm.toString(cursor),
+                ")"
+            )
+        );
+    }
+
+    function _printExecutionConsumedL2(bytes32[] memory topics, string memory p) internal pure {
+        // L2 variant: ExecutionConsumed(bytes32 indexed crossChainCallHash, uint256 indexed entryIndex)
+        bytes32 cchash = topics[1];
+        uint256 entryIndex = uint256(topics[2]);
+        console.log(
+            string.concat(
+                p, "ExecutionConsumed(hash=", _shortHash(cchash), ", entryIdx=", vm.toString(entryIndex), ")  [L2]"
+            )
+        );
+    }
+
+    function _printL2TXExecuted(bytes32[] memory topics, string memory p) internal pure {
+        // L2TXExecuted(uint256 indexed rollupId, uint256 indexed cursor)
+        uint256 rollupId = uint256(topics[1]);
+        uint256 cursor = uint256(topics[2]);
+        console.log(
+            string.concat(p, "L2TXExecuted(rollup=", vm.toString(rollupId), ", cursor=", vm.toString(cursor), ")")
+        );
+    }
+
+    function _printEntryExecuted(bytes32[] memory topics, bytes memory data, string memory p) internal pure {
+        // EntryExecuted(uint256 indexed entryIndex, bytes32 rollingHash, uint256 callsProcessed, uint256 nestedActionsConsumed)
+        uint256 entryIndex = uint256(topics[1]);
+        (bytes32 rollingHash, uint256 callsProcessed, uint256 nestedActions) =
+            abi.decode(data, (bytes32, uint256, uint256));
+        console.log(
+            string.concat(
+                p,
+                "EntryExecuted(idx=",
+                vm.toString(entryIndex),
+                ", rollingHash=",
+                _shortHash(rollingHash),
+                ", calls=",
+                vm.toString(callsProcessed),
+                ", nested=",
+                vm.toString(nestedActions),
+                ")"
+            )
+        );
+    }
+
+    function _printCrossChainCallExecuted(bytes32[] memory topics, bytes memory data, string memory p) internal pure {
+        // CrossChainCallExecuted(bytes32 indexed cchash, address indexed proxy, address sourceAddress, bytes callData, uint256 value)
+        bytes32 cchash = topics[1];
+        address proxy = address(uint160(uint256(topics[2])));
+        (address sourceAddress, bytes memory callData, uint256 value) = abi.decode(data, (address, bytes, uint256));
+        console.log(
+            string.concat(
+                p,
+                "CrossChainCallExecuted(hash=",
+                _shortHash(cchash),
+                ", proxy=",
+                _shortAddr(proxy),
+                ", src=",
+                _shortAddr(sourceAddress),
+                ", value=",
+                vm.toString(value),
+                ", call=",
+                _selectorName(callData),
+                ")"
+            )
+        );
+    }
+
+    function _printCallResult(bytes32[] memory topics, bytes memory data, string memory p) internal pure {
+        // CallResult(uint256 indexed entryIndex, uint256 indexed callNumber, bool success, bytes returnData)
+        uint256 entryIndex = uint256(topics[1]);
+        uint256 callNumber = uint256(topics[2]);
+        (bool success, bytes memory ret) = abi.decode(data, (bool, bytes));
+        console.log(
+            string.concat(
+                p,
+                "CallResult(entry=",
+                vm.toString(entryIndex),
+                ", call#=",
+                vm.toString(callNumber),
+                ", ",
+                success ? "ok" : "FAILED",
+                ", ret=",
+                _shortBytes(ret),
+                ")"
+            )
+        );
+    }
+
+    function _printNestedActionConsumed(bytes32[] memory topics, bytes memory data, string memory p) internal pure {
+        // NestedActionConsumed(uint256 indexed entryIndex, uint256 indexed nestedNumber, bytes32 cchash, uint256 callCount)
+        uint256 entryIndex = uint256(topics[1]);
+        uint256 nestedNumber = uint256(topics[2]);
+        (bytes32 cchash, uint256 callCount) = abi.decode(data, (bytes32, uint256));
+        console.log(
+            string.concat(
+                p,
+                "NestedActionConsumed(entry=",
+                vm.toString(entryIndex),
+                ", nested#=",
+                vm.toString(nestedNumber),
+                ", hash=",
+                _shortHash(cchash),
+                ", callCount=",
+                vm.toString(callCount),
+                ")"
+            )
+        );
+    }
+
+    function _printRevertSpan(bytes32[] memory topics, bytes memory data, string memory p) internal pure {
+        // RevertSpanExecuted(uint256 indexed entryIndex, uint256 startCallNumber, uint256 span)
+        uint256 entryIndex = uint256(topics[1]);
+        (uint256 startCallNumber, uint256 span) = abi.decode(data, (uint256, uint256));
+        console.log(
+            string.concat(
+                p,
+                "RevertSpanExecuted(entry=",
+                vm.toString(entryIndex),
+                ", start=",
+                vm.toString(startCallNumber),
+                ", span=",
+                vm.toString(span),
+                ")"
+            )
+        );
+    }
+
+    function _printProxyCreated(bytes32[] memory topics, string memory p) internal pure {
+        // CrossChainProxyCreated(address indexed proxy, address indexed originalAddress, uint256 indexed originalRollupId)
+        address proxy = address(uint160(uint256(topics[1])));
+        address original = address(uint160(uint256(topics[2])));
+        uint256 originalRollupId = uint256(topics[3]);
+        console.log(
+            string.concat(
+                p,
+                "CrossChainProxyCreated(proxy=",
+                _shortAddr(proxy),
+                ", original=",
+                _shortAddr(original),
+                ", origRollupId=",
+                vm.toString(originalRollupId),
+                ")"
+            )
+        );
+    }
+
+    function _printIncomingCall(bytes32[] memory topics, bytes memory data, string memory p) internal pure {
+        // IncomingCrossChainCallExecuted(bytes32 indexed cchash, address dest, uint256 value, bytes data, address src, uint256 srcRollup)
+        bytes32 cchash = topics[1];
+        (address dest, uint256 value, bytes memory innerData, address src, uint256 srcRollup) =
+            abi.decode(data, (address, uint256, bytes, address, uint256));
+        console.log(
+            string.concat(
+                p,
+                "IncomingCrossChainCallExecuted(hash=",
+                _shortHash(cchash),
+                ", dest=",
+                _shortAddr(dest),
+                ", value=",
+                vm.toString(value),
+                ", src=",
+                _shortAddr(src),
+                ", srcRollup=",
+                vm.toString(srcRollup),
+                ", call=",
+                _selectorName(innerData),
+                ")"
+            )
+        );
+    }
+
+    // ──────────────────── Summary ────────────────────
+
+    function _buildSummary(Vm.EthGetLogs[] memory logs) internal pure returns (string memory line) {
+        // Walk events and produce a compact one-liner
+        uint256 batches;
+        uint256 entriesExec;
+        uint256 callsExec;
+        uint256 callsFailed;
+        uint256 nested;
+        uint256 reverts;
+        uint256 l2tx;
+        uint256 immediateSkipped;
+        uint256 stateUpdates;
+        uint256 proxiesCreated;
+
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics.length == 0) continue;
+            bytes32 sig = logs[i].topics[0];
+            if (sig == SIG_BATCH_POSTED) {
+                batches++;
+            } else if (sig == SIG_ENTRY_EXECUTED) {
+                entriesExec++;
+            } else if (sig == SIG_CALL_RESULT) {
+                callsExec++;
+                (bool success,) = abi.decode(logs[i].data, (bool, bytes));
+                if (!success) callsFailed++;
+            } else if (sig == SIG_NESTED_ACTION_CONSUMED) {
+                nested++;
+            } else if (sig == SIG_REVERT_SPAN) {
+                reverts++;
+            } else if (sig == SIG_L2TX_EXECUTED) {
+                l2tx++;
+            } else if (sig == SIG_IMMEDIATE_SKIPPED) {
+                immediateSkipped++;
+            } else if (sig == SIG_STATE_UPDATED) {
+                stateUpdates++;
+            } else if (sig == SIG_PROXY_CREATED) {
+                proxiesCreated++;
             }
-
-            // Find next action from batch
-            (bool found, ExecutionEntry memory entry) = _findBatchEntry(batchEntries, keccak256(abi.encode(consumed[c])));
-            if (found) {
-                // If nextAction is a CALL (L1 execution) and the next consumed is its RESULT, merge on same arrow
-                if (entry.nextAction.actionType == ActionType.CALL
-                    && c + 1 < consumedCount
-                    && consumed[c + 1].actionType == ActionType.RESULT)
-                {
-                    line = string.concat(line, " -> ", _tinyAction(entry.nextAction), " - ", _tinyAction(consumed[c + 1]));
-                    c++; // skip the RESULT, already shown
-                    // Also show the next action after the RESULT if available
-                    (bool found2, ExecutionEntry memory entry2) = _findBatchEntry(batchEntries, keccak256(abi.encode(consumed[c])));
-                    if (found2) {
-                        line = string.concat(line, " -> ", _tinyAction(entry2.nextAction));
-                    }
-                } else {
-                    line = string.concat(line, " -> ", _tinyAction(entry.nextAction));
-                }
-            }
         }
 
-        return line;
-    }
-
-    function _tinyAction(Action memory a) internal pure returns (string memory) {
-        if (a.actionType == ActionType.CALL) {
-            string memory valStr = a.value > 0 ? string.concat(",val=", vm.toString(a.value)) : "";
-            return string.concat("CALL(", _shortAddr(a.destination), ".", _selectorName(a.data), valStr, ")");
-        } else if (a.actionType == ActionType.RESULT) {
-            return string.concat("RESULT(", a.failed ? "fail" : "ok", ",", _shortBytes(a.data), ")");
-        } else if (a.actionType == ActionType.L2TX) {
-            return string.concat("L2TX(r", vm.toString(a.rollupId), ")");
-        } else if (a.actionType == ActionType.REVERT) {
-            return "REVERT";
-        } else if (a.actionType == ActionType.REVERT_CONTINUE) {
-            return "REVERT_CONTINUE";
-        }
-        return "?";
-    }
-
-    // ──────────────────── Batch lookup ────────────────────
-
-    function _findBatchEntry(ExecutionEntry[] memory entries, bytes32 actionHash)
-        internal
-        pure
-        returns (bool, ExecutionEntry memory)
-    {
-        for (uint256 i = 0; i < entries.length; i++) {
-            if (entries[i].actionHash == actionHash) return (true, entries[i]);
-        }
-        ExecutionEntry memory empty;
-        return (false, empty);
-    }
-
-    // ──────────────────── Table loaded (L2) ────────────────────
-
-    function _printTableLoaded(ExecutionEntry[] memory entries) internal pure {
-        console.log("");
-        console.log("  EXECUTION TABLE LOADED (%s entries)", entries.length);
-        for (uint256 e = 0; e < entries.length; e++) {
-            _logBatchEntry(e, entries[e]);
-        }
-    }
-
-    // ──────────────────── Detail formatters ────────────────────
-
-    function _logBatchEntry(uint256 e, ExecutionEntry memory entry) internal pure {
-        bool immediate = entry.actionHash == bytes32(0);
-        console.log("    [%s] %s  actionHash: %s", e, immediate ? "IMMEDIATE" : "DEFERRED", vm.toString(entry.actionHash));
-        for (uint256 d = 0; d < entry.stateDeltas.length; d++) {
-            StateDelta memory delta = entry.stateDeltas[d];
-            console.log(string.concat("        stateDelta: rollup ", vm.toString(delta.rollupId),
-                "  ", _shortHash(delta.currentState), " -> ", _shortHash(delta.newState),
-                "  ether: ", vm.toString(delta.etherDelta)));
-        }
-        if (!immediate) {
-            console.log("        nextAction: %s", _formatActionOneLiner(entry.nextAction));
-        }
-    }
-
-    function _logAction(Action memory a, string memory p) internal pure {
-        console.log(string.concat(p, _actionTypeName(a.actionType),
-            " | rollup=", vm.toString(a.rollupId),
-            " dest=", _shortAddr(a.destination),
-            " val=", vm.toString(a.value)));
-        console.log(string.concat(p, "data=", vm.toString(a.data)));
-        console.log(string.concat(p, "failed=", a.failed ? "true" : "false",
-            " src=", _shortAddr(a.sourceAddress),
-            " srcRollup=", vm.toString(a.sourceRollup),
-            " scope=", _scopeToString(a.scope)));
-        _logSelector(a.data, p);
+        line = string.concat(
+            "batches=",
+            vm.toString(batches),
+            " entries=",
+            vm.toString(entriesExec),
+            " calls=",
+            vm.toString(callsExec),
+            "(failed=",
+            vm.toString(callsFailed),
+            ") nested=",
+            vm.toString(nested),
+            " revertSpans=",
+            vm.toString(reverts),
+            " l2tx=",
+            vm.toString(l2tx),
+            " skipped=",
+            vm.toString(immediateSkipped),
+            " stateUpdates=",
+            vm.toString(stateUpdates),
+            " proxies=",
+            vm.toString(proxiesCreated)
+        );
     }
 
     // ──────────────────── String helpers ────────────────────
 
-    function _actionTypeName(ActionType t) internal pure returns (string memory) {
-        if (t == ActionType.CALL) return "CALL";
-        if (t == ActionType.RESULT) return "RESULT";
-        if (t == ActionType.L2TX) return "L2TX";
-        if (t == ActionType.REVERT) return "REVERT";
-        if (t == ActionType.REVERT_CONTINUE) return "REVERT_CONTINUE";
-        return "UNKNOWN";
-    }
-
     function _shortAddr(address a) internal pure returns (string memory) {
         if (a == address(0)) return "0x0";
         string memory full = vm.toString(a);
-        // Return 0x1234...5678 (first 6 + last 4)
-        return string.concat(
-            _substring(full, 0, 6), "..", _substring(full, 38, 42)
-        );
+        return string.concat(_substring(full, 0, 6), "..", _substring(full, 38, 42));
     }
 
     function _shortHash(bytes32 h) internal pure returns (string memory) {
@@ -579,7 +495,13 @@ contract DecodeExecutions is Script {
 
     function _shortBytes(bytes memory b) internal pure returns (string memory) {
         if (b.length == 0) return "0x";
-        return vm.toString(b);
+        if (b.length <= 32) return vm.toString(b);
+        // Truncate long byte arrays
+        bytes memory head = new bytes(16);
+        for (uint256 i = 0; i < 16; i++) {
+            head[i] = b[i];
+        }
+        return string.concat(vm.toString(head), "..(len=", vm.toString(b.length), ")");
     }
 
     function _selectorName(bytes memory data) internal pure returns (string memory) {
@@ -587,28 +509,18 @@ contract DecodeExecutions is Script {
         bytes4 sel = bytes4(data[0]) | (bytes4(data[1]) >> 8) | (bytes4(data[2]) >> 16) | (bytes4(data[3]) >> 24);
         if (sel == bytes4(keccak256("increment()"))) return "increment()";
         if (sel == bytes4(keccak256("decrement()"))) return "decrement()";
-        if (sel == bytes4(keccak256("setNumber(uint256)"))) return "setNumber()";
+        if (sel == bytes4(keccak256("setNumber(uint256)"))) return "setNumber(uint256)";
         if (sel == bytes4(keccak256("incrementProxy()"))) return "incrementProxy()";
-        // Return raw selector
-        string memory full = vm.toString(abi.encodePacked(sel));
-        return full;
-    }
-
-    function _logSelector(bytes memory data, string memory p) internal pure {
-        if (data.length < 4) return;
-        string memory name = _selectorName(data);
-        if (bytes(name).length > 10) { // Not a raw selector
-            console.log(string.concat(p, "-> ", name));
+        if (sel == bytes4(keccak256("hello()"))) return "hello()";
+        if (sel == bytes4(keccak256("number()"))) return "number()";
+        if (sel == bytes4(keccak256("greet()"))) return "greet()";
+        if (sel == bytes4(keccak256("greet(string)"))) return "greet(string)";
+        if (sel == bytes4(keccak256("executeCrossChainCall(address,bytes)"))) {
+            return "executeCrossChainCall(address,bytes)";
         }
-    }
-
-    function _scopeToString(uint256[] memory scope) internal pure returns (string memory) {
-        string memory s = "[";
-        for (uint256 i = 0; i < scope.length; i++) {
-            if (i > 0) s = string.concat(s, ",");
-            s = string.concat(s, vm.toString(scope[i]));
-        }
-        return string.concat(s, "]");
+        if (sel == bytes4(keccak256("staticCallLookup(address,bytes)"))) return "staticCallLookup(address,bytes)";
+        // Fall back to raw 4-byte selector
+        return vm.toString(abi.encodePacked(sel));
     }
 
     function _substring(string memory str, uint256 startIndex, uint256 endIndex) internal pure returns (string memory) {

@@ -1,9 +1,8 @@
-import React, { useState, useMemo } from "react";
+import React, { useState } from "react";
 import { COLORS } from "../theme";
 import type { EventRecord } from "../types/events";
 import { truncateHex, truncateAddress } from "../lib/actionFormatter";
 import { TxDetails } from "./TxDetails";
-import { actionFromEventArgs, decodeActionHash, actionSummary } from "../lib/actionHashDecoder";
 
 type Props = {
   event: EventRecord;
@@ -21,10 +20,13 @@ const EVENT_COLORS: Record<string, string> = {
   CrossChainCallExecuted: COLORS.add,
   CrossChainProxyCreated: COLORS.ok,
   RollupCreated: COLORS.acc,
-  StateUpdated: COLORS.warn,
-  L2ExecutionPerformed: COLORS.l2,
-  IncomingCrossChainCallExecuted: COLORS.l2,
+  RollupContractChanged: COLORS.warn,
   L2TXExecuted: COLORS.warn,
+  ImmediateEntrySkipped: COLORS.warn,
+  CallResult: COLORS.dim,
+  NestedActionConsumed: COLORS.add,
+  EntryExecuted: COLORS.ok,
+  RevertSpanExecuted: COLORS.warn,
 };
 
 function eventColor(eventName: string): string {
@@ -33,26 +35,30 @@ function eventColor(eventName: string): string {
 
 function eventDetail(event: EventRecord): string {
   switch (event.eventName) {
-    case "BatchPosted": {
-      const entries = event.args.entries as unknown[] | undefined;
-      return entries ? `Posts ${entries.length} execution ${entries.length === 1 ? "entry" : "entries"} to L1 table` : "";
-    }
+    case "BatchPosted":
+      return `Posts ${String(event.args.subBatchCount ?? 0)} sub-${(event.args.subBatchCount ?? 0n) === 1n ? "batch" : "batches"} to L1`;
     case "ExecutionTableLoaded": {
       const entries = event.args.entries as unknown[] | undefined;
       return entries ? `Loads ${entries.length} ${entries.length === 1 ? "entry" : "entries"} into L2 table` : "";
     }
     case "ExecutionConsumed":
-      return `Entry consumed: ${truncateHex(event.args.actionHash as string)}`;
+      return `Entry consumed: ${truncateHex(event.args.crossChainCallHash as string)} (rollup ${String(event.args.rollupId ?? "")} cursor ${String(event.args.cursor ?? "")})`;
     case "CrossChainCallExecuted":
       return `Proxy ${truncateAddress(event.args.proxy as string)} called by ${truncateAddress(event.args.sourceAddress as string)}`;
     case "CrossChainProxyCreated":
       return `Proxy ${truncateAddress(event.args.proxy as string)} for ${truncateAddress(event.args.originalAddress as string)}`;
-    case "IncomingCrossChainCallExecuted":
-      return `Incoming call to ${truncateAddress(event.args.destination as string)} from ${truncateAddress(event.args.sourceAddress as string)}`;
     case "RollupCreated":
       return `Rollup ${String(event.args.rollupId)} created`;
-    case "L2ExecutionPerformed":
-      return `State updated for rollup ${String(event.args.rollupId)}`;
+    case "RollupContractChanged":
+      return `Rollup ${String(event.args.rollupId)} contract updated`;
+    case "ImmediateEntrySkipped":
+      return `Immediate entry @ ${String(event.args.transientIdx ?? "")} skipped`;
+    case "L2TXExecuted":
+      return `L2TX rollup ${String(event.args.rollupId ?? "")} cursor ${String(event.args.cursor ?? "")}`;
+    case "CallResult":
+      return `Call #${String(event.args.callNumber ?? "")} ${event.args.success ? "success" : "failed"}`;
+    case "EntryExecuted":
+      return `Entry #${String(event.args.entryIndex ?? "")} executed (${String(event.args.callsProcessed ?? 0)} calls)`;
     default:
       return "";
   }
@@ -61,16 +67,8 @@ function eventDetail(event: EventRecord): string {
 function tableChangeSummary(event: EventRecord): { adds: string[]; consumes: string[] } {
   const adds: string[] = [];
   const consumes: string[] = [];
-  if (event.eventName === "BatchPosted") {
-    const entries = event.args.entries as Array<{ actionHash: string }> | undefined;
-    if (entries) {
-      for (const e of entries) {
-        if (e.actionHash !== "0x0000000000000000000000000000000000000000000000000000000000000000") {
-          adds.push(`+${event.chain.toUpperCase()}`);
-        }
-      }
-    }
-  }
+  // TODO(user-decision): post-refactor BatchPosted no longer carries entries;
+  // table change summary for L1 batches must be sourced elsewhere (tx input decode).
   if (event.eventName === "ExecutionTableLoaded") {
     const entries = event.args.entries as unknown[] | undefined;
     if (entries) {
@@ -99,20 +97,6 @@ export const EventCard: React.FC<Props> = ({
   const chainBorder = event.chain === "l1" ? COLORS.l1b : COLORS.l2b;
   const detail = eventDetail(event);
   const { adds, consumes } = tableChangeSummary(event);
-
-  // Decode action hash for ExecutionConsumed events
-  const decoded = useMemo(() => {
-    if (event.eventName !== "ExecutionConsumed") return null;
-    try {
-      const actionArg = event.args.action as Record<string, unknown>;
-      if (!actionArg) return null;
-      const fields = actionFromEventArgs(actionArg);
-      const storedHash = event.args.actionHash as string;
-      return decodeActionHash(storedHash, fields);
-    } catch {
-      return null;
-    }
-  }, [event]);
 
   // Style matching index.html .si
   const opacity = selected ? 1 : isPlayed ? 0.65 : 0.25;
@@ -183,38 +167,6 @@ export const EventCard: React.FC<Props> = ({
           </div>
         )}
 
-        {/* Decoded action for ExecutionConsumed */}
-        {decoded && (
-          <div
-            style={{
-              marginTop: 3,
-              padding: "3px 6px",
-              borderRadius: 4,
-              background: "rgba(0,0,0,0.25)",
-              border: `1px solid ${decoded.verified ? "rgba(52,211,153,0.2)" : "rgba(239,68,68,0.3)"}`,
-              fontSize: "0.5rem",
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 2 }}>
-              <span style={{ color: decoded.verified ? COLORS.ok : COLORS.rm, fontWeight: 700 }}>
-                {decoded.verified ? "hash verified" : "HASH MISMATCH"}
-              </span>
-              <span style={{ color: COLORS.dim }}>|</span>
-              <span style={{ color: COLORS.add }}>
-                {actionSummary(decoded.fields)}
-              </span>
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "80px 1fr", gap: "0px 6px", fontSize: "0.48rem" }}>
-              {Object.entries(decoded.display).map(([k, v]) => (
-                <React.Fragment key={k}>
-                  <span style={{ color: COLORS.dim }}>{k}</span>
-                  <span style={{ color: COLORS.tx, wordBreak: "break-all" }}>{v}</span>
-                </React.Fragment>
-              ))}
-            </div>
-          </div>
-        )}
-
         {/* Table change summary */}
         {(adds.length > 0 || consumes.length > 0) && (
           <div style={{ marginTop: 2, fontSize: "0.52rem" }}>
@@ -234,7 +186,7 @@ export const EventCard: React.FC<Props> = ({
         {/* Cross-chain correlation */}
         {correlatedChain && event.eventName === "ExecutionConsumed" && (
           <div style={{ fontSize: "0.52rem", color: COLORS.warn, marginTop: 2 }}>
-            {"<->"} Matched on {correlatedChain.toUpperCase()} (same actionHash)
+            {"<->"} Matched on {correlatedChain.toUpperCase()} (same crossChainCallHash)
           </div>
         )}
 

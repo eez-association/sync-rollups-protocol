@@ -27,7 +27,7 @@ export const BundleList: React.FC<Props> = ({ onSelectBundle, selectedBundleId }
 
   // Only show multi-event bundles or important standalone ones
   const significantBundles = useMemo(
-    () => bundles.filter((b) => b.events.length > 1 || b.actionHashes.length > 0),
+    () => bundles.filter((b) => b.events.length > 1 || b.crossChainCallHashes.length > 0),
     [bundles],
   );
 
@@ -114,7 +114,7 @@ const BundleCard: React.FC<{
         {/* Meta row */}
         <div style={{ display: "flex", gap: 8, marginTop: 2, fontSize: "0.48rem", color: COLORS.dim }}>
           <span>{bundle.events.length} events</span>
-          <span>{bundle.actionHashes.length} action{bundle.actionHashes.length !== 1 ? "s" : ""}</span>
+          <span>{bundle.crossChainCallHashes.length} action{bundle.crossChainCallHashes.length !== 1 ? "s" : ""}</span>
           <span>
             block {bundle.blockRange.from.toString()}
             {bundle.blockRange.to !== bundle.blockRange.from && `-${bundle.blockRange.to.toString()}`}
@@ -122,9 +122,9 @@ const BundleCard: React.FC<{
         </div>
 
         {/* Action hashes */}
-        {bundle.actionHashes.length > 0 && (
+        {bundle.crossChainCallHashes.length > 0 && (
           <div style={{ marginTop: 3, display: "flex", flexWrap: "wrap", gap: 3 }}>
-            {bundle.actionHashes.slice(0, 3).map((h) => (
+            {bundle.crossChainCallHashes.slice(0, 3).map((h) => (
               <span
                 key={h}
                 style={{
@@ -139,9 +139,9 @@ const BundleCard: React.FC<{
                 {truncateHex(h, 8)}
               </span>
             ))}
-            {bundle.actionHashes.length > 3 && (
+            {bundle.crossChainCallHashes.length > 3 && (
               <span style={{ fontSize: "0.45rem", color: COLORS.dim }}>
-                +{bundle.actionHashes.length - 3} more
+                +{bundle.crossChainCallHashes.length - 3} more
               </span>
             )}
           </div>

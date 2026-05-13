@@ -1,69 +1,47 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
-
-/// @title HelloWorld E2E — Simple L1 → L2 cross-chain greeting
-/// @dev Flow:
-///
-///   L1 (User) --> HelloWorldL1.helloL2World()
-///                     |
-///                     v
-///                 l2Proxy.getWord()  -- cross-chain -->  HelloWorldL2.getWord()
-///                     |                                        |
-///                     v                                   returns "World"
-///               greeting = "Hello World! This is EEZ."
+pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
-import {Rollups} from "../../../src/Rollups.sol";
-import {CrossChainManagerL2} from "../../../src/CrossChainManagerL2.sol";
-import {Action, ActionType, ExecutionEntry, StateDelta} from "../../../src/ICrossChainManager.sol";
+import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../../src/EEZ.sol";
+import {EEZL2} from "../../../src/L2/EEZL2.sol";
+import {StateDelta, L2ToL1Call, ExpectedL1ToL2Call, ExecutionEntry, LookupCall} from "../../../src/interfaces/IEEZ.sol";
 import {HelloWorldL1, HelloWorldL2, IHelloWorldL2} from "../../../test/mocks/helloword.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
-import {getOrCreateProxy} from "../shared/E2EHelpers.sol";
+import {
+    crossChainCallHash,
+    noLookupCalls,
+    noNestedActions,
+    noCalls,
+    RollingHashBuilder
+} from "../shared/E2EHelpers.sol";
 
-// ──────────────────────────────────────────────
-//  Actions Base — single source of truth
-// ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+//  HelloWorld scenario — L1→L2 with rich return data, two-sided
+//
+//  L1 side (Execute):
+//    HelloWorldL1.helloL2World() → HelloWorldProxy@L1 → EEZ.executeL1ToL2Call
+//    consumes the L1 entry whose returnData == abi.encode("World"); helloL2World
+//    returns that string back to the caller.
+//
+//  L2 side (ExecuteL2):
+//    SYSTEM_ADDRESS calls managerL2.executeIncomingCrossChainCall(...) which
+//    forwards into the real HelloWorldL2.getWord() — it returns abi.encode("World")
+//    and the rolling hash commits to that retdata.
+// ═══════════════════════════════════════════════════════════════════════
 
-abstract contract HelloWorldActions {
-    uint256 internal constant L2_ROLLUP_ID = 1;
-    uint256 internal constant MAINNET_ROLLUP_ID = 0;
+uint256 constant L2_ROLLUP_ID = 1;
+uint256 constant MAINNET_ROLLUP_ID = 0;
 
-    function _callAction(address helloWorldL2, address helloWorldL1) internal pure returns (Action memory) {
-        return Action({
-            actionType: ActionType.CALL,
-            rollupId: L2_ROLLUP_ID,
-            destination: helloWorldL2,
-            value: 0,
-            data: abi.encodeWithSelector(HelloWorldL2.getWord.selector),
-            failed: false,
-            sourceAddress: helloWorldL1,
-            sourceRollup: MAINNET_ROLLUP_ID,
-            scope: new uint256[](0)
-        });
+abstract contract HelloActions {
+    function _getWordCallData() internal pure returns (bytes memory) {
+        return abi.encodeWithSelector(IHelloWorldL2.getWord.selector);
     }
 
-    function _resultAction() internal pure returns (Action memory) {
-        return Action({
-            actionType: ActionType.RESULT,
-            rollupId: L2_ROLLUP_ID,
-            destination: address(0),
-            value: 0,
-            data: abi.encode("World"),
-            failed: false,
-            sourceAddress: address(0),
-            sourceRollup: 0,
-            scope: new uint256[](0)
-        });
+    function _callHash(address helloL2, address helloL1) internal pure returns (bytes32) {
+        return crossChainCallHash(L2_ROLLUP_ID, helloL2, 0, _getWordCallData(), helloL1, MAINNET_ROLLUP_ID);
     }
 
-    function _l1Entries(address helloWorldL2, address helloWorldL1)
-        internal
-        pure
-        returns (ExecutionEntry[] memory entries)
-    {
-        Action memory call_ = _callAction(helloWorldL2, helloWorldL1);
-        Action memory result = _resultAction();
-
+    function _l1Entries(address helloL2, address helloL1) internal pure returns (ExecutionEntry[] memory entries) {
         StateDelta[] memory deltas = new StateDelta[](1);
         deltas[0] = StateDelta({
             rollupId: L2_ROLLUP_ID,
@@ -73,209 +51,201 @@ abstract contract HelloWorldActions {
         });
 
         entries = new ExecutionEntry[](1);
-        entries[0].stateDeltas = deltas;
-        entries[0].actionHash = keccak256(abi.encode(call_));
-        entries[0].nextAction = result;
+        entries[0] = ExecutionEntry({
+            stateDeltas: deltas,
+            proxyEntryHash: _callHash(helloL2, helloL1),
+            destinationRollupId: L2_ROLLUP_ID,
+            L2ToL1Calls: noCalls(),
+            expectedL1ToL2Calls: noNestedActions(),
+            callCount: 0,
+            returnData: abi.encode("World"),
+            rollingHash: bytes32(0)
+        });
     }
 
-    function _l2Entries() internal pure returns (ExecutionEntry[] memory entries) {
-        Action memory result = _resultAction();
+    function _l2Entries(address helloL2, address helloL1) internal pure returns (ExecutionEntry[] memory entries) {
+        L2ToL1Call[] memory calls = new L2ToL1Call[](1);
+        calls[0] = L2ToL1Call({
+            targetAddress: helloL2,
+            value: 0,
+            data: _getWordCallData(),
+            sourceAddress: helloL1,
+            sourceRollupId: MAINNET_ROLLUP_ID,
+            revertSpan: 0
+        });
+
+        bytes32 rh = bytes32(0);
+        rh = RollingHashBuilder.appendCallBegin(rh, 1);
+        rh = RollingHashBuilder.appendCallEnd(rh, 1, true, abi.encode("World"));
 
         entries = new ExecutionEntry[](1);
-        entries[0].stateDeltas = new StateDelta[](0);
-        entries[0].actionHash = keccak256(abi.encode(result));
-        entries[0].nextAction = result;
+        entries[0] = ExecutionEntry({
+            stateDeltas: new StateDelta[](0),
+            proxyEntryHash: _callHash(helloL2, helloL1),
+            destinationRollupId: L2_ROLLUP_ID,
+            L2ToL1Calls: calls,
+            expectedL1ToL2Calls: noNestedActions(),
+            callCount: 1,
+            returnData: abi.encode("World"),
+            rollingHash: rh
+        });
     }
 }
 
-// ──────────────────────────────────────────────
-//  Batcher — postBatch + user call in one tx
-// ──────────────────────────────────────────────
-
-contract Batcher {
-    function execute(Rollups rollups, ExecutionEntry[] calldata entries, HelloWorldL1 helloWorld)
-        external
-        returns (string memory)
-    {
-        rollups.postBatch(entries, 0, "", "proof");
-        return helloWorld.helloL2World();
-    }
-}
-
-// ──────────────────────────────────────────────
-//  Deploy contracts
-// ──────────────────────────────────────────────
-
-/// @title DeployL2 — Deploy HelloWorldL2 on L2
-/// Outputs: HELLO_WORLD_L2
 contract DeployL2 is Script {
     function run() external {
         vm.startBroadcast();
-
-        HelloWorldL2 helloL2 = new HelloWorldL2("World");
-        console.log("HELLO_WORLD_L2=%s", address(helloL2));
-
+        HelloWorldL2 h = new HelloWorldL2("World");
+        console.log("HELLO_WORLD_L2=%s", address(h));
         vm.stopBroadcast();
     }
 }
 
-/// @title Deploy — Deploy HelloWorldL1 on L1 + create proxy for HelloWorldL2
-/// @dev Env: ROLLUPS, HELLO_WORLD_L2
-/// Outputs: HELLO_PROXY_L1, HELLO_WORLD_L1
 contract Deploy is Script {
     function run() external {
         address rollupsAddr = vm.envAddress("ROLLUPS");
-        address helloWorldL2Addr = vm.envAddress("HELLO_WORLD_L2");
+        address helloL2Addr = vm.envAddress("HELLO_WORLD_L2");
 
         vm.startBroadcast();
+        EEZ rollups = EEZ(rollupsAddr);
 
-        Rollups rollups = Rollups(rollupsAddr);
+        address helloL2Proxy;
+        try rollups.createCrossChainProxy(helloL2Addr, L2_ROLLUP_ID) returns (address p) {
+            helloL2Proxy = p;
+        } catch {
+            helloL2Proxy = rollups.computeCrossChainProxyAddress(helloL2Addr, L2_ROLLUP_ID);
+        }
 
-        address helloProxy = getOrCreateProxy(rollups, helloWorldL2Addr, 1);
-        HelloWorldL1 helloL1 = new HelloWorldL1(helloProxy);
+        HelloWorldL1 h1 = new HelloWorldL1(helloL2Proxy);
 
-        console.log("HELLO_PROXY_L1=%s", helloProxy);
-        console.log("HELLO_WORLD_L1=%s", address(helloL1));
-
+        console.log("HELLO_WORLD_PROXY=%s", helloL2Proxy);
+        console.log("HELLO_WORLD_L1=%s", address(h1));
         vm.stopBroadcast();
     }
 }
 
-// ──────────────────────────────────────────────
-//  ExecuteL2 — Load L2 table + executeIncomingCrossChainCall
-// ──────────────────────────────────────────────
+contract Batcher {
+    function execute(
+        EEZ rollups,
+        address proofSystem,
+        ExecutionEntry[] calldata entries,
+        LookupCall[] calldata lookupCalls,
+        HelloWorldL1 h1
+    )
+        external
+        returns (string memory greeting)
+    {
+        address[] memory psList = new address[](1);
+        psList[0] = proofSystem;
+        uint256[] memory rids = new uint256[](1);
+        rids[0] = L2_ROLLUP_ID;
+        bytes[] memory proofs = new bytes[](1);
+        proofs[0] = "proof";
+        uint64[] memory psIdx = new uint64[](psList.length);
+        for (uint256 _i = 0; _i < psList.length; _i++) {
+            psIdx[_i] = uint64(_i);
+        }
+        RollupIdWithProofSystems[] memory rps = new RollupIdWithProofSystems[](rids.length);
+        for (uint256 _i = 0; _i < rids.length; _i++) {
+            rps[_i] = RollupIdWithProofSystems({rollupId: rids[_i], proofSystemIndex: psIdx});
+        }
 
-/// @dev Env: MANAGER_L2, HELLO_WORLD_L2, HELLO_WORLD_L1
-contract ExecuteL2 is Script, HelloWorldActions {
+        ProofSystemBatchPerVerificationEntries memory batch = ProofSystemBatchPerVerificationEntries({
+            entries: entries,
+            l1ToL2lookupCalls: lookupCalls,
+            transientExecutionEntryCount: 0,
+            transientLookupCallCount: 0,
+            proofSystems: psList,
+            rollupIdsWithProofSystems: rps,
+            crossProofSystemInteractions: bytes32(0),
+            blobIndices: new uint256[](0),
+            callData: "",
+            proofs: proofs
+        });
+        rollups.postAndVerifyBatch(batch);
+        greeting = h1.helloL2World();
+    }
+}
+
+/// @title ExecuteL2 — local mode: system-driven L2 simulation that invokes the real getWord().
+/// Env: MANAGER_L2, HELLO_WORLD_L2, HELLO_WORLD_L1
+contract ExecuteL2 is Script, HelloActions {
     function run() external {
-        address managerL2Addr = vm.envAddress("MANAGER_L2");
-        address helloWorldL2Addr = vm.envAddress("HELLO_WORLD_L2");
-        address helloWorldL1Addr = vm.envAddress("HELLO_WORLD_L1");
-
-        CrossChainManagerL2 manager = CrossChainManagerL2(managerL2Addr);
+        address managerAddr = vm.envAddress("MANAGER_L2");
+        address helloL2Addr = vm.envAddress("HELLO_WORLD_L2");
+        address helloL1Addr = vm.envAddress("HELLO_WORLD_L1");
 
         vm.startBroadcast();
-
-        manager.loadExecutionTable(_l2Entries());
-
-        manager.executeIncomingCrossChainCall(
-            helloWorldL2Addr,
-            0,
-            abi.encodeWithSelector(HelloWorldL2.getWord.selector),
-            helloWorldL1Addr,
-            MAINNET_ROLLUP_ID,
-            new uint256[](0)
-        );
+        bytes memory ret = EEZL2(managerAddr)
+            .executeIncomingCrossChainCall(
+                helloL2Addr,
+                0,
+                _getWordCallData(),
+                helloL1Addr,
+                MAINNET_ROLLUP_ID,
+                _l2Entries(helloL2Addr, helloL1Addr),
+                noLookupCalls()
+            );
 
         console.log("done");
-
+        console.log("L2 ret length=%s", ret.length);
         vm.stopBroadcast();
     }
 }
 
-// ──────────────────────────────────────────────
-//  Execute — Local mode L1 (Batcher)
-// ──────────────────────────────────────────────
-
-/// @dev Env: ROLLUPS, HELLO_WORLD_L2, HELLO_WORLD_L1
-contract Execute is Script, HelloWorldActions {
+contract Execute is Script, HelloActions {
     function run() external {
         address rollupsAddr = vm.envAddress("ROLLUPS");
-        address helloWorldL2Addr = vm.envAddress("HELLO_WORLD_L2");
-        address helloWorldL1Addr = vm.envAddress("HELLO_WORLD_L1");
+        address proofSystemAddr = vm.envAddress("PROOF_SYSTEM");
+        address helloL2Addr = vm.envAddress("HELLO_WORLD_L2");
+        address h1Addr = vm.envAddress("HELLO_WORLD_L1");
 
         vm.startBroadcast();
-
         Batcher batcher = new Batcher();
-        string memory greeting =
-            batcher.execute(Rollups(rollupsAddr), _l1Entries(helloWorldL2Addr, helloWorldL1Addr), HelloWorldL1(helloWorldL1Addr));
-
+        string memory greeting = batcher.execute(
+            EEZ(rollupsAddr), proofSystemAddr, _l1Entries(helloL2Addr, h1Addr), noLookupCalls(), HelloWorldL1(h1Addr)
+        );
         console.log("done");
         console.log("greeting=%s", greeting);
-        console.log("lastGreeting=%s", HelloWorldL1(helloWorldL1Addr).lastGreeting());
-
         vm.stopBroadcast();
     }
 }
 
-// ──────────────────────────────────────────────
-//  ExecuteNetwork — Network mode
-// ──────────────────────────────────────────────
-
-/// @dev Env: HELLO_WORLD_L1
 contract ExecuteNetwork is Script {
     function run() external view {
         address target = vm.envAddress("HELLO_WORLD_L1");
-        bytes memory data = abi.encodeWithSelector(HelloWorldL1.helloL2World.selector);
         console.log("TARGET=%s", target);
         console.log("VALUE=0");
-        console.log("CALLDATA=%s", vm.toString(data));
+        console.log("CALLDATA=%s", vm.toString(abi.encodeWithSelector(HelloWorldL1.helloL2World.selector)));
     }
 }
 
-// ──────────────────────────────────────────────
-//  ComputeExpected — Expected entry hashes
-// ──────────────────────────────────────────────
-
-/// @dev Env: HELLO_WORLD_L2, HELLO_WORLD_L1
-contract ComputeExpected is ComputeExpectedBase, HelloWorldActions {
+contract ComputeExpected is ComputeExpectedBase, HelloActions {
     function _name(address a) internal view override returns (string memory) {
         if (a == vm.envAddress("HELLO_WORLD_L2")) return "HelloWorldL2";
         if (a == vm.envAddress("HELLO_WORLD_L1")) return "HelloWorldL1";
         return _shortAddr(a);
     }
 
-    function _funcName(bytes4 sel) internal pure override returns (string memory) {
-        if (sel == HelloWorldL2.getWord.selector) return "getWord";
-        if (sel == HelloWorldL1.helloL2World.selector) return "helloL2World";
-        return ComputeExpectedBase._funcName(sel);
-    }
-
     function run() external view {
-        address helloWorldL2Addr = vm.envAddress("HELLO_WORLD_L2");
-        address helloWorldL1Addr = vm.envAddress("HELLO_WORLD_L1");
+        address helloL2Addr = vm.envAddress("HELLO_WORLD_L2");
+        address h1Addr = vm.envAddress("HELLO_WORLD_L1");
 
-        // Actions (single source of truth)
-        Action memory callAction = _callAction(helloWorldL2Addr, helloWorldL1Addr);
-        Action memory resultAction = _resultAction();
+        ExecutionEntry[] memory l1 = _l1Entries(helloL2Addr, h1Addr);
+        ExecutionEntry[] memory l2 = _l2Entries(helloL2Addr, h1Addr);
+        bytes32 l1Hash = _entryHash(l1[0]);
+        bytes32 l2Hash = _entryHash(l2[0]);
 
-        // Entries (single source of truth)
-        ExecutionEntry[] memory l1 = _l1Entries(helloWorldL2Addr, helloWorldL1Addr);
-        ExecutionEntry[] memory l2 = _l2Entries();
-
-        // Compute hashes from entries
-        bytes32 l1Hash = _entryHash(l1[0].actionHash, l1[0].nextAction);
-        bytes32 l2Hash = _entryHash(l2[0].actionHash, l2[0].nextAction);
-        bytes32 callActionHash = l1[0].actionHash;
-
-        // Parseable lines
         console.log("EXPECTED_L1_HASHES=[%s]", vm.toString(l1Hash));
         console.log("EXPECTED_L2_HASHES=[%s]", vm.toString(l2Hash));
-        console.log("EXPECTED_L2_CALL_HASHES=[%s]", vm.toString(callActionHash));
+        console.log("EXPECTED_L1_CALL_HASHES=[%s]", vm.toString(l1[0].proxyEntryHash));
 
-        // Summary
         console.log("");
-        console.log("=== EXPECTED SUMMARY ===");
-        _logEntrySummary(0, callAction, resultAction, false);
+        console.log("=== EXPECTED L1 TABLE (1 entry) ===");
+        _logEntry(0, l1[0]);
 
-        // Human-readable: L1 execution table
         console.log("");
-        console.log("=== EXPECTED L1 EXECUTION TABLE (1 entry) ===");
-        _logEntry(0, l1Hash, l1[0].stateDeltas, _fmtCall(callAction), _fmtResult(resultAction, "string(World)"));
-
-        // Human-readable: L2 execution table
-        console.log("");
-        console.log("=== EXPECTED L2 EXECUTION TABLE (1 entry) ===");
-        _logL2Entry(
-            0,
-            l2Hash,
-            _fmtResult(resultAction, "string(World)"),
-            string.concat(_fmtResult(resultAction, "string(World)"), "  (terminal)")
-        );
-
-        // Human-readable: L2 calls
-        console.log("");
-        console.log("=== EXPECTED L2 CALLS (1 call) ===");
-        _logL2Call(0, callActionHash, callAction);
+        console.log("=== EXPECTED L2 TABLE (1 entry) ===");
+        _logL2Entry(0, l2[0]);
     }
 }
