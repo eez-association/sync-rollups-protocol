@@ -214,6 +214,11 @@ contract EEZ is EEZBase {
     /// @notice Error when executeL2TX is called while already inside a cross-chain execution
     error L2TXNotAllowedDuringExecution();
 
+    /// @notice Error when the manager's `setStateRoot` escape hatch is invoked while a cross-chain
+    ///         execution is in progress (e.g., the manager is reached via a cross-chain call that
+    ///         tries to re-escape mid-flow).
+    error SetStateRootNotAllowedDuringExecution();
+
     /// @notice Error when `transientExecutionEntryCount` exceeds the entry count
     error TransientCountExceedsEntries();
 
@@ -962,6 +967,7 @@ contract EEZ is EEZBase {
     ///         once any postAndVerifyBatch has touched this rollup (see `RollupBatchActiveThisBlock`).
     function setStateRoot(uint256 rollupId, bytes32 newStateRoot) external {
         if (msg.sender != rollups[rollupId].rollupContract) revert NotRollupContract();
+        if (_insideExecution()) revert SetStateRootNotAllowedDuringExecution();
         if (verificationByRollup[rollupId].lastVerifiedBlock == block.number) {
             revert RollupBatchActiveThisBlock(rollupId);
         }

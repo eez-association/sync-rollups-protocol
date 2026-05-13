@@ -247,6 +247,14 @@ abstract contract EEZBase is IEEZ {
     ///      available inside a STATICCALL frame. The accumulator is a local variable, not
     ///      `_rollingHash`, so this call is verified against `LookupCall.rollingHash` — a
     ///      separate accumulator.
+    /// @dev SCHEMA NOTE: this rolling hash uses a deliberately simpler, **untagged**
+    ///      schema — `keccak256(prev, success, retData)` per sub-call — and **diverges**
+    ///      from the entry-level rolling hash (which uses tagged events
+    ///      `CALL_BEGIN`/`CALL_END`/`NESTED_BEGIN`/`NESTED_END` with `callNumber`).
+    ///      This is safe because the surrounding `LookupCall` is content-addressed by
+    ///      `(crossChainCallHash, destinationRollupId, callNumber, lastNestedActionConsumed)`,
+    ///      which already pins the entry/call/nesting context that the entry-level tags
+    ///      disambiguate. See `docs/SYNC_ROLLUPS_PROTOCOL_SPEC.md` §E.2 for the rationale.
     function _processNLookupCalls(L2ToL1Call[] memory calls) internal view returns (bytes32 computedHash) {
         for (uint256 i = 0; i < calls.length; i++) {
             L2ToL1Call memory cc = calls[i];
@@ -269,7 +277,9 @@ abstract contract EEZBase is IEEZ {
     // of execution. See `docs/SYNC_ROLLUPS_PROTOCOL_SPEC.md` §E for the full specification.
     //
     // Static-call sub-hashes (`_rollingHashStaticResult`) use a simpler, untagged formula
-    // because they're verified against `LookupCall.rollingHash`, a separate accumulator.
+    // because they're verified against `LookupCall.rollingHash`, a separate accumulator
+    // whose surrounding lookup key already pins the entry/call/nesting context. See the
+    // schema-divergence note on `_processNLookupCalls` above and spec §E.2.
 
     /// @notice Folds a CALL_BEGIN event into `_rollingHash` for the given call number.
     function _rollingHashCallBegin(uint256 callNumber) internal {
