@@ -80,8 +80,8 @@ export function useDerivedState() {
   const contractState = useStore((s) => s.contractState);
   const storeActiveNodes = useStore((s) => s.activeNodes);
   const storeActiveEdges = useStore((s) => s.activeEdges);
-  const rollupsAddress = useStore((s) => s.rollupsAddress);
-  const managerL2Address = useStore((s) => s.managerL2Address);
+  const l1ContractAddress = useStore((s) => s.l1ContractAddress);
+  const l2ContractAddress = useStore((s) => s.l2ContractAddress);
 
   return useMemo(() => {
     // Live mode — use store state directly
@@ -168,8 +168,8 @@ export function useDerivedState() {
     const selectedEvent = events[selectedIdx];
     const { activeNodes, activeEdges } = computeActiveForEvent(
       selectedEvent,
-      rollupsAddress,
-      managerL2Address,
+      l1ContractAddress,
+      l2ContractAddress,
     );
 
     return {
@@ -188,7 +188,7 @@ export function useDerivedState() {
     contractState,
     storeActiveNodes,
     storeActiveEdges,
-    rollupsAddress,
-    managerL2Address,
+    l1ContractAddress,
+    l2ContractAddress,
   ]);
 }

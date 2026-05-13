@@ -58,15 +58,17 @@ contract IntegrationTest is Test {
     Counter public counterL1; // C  -- Counter on L1
     CounterAndProxy public counterAndProxyL2; // D -- CounterAndProxy on L2, target = C'
 
-    // ── Revert contracts (Scenario 5) ──
-    RevertCounter public revertCounterL1;     // RC — RevertCounter on L1
-    address public revertCounterProxyL2;      // RC' — proxy for RC, deployed on L2
-
     // ── Proxies (see legend) ──
     address public counterProxy; // B' -- proxy for B, deployed on L1
     address public counterProxyL2; // C' -- proxy for C, deployed on L2
     address public counterAndProxyProxyL2; // A' -- proxy for A, deployed on L2
     address public counterAndProxyL2ProxyL1; // D' -- proxy for D, deployed on L1
+
+    // ── Constants ──
+    uint256 constant L2_ROLLUP_ID = 1;
+    uint256 constant MAINNET_ROLLUP_ID = 0;
+    address constant SYSTEM_ADDRESS = address(0xFFfFfFffFFfffFFfFFfFFFFFffFFFffffFfFFFfF);
+    bytes32 constant DEFAULT_VK = keccak256("verificationKey");
 
     address public alice = makeAddr("alice");
 
@@ -124,6 +126,7 @@ contract IntegrationTest is Test {
 
         // D': proxy for D(CounterAndProxy on L2), lives on L1 -- for Scenario 4
         counterAndProxyL2ProxyL1 = rollups.createCrossChainProxy(address(counterAndProxyL2), L2_ROLLUP_ID);
+    }
 
     function _getRollupState(uint256 rollupId) internal view returns (bytes32) {
         (, bytes32 stateRoot,) = rollups.rollups(rollupId);

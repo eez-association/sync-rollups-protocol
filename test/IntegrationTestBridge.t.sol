@@ -501,7 +501,7 @@ contract IntegrationTestBridge is Test {
         assertEq(_getRollupState(L2_ROLLUP_ID), s1, "Phase 1: L2 state should be S1");
 
         // ════════════════════════════════════════════
-        //  L2 execution table: load ALL entries for Phase 2 + Phase 3 in one call
+        //  Phase 2: L2 — Mint wrapped tokens
         // ════════════════════════════════════════════
         //
         //  Entry's calls[] route receiveTokens to bridgeL2 via proxy(bridgeL1, MAINNET).
@@ -575,8 +575,7 @@ contract IntegrationTestBridge is Test {
             _crossChainCallHash(MAINNET_ROLLUP_ID, address(bridgeL1), 0, retCalldata, address(bridgeL2), L2_ROLLUP_ID);
 
         {
-            ExecutionEntry[] memory entries = new ExecutionEntry[](2);
-            // Phase 2 entry: incoming call result
+            ExecutionEntry[] memory entries = new ExecutionEntry[](1);
             entries[0].stateDeltas = new StateDelta[](0);
             entries[0].proxyEntryHash = retActionHash;
             // No calls (simple resolution), no rolling hash needed
@@ -584,34 +583,6 @@ contract IntegrationTestBridge is Test {
             vm.prank(SYSTEM_ADDRESS);
             managerL2.loadExecutionTable(entries, _noLookupCalls());
         }
-
-        // ════════════════════════════════════════════
-        //  Phase 2: L2 — Mint wrapped tokens
-        // ════════════════════════════════════════════
-        //
-        //  SYSTEM delivers receiveTokens to bridgeL2:
-        //    auto-creates proxy for (bridgeL1, MAINNET) on L2
-        //    proxy.executeOnBehalf(bridgeL2, fwdCalldata) → bridgeL2.receiveTokens
-        //    onlyBridgeProxy(MAINNET): proxy for (bridgeL1, MAINNET) ✓
-        //    foreign token → deploys WrappedToken, mints to alice
-
-        vm.prank(SYSTEM_ADDRESS);
-        managerL2.executeIncomingCrossChainCall(
-            address(bridgeL2), 0, fwdCalldata, address(bridgeL1), MAINNET_ROLLUP_ID, new uint256[](0)
-        );
-
-        address wrappedAddr = bridgeL2.getWrappedToken(address(token), MAINNET_ROLLUP_ID);
-        assertTrue(wrappedAddr != address(0), "Phase 2: wrapped token should be deployed");
-        assertEq(WrappedToken(wrappedAddr).balanceOf(alice), 100e18, "Phase 2: alice should have 100e18 wrapped");
-
-        // ════════════════════════════════════════════
-        //  Phase 3: L2 — Burn wrapped tokens (resolution from table)
-        // ════════════════════════════════════════════
-        //
-        //  Alice calls bridgeL2.bridgeTokens(wrappedToken, 100e18, MAINNET_ROLLUP_ID):
-        //    Burns wrapped tokens (bridge has burn authority)
-        //    proxy for (bridgeL1, MAINNET) on L2 (already exists)
-        //    executeCrossChainCall → CALL{MAINNET, bridgeL1, 0, retCalldata, bridgeL2, L2} matched → RESULT
 
         vm.prank(alice);
         bridgeL2.bridgeTokens(wrappedAddr, 100e18, MAINNET_ROLLUP_ID, alice);

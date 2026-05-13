@@ -7,10 +7,3 @@ broadcast/
 
 # Dotenv file
 .env
-lib
-devnet
-.devnet.md
-tmp
-todoignore
-node_modules
-*.ignore
