@@ -31,6 +31,12 @@ contract EEZL2 is EEZBase {
     /// @notice Error when caller is not the system address
     error Unauthorized();
 
+    /// @notice Error when constructor is given the reserved mainnet rollup id (0)
+    error InvalidRollupId();
+
+    /// @notice Error when constructor is given the zero address for the system address
+    error InvalidSystemAddress();
+
     /// @notice Error when execution is attempted in a different block than the last load
     error ExecutionNotInCurrentBlock();
 
@@ -42,6 +48,9 @@ contract EEZL2 is EEZBase {
 
     /// @notice Error when `msg.value` attached to `executeIncomingCrossChainCall` doesn't match `value`
     error ValueMismatch();
+
+    /// @notice Entry 0's `proxyEntryHash` doesn't match the hash computed from the explicit params
+    error EntryHashMismatch();
 
     /// @notice Emitted when execution entries are loaded into the execution table
     event ExecutionTableLoaded(ExecutionEntry[] entries);
@@ -59,9 +68,10 @@ contract EEZL2 is EEZBase {
         uint256 sourceRollup
     );
 
-    /// @param _rollupId The rollup ID this L2 instance belongs to
+    /// @param _rollupId Non-zero; 0 is reserved as the mainnet sentinel in call hashes.
     /// @param _systemAddress The privileged address allowed to load execution tables
     constructor(uint256 _rollupId, address _systemAddress) {
+        if (_rollupId == 0) revert InvalidRollupId();
         ROLLUP_ID = _rollupId;
         SYSTEM_ADDRESS = _systemAddress;
     }
@@ -195,14 +205,21 @@ contract EEZL2 is EEZBase {
         //    expects (entry index 0, fresh rolling hash, call cursor at 0, nested cursor at 0).
         ExecutionEntry storage entry = executions[0];
 
-        // 4. Drive the flat call processor — `entry.L2ToL1Calls[0]` is the inbound call,
+        // 4. Bind the emitted call hash to the entry (mirrors L1 `_consumeAndExecute`).
+        if (entry.proxyEntryHash != crossChainCallHash) revert EntryHashMismatch();
+
+        // 5. Drive the flat call processor — `entry.L2ToL1Calls[0]` is the inbound call,
         //    delivered via the source proxy by `_processNCalls`
         _processNCalls(entry.callCount);
 
-        // 5. Verify invariants (mirrors `_consumeAndExecute`'s post-checks)
+        // 6. Verify invariants (mirrors `_consumeAndExecute`'s post-checks)
         if (_rollingHash != entry.rollingHash) revert RollingHashMismatch();
         if (_currentCallNumber != entry.L2ToL1Calls.length) revert UnconsumedCalls();
         if (_lastNestedActionConsumed != entry.expectedL1ToL2Calls.length) revert UnconsumedNestedActions();
+
+        // 7. Advance past entries[0] so follow-up `executeCrossChainCall`s don't re-consume it.
+        //    SYSTEM_ADDRESS is not reentry-reachable so no `_insideExecution()` guard is needed.
+        executionIndex = 1;
 
         emit EntryExecuted(0, _rollingHash, _currentCallNumber, _lastNestedActionConsumed);
         _currentCallNumber = 0; // reset so _insideExecution() returns false
@@ -216,8 +233,9 @@ contract EEZL2 is EEZBase {
 
     /// @notice Consumes the next nested action, or replays a pre-computed reverting
     ///         lookup call when no ExpectedL1ToL2Call matches.
-    /// @dev See L1 EEZ._consumeNestedAction for the full routing rules. L2 has no
-    ///      transient lookup-call table, so the fallback only scans persistent `lookupCalls`.
+    /// @dev L2 reverts immediately on no-match (no deferred-revert flag like L1). The
+    ///      system-loaded table is trusted, so a no-match is unrecoverable. The post-increment
+    ///      below is safe because every fall-through path reverts and rolls the bump back.
     function _consumeNestedAction(bytes32 crossChainCallHash) internal returns (bytes memory) {
         ExecutionEntry storage entry = executions[_currentEntryIndex];
         uint256 idx = _lastNestedActionConsumed++;

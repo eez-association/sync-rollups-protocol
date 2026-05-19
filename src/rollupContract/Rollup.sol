@@ -29,8 +29,7 @@ contract Rollup is IRollupContract {
     ///      governance contract, or any other model.
     address public owner;
 
-    /// @notice The rollupId this contract manages. Written by the `rollupContractRegistered` callback,
-    ///         on registration (`EEZ.registerRollup`) or handoff (`EEZ.setRollupContract`).
+    /// @notice The rollupId this contract manages. Written once on registration.
     uint256 public rollupId;
 
     /// @notice Minimum number of proof systems that must attest per batch (M of N). Owner is
@@ -53,6 +52,7 @@ contract Rollup is IRollupContract {
     error NotOwner();
     error NotEEZRegistry();
     error InvalidConfig();
+    error AlreadyRegistered();
     error ProofSystemAlreadyAllowed(address proofSystem);
     error ProofSystemNotAllowed(address proofSystem);
 
@@ -138,13 +138,11 @@ contract Rollup is IRollupContract {
         return (0, bytes32(0));
     }
 
-    /// @notice Notification fired by the central registry on first registration.
-    /// @dev Auth: caller MUST be the central `ROLLUPS` registry, otherwise `NotEEZRegistry`.
-    ///      This impl does NOT enforce one-shot semantics — overwriting `rollupId` is allowed,
-    ///      though the registry no longer exposes a manager-handoff path so this should fire
-    ///      exactly once in normal operation.
+    /// @notice One-shot registration callback fired by the central registry.
+    /// @dev `rollupId == 0` is the unset sentinel (registry assigns ids starting at 1).
     function rollupContractRegistered(uint256 _rollupId) external {
         if (msg.sender != ROLLUPS) revert NotEEZRegistry();
+        if (rollupId != 0) revert AlreadyRegistered();
         rollupId = _rollupId;
     }
 

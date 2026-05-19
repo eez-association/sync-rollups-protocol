@@ -189,6 +189,16 @@ contract EEZ is EEZBase {
     ///         revert payload (custom error or message) for off-chain debugging.
     event ImmediateEntrySkipped(uint256 indexed transientIdx, bytes revertData);
 
+    /// @notice Emitted on `_consumeNestedAction`'s deferred no-match path. Returns empty
+    ///         bytes; the deferred-revert flag fires `ExecutionNotFound` at the entry boundary.
+    ///         Event exists because the no-match site has no error frame.
+    event NestedActionNotFound(
+        uint256 indexed entryIndex,
+        bytes32 indexed crossChainCallHash,
+        uint256 callNumber,
+        uint256 lastNestedActionConsumed
+    );
+
     /// @notice Error when proof verification fails
     error InvalidProof();
 
@@ -809,6 +819,8 @@ contract EEZ is EEZBase {
         //    the decode itself reverts the calling frame, which in turn propagates up. The
         //    deferred-revert flag only guarantees the *entry* eventually reverts; it does
         //    NOT guarantee execution reaches the end-of-entry check intact.
+        // Emit so off-chain can locate the no-match site — the eventual revert points at the entry boundary.
+        emit NestedActionNotFound(_currentEntryIndex, crossChainCallHash, _currentCallNumber, idx);
         _nestedActionNotFound = true;
         return "";
     }
