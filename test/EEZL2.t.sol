@@ -304,7 +304,7 @@ contract EEZL2Test is Test {
     }
 
     // ──────────────────────────────────────────────
-    //  Top-level failed-LookupCall fallback 
+    //  Top-level failed-LookupCall fallback
     // ──────────────────────────────────────────────
     //
     // L2 has no transient table: `_consumeAndExecute` misses on the (empty) `executions`,

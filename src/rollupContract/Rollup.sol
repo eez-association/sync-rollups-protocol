@@ -60,6 +60,10 @@ contract Rollup is IRollupContract {
     ///         be returned than this manager's threshold requires
     error ThresholdNotMet(uint256 submitted, uint256 required);
 
+    /// @notice `getTimestampAndBlockHash` was asked to bind a blockNumber whose `blockhash`
+    ///         is unavailable (≥ current block or older than the last 256 blocks → 0).
+    error BlockHashUnavailable(uint64 blockNumber);
+
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
         _;
@@ -129,13 +133,26 @@ contract Rollup is IRollupContract {
         }
     }
 
-    /// @notice Returns the (timestamp, blockHash) pair this rollup is binding into its
-    ///         per-rollup commit during proof verification. Reference impl returns zeros —
-    ///         a stub for rollups that don't ingest L1 messaging context. Real rollups can
-    ///         override the value (e.g., the latest L1 block their ingestion has finality
-    ///         for) by replacing this contract via handoff.
-    function getTimestampAndBlockHash() external pure returns (uint256 timestamp, bytes32 blockHash) {
-        return (0, bytes32(0));
+    /// @notice (timestamp, blockHash) this rollup binds into its per-rollup verification commit
+    ///         for the L1 `blockNumber` the batch is bound to. The registry folds the result
+    ///         into every proof's public input, so the proof attests against this exact L1 view.
+    /// @dev Reference impl returns timestamp 0: a past block's timestamp can't be recovered
+    ///      on-chain (only `block.timestamp` of the current block is available), so it's read
+    ///      off-chain from the header instead. A real rollup can override this via handoff.
+    /// @param blockNumber L1 block to bind. 0 = no block context (legacy `(0, 0)`).
+    function getTimestampAndBlockHash(uint64 blockNumber) external view returns (uint256 timestamp, bytes32 blockHash) {
+        // 0 is the "no L1 context" sentinel — skip the blockhash bind entirely.
+        if (blockNumber == 0) return (0, bytes32(0));
+
+        // `blockhash` only resolves the most recent 256 blocks; the current/future block and
+        // anything older than 256 return 0. Reject that: a stale or out-of-range blockNumber
+        // must not silently bind a zero hash, which would let a proof built for a different
+        // (or absent) L1 view pass verification.
+        // If we think is necessary we can use the EIP-2935 for checking last 8k~ block headers
+        blockHash = blockhash(blockNumber);
+        if (blockHash == bytes32(0)) revert BlockHashUnavailable(blockNumber);
+        
+        return (0, blockHash);
     }
 
     /// @notice One-shot registration callback fired by the central registry.

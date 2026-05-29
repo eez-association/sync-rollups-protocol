@@ -171,6 +171,7 @@ contract EEZTest is Base {
         }
 
         ProofSystemBatchPerVerificationEntries memory batch = ProofSystemBatchPerVerificationEntries({
+            blockNumber: 0,
             entries: entries,
             l1ToL2lookupCalls: lookupCalls,
             transientExecutionEntryCount: transientCount,
@@ -421,6 +422,7 @@ contract EEZTest is Base {
         rps[0] = RollupIdWithProofSystems({rollupId: rid, proofSystemIndex: psIdx});
 
         ProofSystemBatchPerVerificationEntries memory batch = ProofSystemBatchPerVerificationEntries({
+            blockNumber: 0,
             entries: new ExecutionEntry[](0),
             l1ToL2lookupCalls: new LookupCall[](0),
             transientExecutionEntryCount: 0,

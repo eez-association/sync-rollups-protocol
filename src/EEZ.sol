@@ -46,6 +46,9 @@ struct RollupIdWithProofSystems {
 /// @dev `transientExecutionEntryCount` and `transientLookupCallCount` are pure on-chain
 ///      dispatch parameters — not bound by the proof — so the orchestrator can tune the
 ///      transient/persistent split without re-proving.
+/// @dev `blockNumber` is the single L1 block the whole batch binds to. The registry forwards
+///      it to every rollup's `getTimestampAndBlockHash(blockNumber)`, whose result folds into
+///      each proof's public input. 0 = no block context (legacy behavior).
 struct ProofSystemBatchPerVerificationEntries {
     ExecutionEntry[] entries;
     LookupCall[] l1ToL2lookupCalls;
@@ -57,6 +60,7 @@ struct ProofSystemBatchPerVerificationEntries {
     uint256[] blobIndices;
     bytes callData;
     bytes[] proofs;
+    uint64 blockNumber;
 }
 
 /// @notice Per-rollup deferred-consumption queue + once-per-block guard
@@ -323,7 +327,8 @@ contract EEZ is EEZBase {
     ///         so any entry whose preconditions were dropped with the transient leftover
     ///         simply fails at consumption.
     /// @param batch The proof-system batch carrying entries, lookup calls, per-rollup PS
-    ///        subsets, proofs, and transient prefix bounds
+    ///        subsets, proofs, transient prefix bounds, and the L1 `blockNumber` the batch
+    ///        binds to (see `ProofSystemBatchPerVerificationEntries.blockNumber`).
     function postAndVerifyBatch(ProofSystemBatchPerVerificationEntries calldata batch) external {
         // Reentrancy guard. Per-rollup `lastVerifiedBlock` blocks same-rollup re-entry, but a
         // disjoint-rollup nested call (e.g., from the meta hook) would otherwise share the
@@ -604,7 +609,7 @@ contract EEZ is EEZBase {
         for (uint256 r = 0; r < rollupCount; r++) {
             (timestamps[r], blockHashes[r]) = IRollupContract(
                     rollups[batch.rollupIdsWithProofSystems[r].rollupId].rollupContract
-                ).getTimestampAndBlockHash();
+                ).getTimestampAndBlockHash(batch.blockNumber);
         }
 
         // Per-PS verification — for each PS k, walk attesting rollups in canonical order
@@ -795,7 +800,7 @@ contract EEZ is EEZBase {
                 _resolveLookupCall(sc); // always reverts (sc.failed == true)
             }
         }
-        
+
         // Per-rollup static queue: route by the action's target rollup (== entry.destinationRollupId
         // because nested actions are scoped to the containing entry).
         uint256 destRid = entry.destinationRollupId;
