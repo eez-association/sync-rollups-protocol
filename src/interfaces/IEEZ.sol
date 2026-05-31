@@ -29,9 +29,9 @@ struct L2ToL1Call {
 ///      triggers a reentrant call, it consumes the next element in the same flat array.
 /// @dev All nested actions must succeed. Failed calls should use LookupCall instead.
 /// @dev Position in the execution tree (crossChainCall index, nested action index, parent context)
-///      is folded into the entry-level rolling hash rather than stored as explicit fields.
+///      is folded into the rolling hash rather than stored as explicit fields.
 struct ExpectedL1ToL2Call {
-    bytes32 crossChainCallHash;
+    bytes32 crossChainCallHash; // rolling hash=?¿
     /// Iterations the nested frame's `_processNCalls` runs over the parent entry's `calls[]`.
     /// Continues advancing the same global `_currentCallNumber` cursor that the outer frame
     /// was using; outer resumes from `cursor + nested.callCount` after the nested returns.

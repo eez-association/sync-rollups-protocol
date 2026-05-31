@@ -11,6 +11,7 @@ import {
     RollupVerification
 } from "../src/EEZ.sol";
 import {Rollup} from "../src/rollupContract/Rollup.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IRollupContract} from "../src/interfaces/IRollup.sol";
 import {IProofSystem} from "../src/interfaces/IProofSystem.sol";
 import {
@@ -662,7 +663,7 @@ contract EEZTest is Base {
     function test_RollupSetStateRoot_NotOwnerReverts() public {
         (, Rollup r) = _makeRollupLocal(bytes32(0), alice);
         vm.prank(bob);
-        vm.expectRevert(Rollup.NotOwner.selector);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, bob));
         r.setStateRoot(keccak256("escape"));
     }
 
@@ -684,7 +685,7 @@ contract EEZTest is Base {
         vm.prank(bob);
         r.setStateRoot(keccak256("bob's state"));
         vm.prank(alice);
-        vm.expectRevert(Rollup.NotOwner.selector);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
         r.setStateRoot(keccak256("alice's state"));
     }
 
@@ -692,7 +693,7 @@ contract EEZTest is Base {
         (, Rollup r) = _makeRollupLocal(bytes32(0), alice);
         bytes32 newVk = keccak256("new vk");
         vm.prank(alice);
-        r.setVerificationKey(address(ps), newVk);
+        r.updateVerificationKey(address(ps), newVk);
         assertEq(r.verificationKey(address(ps)), newVk);
     }
 
