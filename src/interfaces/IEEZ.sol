@@ -122,7 +122,7 @@ struct ExecutionEntry {
 ///      time the contract requires `verificationByRollup[rollupId].executionQueueIndex == executionQueueIndex`,
 ///      so a cached read can't be replayed against a different interleaving of the per-rollup
 ///      queues. L1-only — L2 has a single rollup and ignores this list.
-struct ExpectedQueueIndex {
+struct ExpectedQueueIndexPerRollup {
     uint256 rollupId;
     uint256 executionQueueIndex;
 }
@@ -180,10 +180,10 @@ struct LookupCall {
     /// is non-empty. Static mode uses the untagged schema (`_processNLookupCalls`); failed
     /// mode uses the tagged entry schema (`_replayFailedLookup`).
     bytes32 rollingHash;
-    /// Static-mode per-rollup queue-cursor pins (L1 only); see `ExpectedQueueIndex`.
+    /// Static-mode per-rollup queue-cursor pins (L1 only); see `ExpectedQueueIndexPerRollup`.
     /// if it's used alongside l2ToL1CallNumber and lastL1ToL2CallConsumed, there should be only the
     /// unaffected rollups by that execution (otherwise is redundant)
-    ExpectedQueueIndex[] expectedQueueIndices;
+    ExpectedQueueIndexPerRollup[] expectedQueueIndices;
 }
 
 /// @notice Stores the identity of an authorized CrossChainProxy

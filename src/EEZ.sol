@@ -10,7 +10,7 @@ import {
     ExpectedL1ToL2Call,
     LookupCall,
     ExecutionEntry,
-    ExpectedQueueIndex,
+    ExpectedQueueIndexPerRollup,
     ProxyInfo
 } from "./interfaces/IEEZ.sol";
 import {EEZBase} from "./base/EEZBase.sol";
@@ -1058,7 +1058,7 @@ contract EEZ is EEZBase {
     /// @notice Verifies a static lookup's per-rollup execution-queue-index pins against the
     ///         live `executionQueueIndex` of each listed rollup.
     function _checkExpectedRollupExecutionQueueIndex(LookupCall storage sc) internal view {
-        ExpectedQueueIndex[] storage pins = sc.expectedQueueIndices;
+        ExpectedQueueIndexPerRollup[] storage pins = sc.expectedQueueIndices;
         for (uint256 i = 0; i < pins.length; i++) {
             if (verificationByRollup[pins[i].rollupId].executionQueueIndex != pins[i].executionQueueIndex) {
                 revert ExecutionQueueIndexMismatch(pins[i].rollupId);
