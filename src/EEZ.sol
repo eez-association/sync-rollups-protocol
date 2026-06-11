@@ -1017,12 +1017,10 @@ contract EEZ is EEZBase {
 
                 try this.executeInContextAndRevert(revertSpan) {}
                 catch (bytes memory revertData) {
-                    bool innerNotFound;
-                    (_rollingHash, _lastL1ToL2CallConsumed, _currentL2ToL1Call, innerNotFound) =
+                    // Direct assign is still an OR-merge: the inner frame inherits the outer
+                    // flag and never clears it, so a span no-match survives the forced revert.
+                    (_rollingHash, _lastL1ToL2CallConsumed, _currentL2ToL1Call, _l1ToL2CallNotFound) =
                         _decodeContextResult(revertData);
-                    // OR-merge: a no-match observed inside the span must survive the forced
-                    // revert so the end-of-entry check still fires `ExecutionNotFound`.
-                    if (innerNotFound) _l1ToL2CallNotFound = true;
                 }
 
                 calls[savedCallNumber].revertSpan = revertSpan;
