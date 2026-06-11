@@ -912,7 +912,7 @@ The three revert paths in the protocol are distinct — pick the one that matche
 
 | Situation | Path |
 |---|---|
-| Top-level cross-chain call that naturally reverts | `LookupCall` with `failed = true`, consumed via `staticCallLookup`, the failed-reentry fallback in `_consumeNestedAction`, or the top-level fallback `_tryRevertedTopLevelLookup`. (Or, when the call lives inside `L2ToL1Calls[]`, place it with `revertSpan = 0` and let `CALL_END(false, retData)` capture it.) |
+| Top-level cross-chain call that naturally reverts | `LookupCall` with `failed = true`, consumed via `staticCallLookup`, the failed-reentry fallback in `_consumeNestedAction`, or the top-level fallback `_tryRevertedTopLevelLookup`. (Or, when the call lives inside `l2ToL1Calls[]`, place it with `revertSpan = 0` and let `CALL_END(false, retData)` capture it.) |
 | **Reentrant** cross-chain call that reverts (caller wraps it in `try/catch`) | `LookupCall` with `failed = true` — *not* `revertSpan`, *not* `ExpectedL1ToL2Call`. See §D.3 / §F.4 |
 | Successful call(s) whose state must be force-reverted | `revertSpan > 0` on the first call of the span |
 
@@ -920,22 +920,22 @@ The reentrant-revert case **must not** use `revertSpan`: the destination's `try/
 
 ### D.5 Flat Call Model
 
-The off-chain prover emits a flat `L2ToL1Calls[]` array plus a parallel `ExpectedL1ToL2Call[]` table — it does not thread scope arrays through nested calls. Return data from a call is captured directly into the rolling hash via `CALL_END`; reverts of natural failures are captured via `success=false` in the same `CALL_END` tag. `revertSpan` is reserved for forced-revert spans where state must be rolled back even though the call(s) succeeded.
+The off-chain prover emits a flat `l2ToL1Calls[]` array plus a parallel `ExpectedL1ToL2Call[]` table (L2: `incomingCalls[]` / `ExpectedOutgoingCrossChainCall[]`) — it does not thread scope arrays through nested calls. Return data from a call is captured directly into the rolling hash via `CALL_END`; reverts of natural failures are captured via `success=false` in the same `CALL_END` tag. `revertSpan` is reserved for forced-revert spans where state must be rolled back even though the call(s) succeeded.
 
 ---
 
 ## E. Rolling Hash
 
-A single `bytes32 rollingHash` per entry covers every call result and every nesting boundary. The accumulator starts at `bytes32(0)` and is updated at four tagged events:
+A single `bytes32 rollingHash` per entry covers every call result and every nesting boundary. The four tag constants and the fold helpers (`_rollingHashCallBegin` / `_rollingHashCallEnd` / `_rollingHashNestedBegin` / `_rollingHashNestedEnd`) live on `EEZBase` and are **protocol constants shared by both chains** — the `CALL_*` / `NESTED_*` tags are the neutral rolling-hash frame vocabulary, not a direction. The accumulator starts at `bytes32(0)` and is updated at four tagged events:
 
 ```
-CALL_BEGIN   = uint8(1)   _rollingHash = keccak256(abi.encodePacked(_rollingHash, CALL_BEGIN,   _currentCallNumber))
-CALL_END     = uint8(2)   _rollingHash = keccak256(abi.encodePacked(_rollingHash, CALL_END,     _currentCallNumber, success, retData))
+CALL_BEGIN   = uint8(1)   _rollingHash = keccak256(abi.encodePacked(_rollingHash, CALL_BEGIN,   callNumber))
+CALL_END     = uint8(2)   _rollingHash = keccak256(abi.encodePacked(_rollingHash, CALL_END,     callNumber, success, retData))
 NESTED_BEGIN = uint8(3)   _rollingHash = keccak256(abi.encodePacked(_rollingHash, NESTED_BEGIN, nestedNumber))
 NESTED_END   = uint8(4)   _rollingHash = keccak256(abi.encodePacked(_rollingHash, NESTED_END,   nestedNumber))
 ```
 
-`_currentCallNumber` is 1-indexed and incremented before `CALL_BEGIN` is hashed. `nestedNumber` is `_lastNestedActionConsumed` after the post-increment that consumed the nested action — also 1-indexed.
+`callNumber` is the per-side global call cursor (`_currentL2ToL1Call` on L1, `_currentIncomingCall` on L2) — 1-indexed and incremented before `CALL_BEGIN` is hashed. `nestedNumber` is the reentrant cursor (`_lastL1ToL2CallConsumed` / `_lastOutgoingCallConsumed`) after the advance that consumed the reentrant call — also 1-indexed.
 
 After all calls and nestings complete:
 
@@ -956,63 +956,68 @@ Inside a `revertSpan`, the inner self-call updates `_rollingHash` exactly as if 
 
 The mechanism relies on EIP-1153 `tload` / `tstore` semantics:
 
-- `tload` is **read-only**, so it works inside a STATICCALL context **and** inside a self-call that is about to revert. The inner self-call therefore observes the outer `_rollingHash`, `_currentCallNumber`, and `_lastNestedActionConsumed` values when it starts.
-- `tstore` writes are part of the EVM journal and are **rolled back** when the call frame reverts. So when `executeInContextAndRevert` reverts with `ContextResult`, every transient write performed inside the span (including the rolling-hash updates and counter increments) is undone — except for the values that escape via the revert payload (the rolling hash, the two counters, and L1's `nestedActionNotFound` flag), which the caller manually re-applies after decoding.
+- `tload` is **read-only**, so it works inside a STATICCALL context **and** inside a self-call that is about to revert. The inner self-call therefore observes the outer `_rollingHash` and call-cursor values when it starts.
+- `tstore` writes are part of the EVM journal and are **rolled back** when the call frame reverts. So when `executeInContextAndRevert` reverts with `ContextResult`, every transient write performed inside the span (including the rolling-hash updates and counter increments) is undone — except for the values that escape via the revert payload (the rolling hash, the two counters, and L1's `_l1ToL2CallNotFound` flag), which the caller manually re-applies after decoding.
 
 ### E.2 LookupCall Sub-Hash (`LookupCall.rollingHash`)
 
-`LookupCall.rollingHash` is **a separate accumulator**, scoped to a single `LookupCall` and computed only over its optional `calls[]` array (the static sub-calls replayed during lookup resolution). It is **not** the entry-level `_rollingHash`, and it uses a deliberately simpler, **untagged** hashing scheme:
+`LookupCall.rollingHash` is **a separate accumulator**, scoped to a single `LookupCall` and computed over its optional sub-call array (`l2ToL1Calls[]` on L1, `incomingCalls[]` on L2). It is **not** the entry-level `_rollingHash`. Which schema applies depends on the lookup's mode:
+
+- **Static mode (`staticCallLookup` → `_resolveLookupCall`)** — a deliberately simpler, **untagged** scheme computed by `_processNLookupCalls`:
 
 ```
 hash = bytes32(0)
-for cc in lookupCall.calls:
+for cc in lookupCall.l2ToL1Calls:
     sourceProxy = computeCrossChainProxyAddress(cc.sourceAddress, cc.sourceRollupId)
     (success, retData) = sourceProxy.staticcall(executeOnBehalf(cc.targetAddress, cc.data))
     hash = keccak256(abi.encodePacked(hash, success, retData))
 require(hash == lookupCall.rollingHash);   // RollingHashMismatch
 ```
 
-Note the differences from the entry-level scheme:
+- **Failed mode (`_replayFailedLookup`)** — the sub-execution runs as real calls and is folded with the **tagged entry schema** (`CALL_*` / `NESTED_*`, same as §E), then checked against `lookupCall.rollingHash` with entry-style end checks. Failed-mode sub-calls may host reentry (`expectedL1ToL2Calls`) and `revertSpan`.
+
+The static-mode differences from the entry-level scheme:
 
 - **No event tags** (no `CALL_BEGIN` / `CALL_END` / `NESTED_BEGIN` / `NESTED_END` domain bytes).
-- **No `callNumber`** mixed into each fold.
+- **No call number** mixed into each fold.
 - **No nesting** at all — `_processNLookupCalls` does not handle reentrancy; STATICCALL forbids state writes, so the proxies' `executeOnBehalf` paths cannot reenter the manager's mutating entrypoints and consume nested actions or further lookup calls.
 
-This simpler schema is safe because the surrounding lookup key already pins the call context that tagged events disambiguate at entry level. The match against the cached `LookupCall` is content-addressed by:
+This simpler schema is safe because the surrounding lookup key already pins the call context that tagged events disambiguate at entry level. The match against the cached `LookupCall` is content-addressed by the compared 3-tuple:
 
 ```
-(crossChainCallHash, destinationRollupId, callNumber, lastNestedActionConsumed)
+(crossChainCallHash, l2ToL1CallNumber, lastL1ToL2CallConsumed)        // L1
+(crossChainCallHash, callNumber, lastOutgoingCallConsumed)            // L2
 ```
 
-so the entry/call/nesting position is already locked in by the key. The only thing left for `LookupCall.rollingHash` to commit to is the **outcome of the static sub-calls**, in order, which is exactly what the untagged `keccak256(prev, success, retData)` chain captures. There is also no cross-contamination risk with the entry-level accumulator: `_processNLookupCalls` returns the local `computedHash` and never reads or writes `_rollingHash`.
+plus, on L1, the structural queue routing and the `expectedQueueIndices[]` per-rollup cursor pins — so the entry/call/nesting position is already locked in. The only thing left for a static lookup's `rollingHash` to commit to is the **outcome of the static sub-calls**, in order, which is exactly what the untagged `keccak256(prev, success, retData)` chain captures. There is also no cross-contamination risk with the entry-level accumulator: `_processNLookupCalls` returns a local `computedHash` and never reads or writes `_rollingHash`.
 
-The two accumulators serve different verification scopes and intentionally do not share a schema. If the lookup sub-call list ever needs to commit to richer structure (e.g., nesting), the schema would have to gain tags too — but as of this spec, lookup sub-calls are flat by construction.
+The two accumulators serve different verification scopes and intentionally do not share a schema. Static-mode lookup sub-calls are flat by construction; only failed-mode replays carry richer structure, and those use the tagged schema for exactly that reason.
 
 ### E.3 Worked Hash Chain Example
 
-Setup:
+Setup (L1 names; the L2 chain is identical with `incomingCalls` / `expectedOutgoingCalls` / `_currentIncomingCall` / `_lastOutgoingCallConsumed`):
 
 ```
-entry.L2ToL1Calls    = [c0, c1, c2, c3, c4]
+entry.l2ToL1Calls    = [c0, c1, c2, c3, c4]
 entry.callCount      = 3
 entry.expectedL1ToL2Calls  = [ { crossChainCallHash = H_nested, callCount = 2, returnData = 0xaa } ]
 entry.rollingHash    = <expected final hash>
 ```
 
-The entry has 5 calls in the flat array. Entry-level processes 3 iterations: c0, c3, c4. While c0 is executing, the destination contract calls back into a proxy, which consumes `expectedL1ToL2Calls[0]`; that nested action processes c1 and c2.
+The entry has 5 calls in the flat array. Entry-level processes 3 iterations: c0, c3, c4. While c0 is executing, the destination contract calls back into a proxy, which consumes `expectedL1ToL2Calls[0]`; that reentrant frame processes c1 and c2.
 
 Step-by-step:
 
 ```
 Initial transient state:
-  _rollingHash               = 0x0
-  _currentCallNumber         = 0
-  _lastNestedActionConsumed  = 0
+  _rollingHash             = 0x0
+  _currentL2ToL1Call       = 0
+  _lastL1ToL2CallConsumed  = 0
 
 ─── Entry-level _processNCalls(3), iteration 0 ─────────────
 
-  Read entry.L2ToL1Calls[0] = c0
-  _currentCallNumber++ → 1
+  Read entry.l2ToL1Calls[0] = c0
+  _currentL2ToL1Call++ → 1
   hash CALL_BEGIN(callNum=1):
     _rollingHash = keccak256(0x0, uint8(1), uint256(1))                                    → H1
 
@@ -1020,26 +1025,26 @@ Initial transient state:
   into a proxy on this chain → executeCrossChainCall → _insideExecution() == true
   → _consumeNestedAction(H_nested):
 
-      idx = _lastNestedActionConsumed → idx=0   (L1 pre-commit read, no bump yet)
+      idx = _lastL1ToL2CallConsumed → idx=0     (L1 pre-commit read, no bump yet)
       require(expectedL1ToL2Calls[0].crossChainCallHash == H_nested)
-      _lastNestedActionConsumed = idx + 1 → 1   (advance committed on match)
+      _lastL1ToL2CallConsumed = idx + 1 → 1     (advance committed on match)
       nestedNumber = idx + 1 = 1
 
       hash NESTED_BEGIN(nestedNum=1):
         _rollingHash = keccak256(H1, uint8(3), uint256(1))                                 → H2
 
-      _processNCalls(2):  // nested action's callCount
+      _processNCalls(2):  // reentrant frame's callCount
 
-        Read entry.L2ToL1Calls[1] = c1
-        _currentCallNumber++ → 2
+        Read entry.l2ToL1Calls[1] = c1
+        _currentL2ToL1Call++ → 2
         hash CALL_BEGIN(callNum=2):
           _rollingHash = keccak256(H2, uint8(1), uint256(2))                               → H3
         Execute c1 via the source proxy. Succeeds with retData_1.
         hash CALL_END(callNum=2, success=true, retData_1):
           _rollingHash = keccak256(H3, uint8(2), uint256(2), true, retData_1)              → H4
 
-        Read entry.L2ToL1Calls[2] = c2
-        _currentCallNumber++ → 3
+        Read entry.l2ToL1Calls[2] = c2
+        _currentL2ToL1Call++ → 3
         hash CALL_BEGIN(callNum=3):
           _rollingHash = keccak256(H4, uint8(1), uint256(3))                               → H5
         Execute c2 via the source proxy. Succeeds with retData_2.
@@ -1057,8 +1062,8 @@ Initial transient state:
 
 ─── Entry-level _processNCalls(3), iteration 1 ─────────────
 
-  Read entry.L2ToL1Calls[3] = c3
-  _currentCallNumber++ → 4
+  Read entry.l2ToL1Calls[3] = c3
+  _currentL2ToL1Call++ → 4
   hash CALL_BEGIN(callNum=4):
     _rollingHash = keccak256(H8, uint8(1), uint256(4))                                     → H9
   Execute c3. Succeeds with retData_3.
@@ -1067,8 +1072,8 @@ Initial transient state:
 
 ─── Entry-level _processNCalls(3), iteration 2 ─────────────
 
-  Read entry.L2ToL1Calls[4] = c4
-  _currentCallNumber++ → 5
+  Read entry.l2ToL1Calls[4] = c4
+  _currentL2ToL1Call++ → 5
   hash CALL_BEGIN(callNum=5):
     _rollingHash = keccak256(H10, uint8(1), uint256(5))                                    → H11
   Execute c4. Succeeds with retData_4.
@@ -1077,10 +1082,10 @@ Initial transient state:
 
 ─── Verification ─────────────
 
-  _rollingHash (H12)              == entry.rollingHash             → RollingHashMismatch?       no
-  _currentCallNumber (5)          == entry.L2ToL1Calls.length (5)        → UnconsumedCalls?           no
-  _lastNestedActionConsumed (1)   == entry.expectedL1ToL2Calls.length(1) → UnconsumedNestedActions?   no
-  _currentCallNumber = 0    // reset so _insideExecution() returns false
+  _rollingHash (H12)            == entry.rollingHash                     → RollingHashMismatch?     no
+  _currentL2ToL1Call (5)        == entry.l2ToL1Calls.length (5)          → UnconsumedL2ToL1Calls?   no
+  _lastL1ToL2CallConsumed (1)   == entry.expectedL1ToL2Calls.length (1)  → UnconsumedL1ToL2Calls?   no
+  _currentL2ToL1Call = 0    // reset so _insideExecution() returns false
 ```
 
 Hash chain summary:
@@ -1103,32 +1108,32 @@ H12 = hash(H11, CALL_END,     callNum=5, true, retData_4)
 require(H12 == entry.rollingHash)
 ```
 
-### E.3 Multiple Phases Within One Call (Static Call Disambiguation)
+### E.4 Multiple Phases Within One Call (Static Call Disambiguation)
 
-A single call iteration can issue several STATICCALLs at distinct points of its execution, possibly with the same `crossChainCallHash`. The `(callNumber, lastNestedActionConsumed)` pair forms a coordinate that advances monotonically and never repeats — it is what the lookup queue is keyed on (see §F.1).
+A single call iteration can issue several STATICCALLs at distinct points of its execution, possibly with the same `crossChainCallHash`. The `(l2ToL1CallNumber, lastL1ToL2CallConsumed)` pair (L2: `(callNumber, lastOutgoingCallConsumed)`) forms a coordinate that advances monotonically and never repeats — it is what the lookup queue is keyed on (see §F.1).
 
-Example: while `entry.L2ToL1Calls[0]` (call #1 at the entry level) executes, the destination contract:
+Example: while `entry.l2ToL1Calls[0]` (call #1 at the entry level) executes, the destination contract:
 
 ```
 Call #1 begins:
-  _currentCallNumber = 1
-  _lastNestedActionConsumed = 0
+  _currentL2ToL1Call = 1
+  _lastL1ToL2CallConsumed = 0
 
   STATICCALL to proxy → staticCallLookup
-    → matched by (crossChainCallHash, callNumber=1, lastNestedActionConsumed=0)
+    → matched by (crossChainCallHash, l2ToL1CallNumber=1, lastL1ToL2CallConsumed=0)
 
-  Trigger nested action #1 (a successful reentrant call)
-    → _consumeNestedAction advances _lastNestedActionConsumed to 1 (on match)
-    → NESTED_BEGIN/END are hashed; nested calls (if any) advance _currentCallNumber
+  Trigger reentrant call #1 (a successful reentrant call)
+    → _consumeNestedAction advances _lastL1ToL2CallConsumed to 1 (on match)
+    → NESTED_BEGIN/END are hashed; the reentrant frame's calls (if any) advance _currentL2ToL1Call
 
   STATICCALL to proxy → staticCallLookup
-    → matched by (crossChainCallHash, callNumber=K, lastNestedActionConsumed=1)
-       where K is _currentCallNumber after any nested calls
+    → matched by (crossChainCallHash, l2ToL1CallNumber=K, lastL1ToL2CallConsumed=1)
+       where K is _currentL2ToL1Call after any reentrant-frame calls
 ```
 
-Both STATICCALLs may carry the **same** `crossChainCallHash` — the builder differentiates them by recording the live values of `_currentCallNumber` and `_lastNestedActionConsumed` at the exact point of each STATICCALL during simulation, and stamping them into the corresponding `LookupCall` entries.
+Both STATICCALLs may carry the **same** `crossChainCallHash` — the builder differentiates them by recording the live values of `_currentL2ToL1Call` and `_lastL1ToL2CallConsumed` at the exact point of each STATICCALL during simulation, and stamping them into the corresponding `LookupCall` entries.
 
-If `_currentCallNumber` advanced inside the nested action (the nested action consumed some of `entry.L2ToL1Calls[]`), the second STATICCALL's `callNumber` will be larger than the first's. If the nested action was empty (`callCount == 0`), `_currentCallNumber` stays at 1 and the two STATICCALLs differ only in `lastNestedActionConsumed` (0 vs 1).
+If `_currentL2ToL1Call` advanced inside the reentrant frame (it consumed some of `entry.l2ToL1Calls[]`), the second STATICCALL's `l2ToL1CallNumber` will be larger than the first's. If the reentrant frame was empty (`callCount == 0`), `_currentL2ToL1Call` stays at 1 and the two STATICCALLs differ only in `lastL1ToL2CallConsumed` (0 vs 1).
 
 ---
 
@@ -1136,30 +1141,31 @@ If `_currentCallNumber` advanced inside the nested action (the nested action con
 
 Lookup calls (read-only or reverting reentrant / top-level calls) are looked up — never executed via the normal call path. There are two entry points into the lookup:
 
-1. **`staticCallLookup`** (external view) — used when the proxy's `_fallback` detects a real STATICCALL context (a self-call to `staticCheck` whose `tstore` reverts). Handles both `failed=true` and `failed=false` entries.
-2. **Fallback inside `_consumeNestedAction`** — used when a normal-CALL reentrant call has no matching `ExpectedL1ToL2Call`. Only matches `failed=true` entries (the destination's `try/catch` consumes the revert). See §D.3.
+1. **`staticCallLookup`** (external view) — used when the proxy's `_fallback` detects a real STATICCALL context (a self-call to `staticCheck` whose `tstore` reverts). Handles both `failed=true` and `failed=false` entries via `_resolveLookupCall`.
+2. **Fallback inside `_consumeNestedAction`** — used when a normal-CALL reentrant call has no matching `ExpectedL1ToL2Call`. Only matches `failed=true` entries (the destination's `try/catch` consumes the revert) and resolves them via `_replayFailedLookup`, which replays any failed-mode sub-execution and always reverts. See §D.3. (`_tryRevertedTopLevelLookup` is the top-level twin, keyed at `(hash, 0, 0)`.)
 
-Both entry points share the same match key and `_resolveLookupCall` helper.
+Both entry points share the same match key; the resolution helper differs by mode.
 
 ### F.1 Match Key
 
 The fields actually **compared** in the scan are the 3-tuple:
 
 ```
-(crossChainCallHash, callNumber, lastNestedActionConsumed)
+(crossChainCallHash, l2ToL1CallNumber, lastL1ToL2CallConsumed)      // L1
+(crossChainCallHash, callNumber, lastOutgoingCallConsumed)          // L2
 ```
 
 - `crossChainCallHash` — same formula as `computeCrossChainCallHash` (with `value = 0`).
-- `callNumber` — `uint64(_currentCallNumber)` at lookup time.
-- `lastNestedActionConsumed` — `uint64(_lastNestedActionConsumed)` at lookup time.
+- `l2ToL1CallNumber` — `uint64(_currentL2ToL1Call)` at lookup time (L2: `callNumber` / `_currentIncomingCall`).
+- `lastL1ToL2CallConsumed` — `uint64(_lastL1ToL2CallConsumed)` at lookup time (L2: `lastOutgoingCallConsumed` / `_lastOutgoingCallConsumed`).
 
-`destinationRollupId` is **not** a compared field. For the per-rollup *persistent* `lookupQueue` it is enforced *structurally* — the scan targets `verificationByRollup[rollupId].lookupQueue`, so only that rollup's entries are visible. The global `_transientLookupCalls` table (L1) is **not** filtered by destination rollup at all; the prover must not collide transient lookup keys across rollups within one batch. (The contract natspec still describes the *conceptual* key as the 4-tuple including `destinationRollupId` for this reason.)
+`destinationRollupId` (L1 only) is **not** a compared field. For the per-rollup *persistent* `lookupQueue` it is enforced *structurally* — the scan targets `verificationByRollup[rollupId].lookupQueue`, so only that rollup's entries are visible. The global `_transientLookupCalls` table (L1) is **not** filtered by destination rollup at all; the prover must not collide transient lookup keys across rollups within one batch. (The target rollup is also bound into `crossChainCallHash` itself, and a failed lookup's `destinationRollupId` must equal that destRID — `_replayFailedLookup` re-derives the queue from it mid-replay.) Static lookups on L1 are additionally pinned by `expectedQueueIndices[]` (checked in `_resolveLookupCall`).
 
 The counters together identify a unique phase of execution. They both advance monotonically and never repeat within a single entry's execution.
 
 ### F.2 Lookup Algorithm
 
-L1:
+L1 (`staticCallLookup`):
 
 ```
 for lc in _transientLookupCalls:
@@ -1172,17 +1178,22 @@ revert ExecutionNotFound
 L2: same, but only scans `lookupCalls` (single-rollup, no transient table, no per-rollup map).
 
 `_resolveLookupCall(lc)`:
-- If `lc.calls.length > 0`: replay them in static context (`_processNLookupCalls`) and check `computedHash == lc.rollingHash` (else `RollingHashMismatch`).
+- Check the `expectedQueueIndices[]` pins against each listed rollup's live `executionQueueIndex` (else `ExecutionQueueIndexMismatch`; L1 only).
+- **Always** replay the sub-calls in static context (`_processNLookupCalls(lc.l2ToL1Calls)`) and check `computedHash == lc.rollingHash` (else `RollingHashMismatch`); an empty array hashes to `bytes32(0)`.
 - If `lc.failed`: revert with `lc.returnData`.
 - Else return `lc.returnData`.
 
 ### F.3 Lookup Sub-Calls
 
-A `LookupCall` may include its own `calls[]` array — these are STATICCALLs that the cached call itself would issue. They are replayed at lookup time in static context (no `revertSpan` handling, no proxy creation), and their composite hash is checked against `lc.rollingHash`.
+A `LookupCall` may include its own sub-call array (`l2ToL1Calls[]` on L1, `incomingCalls[]` on L2). In static mode these are STATICCALLs that the cached call itself would issue. They are replayed at lookup time in static context (no `revertSpan` handling, no proxy creation — an un-deployed proxy reverts `LookupCallProxyNotDeployed`), and their composite hash is checked against `lc.rollingHash`.
 
 This lets a lookup model a contract that performs read-only sub-calls: the lookup verifies the sub-call results match what the proof committed to, and only then returns the cached top-level result.
 
+In failed mode (`callCount > 0`) the same array instead replays as **real calls** inside `_replayFailedLookup` — with reentry supplied by the lookup's own `expectedL1ToL2Calls[]` table and the tagged rolling-hash schema — before the terminal revert with `lc.returnData` (see §A.1 / §E.2).
+
 ### F.4 When to use `LookupCall` vs `ExpectedL1ToL2Call`
+
+(L1 names; on L2 the success table is `ExpectedOutgoingCrossChainCall`.)
 
 | Situation | Use | Routed via |
 |---|---|---|
@@ -1198,11 +1209,11 @@ This lets a lookup model a contract that performs read-only sub-calls: the looku
 
 ### G.1 L1 Posting
 
-`postAndVerifyBatch` lazy-resets each touched rollup's `verificationByRollup[rid]`, populates `_transientExecutions` and `_transientLookupCalls` from each batch's leading prefixes, drains the leading immediate entries inline (if any), runs the meta hook, wipes the transient tables, and unconditionally publishes each batch's remainder into the per-rollup queues.
+`postAndVerifyBatch` resets each touched rollup's `verificationByRollup[rid]` (wipe on every verify), populates `_transientExecutions` and `_transientLookupCalls` from the batch's leading prefixes, drains the leading immediate entries inline (if any), runs the meta hook, wipes the transient tables, and unconditionally publishes the batch's remainder into the per-rollup queues.
 
 Within a single `postAndVerifyBatch`:
 1. Reentry guard: `_transientExecutions.length == 0` (revert `PostBatchReentry` otherwise). Validate. Verify proofs (`checkProofSystemsAndGetVkeys` per rollup, then `IProofSystem.verify` per PS).
-2. Mark `verificationByRollup[rid].lastVerifiedBlock = block.number` for every touched rollup; lazy-reset per-rollup queues / cursors on first touch this block.
+2. Mark `verificationByRollup[rid].lastVerifiedBlock = block.number` for every touched rollup; wipe each touched rollup's queues / cursor on every verify (`_markVerifiedBlockPerRollup`).
 3. Load the batch's transient prefix into `_transientExecutions` / `_transientLookupCalls`.
 4. Drain leading immediate entries (skip-on-revert via `ImmediateEntrySkipped`).
 5. Meta hook runs if transient stream not yet drained AND `msg.sender` has code (per-rollup cursors advance per consumption).
@@ -1216,15 +1227,15 @@ Within a single `postAndVerifyBatch`:
 
 ### G.3 Consumption
 
-Sequential — per-rollup `verificationByRollup[rid].cursor++` (or `_transientExecutionIndex++` during the transient phase) per consumption. Each entry is consumed exactly once. There is no swap-and-pop and no hash-based search.
+Sequential — per-rollup `verificationByRollup[rid].executionQueueIndex++` (or `_transientExecutionIndex++` during the transient phase) per consumption. Each entry is consumed exactly once. There is no swap-and-pop and no hash-based search.
 
 ### G.4 Same-Block Restriction
 
-On L1, all execution attempts revert `ExecutionNotInCurrentBlock(rollupId)` if `verificationByRollup[rollupId].lastVerifiedBlock != block.number`. On L2, same with `lastLoadBlock`. Entries that aren't consumed in the loading block are unreachable on the next load (per-rollup queues are lazy-reset on the next batch that touches the rollup).
+On L1, all execution attempts revert `ExecutionNotInCurrentBlock(rollupId)` if `verificationByRollup[rollupId].lastVerifiedBlock != block.number`. On L2, same with `lastLoadBlock`. Entries that aren't consumed in the posting block are never read again (the read gate), and the queue is wiped by the next batch that verifies the rollup.
 
 ### G.5 Table Clearing
 
-Each new `postAndVerifyBatch` lazy-resets the touched rollups' queues; `loadExecutionTable` wipes the entire L2 table. Builders must produce self-contained batches.
+Each `postAndVerifyBatch` wipes the touched rollups' queues (on every verify, including same-block re-verifies); `loadExecutionTable` wipes the entire L2 table. Builders must produce self-contained batches.
 
 ---
 
@@ -1244,21 +1255,23 @@ For each entry: `totalEtherDelta == etherIn - etherOut`, where `etherIn` is the 
 
 Each entry independently balances — ether accounting is localized to a single entry rather than aggregated across the transaction — which simplifies the prover's job.
 
-The sum of `etherBalance` across all rollups plus `address(rollups).balance` is conserved modulo direct deposits/withdrawals outside the protocol.
+The sum of `etherBalance` across all rollups plus the `EEZ` contract's own balance is conserved modulo direct deposits/withdrawals outside the protocol.
 
 ### H.3 Sequential Consumption
 
-Each entry is consumed exactly once, in posted order **on its destination rollup**. Each rollup has its own monotonically-increasing `cursor` that is reset to 0 when the queue is lazy-reset (next batch that touches the rollup). Cross-rollup state is independent.
+Each entry is consumed exactly once, in posted order **on its destination rollup**. Each rollup has its own monotonically-increasing `executionQueueIndex` that is reset to 0 by every batch that verifies the rollup (wipe-on-verify). Cross-rollup state is independent.
 
 ### H.4 Rolling Hash Integrity
 
 After each entry completes:
 
 ```
-_rollingHash               == entry.rollingHash             // RollingHashMismatch
-_currentCallNumber         == entry.L2ToL1Calls.length            // UnconsumedCalls
-_lastNestedActionConsumed  == entry.expectedL1ToL2Calls.length    // UnconsumedNestedActions
+_rollingHash             == entry.rollingHash                   // RollingHashMismatch
+_currentL2ToL1Call       == entry.l2ToL1Calls.length            // UnconsumedL2ToL1Calls
+_lastL1ToL2CallConsumed  == entry.expectedL1ToL2Calls.length    // UnconsumedL1ToL2Calls
 ```
+
+(L2: `_currentIncomingCall` / `incomingCalls` / `UnconsumedIncomingCalls` and `_lastOutgoingCallConsumed` / `expectedOutgoingCalls` / `UnconsumedOutgoingCalls`.)
 
 Together, these three checks attest that every call described in the entry was processed in the correct order, with the correct return data, with the correct nesting structure, and that nothing extra happened.
 
@@ -1275,9 +1288,9 @@ The same pair always maps to the same proxy address on the same manager. Two pro
 
 All entries posted in a given block must be consumed in that block — `verificationByRollup[rid].lastVerifiedBlock == block.number` (L1, per-rollup) or `lastLoadBlock == block.number` (L2).
 
-### H.7 Lazy Reset Per Block
+### H.7 Wipe On Every Verify
 
-`postAndVerifyBatch` lazy-resets each touched rollup's queue / lookupQueue / cursor when its `lastVerifiedBlock` is stale. `loadExecutionTable` (L2) `delete`s the entire existing table before loading new entries. Unconsumed entries from a prior block are unreachable.
+`postAndVerifyBatch` wipes each touched rollup's `executionQueue` / `lookupQueue` / `executionQueueIndex` on **every** verify — including same-block re-verifies, where the new batch REPLACES the prior one for that rollup. `loadExecutionTable` (L2) `delete`s the entire existing table before loading new entries. Unconsumed entries from a prior block are unreachable (the `lastVerifiedBlock` read gate stops them even before the wipe).
 
 ### H.8 Per-Rollup Queue Soundness
 
@@ -1287,7 +1300,7 @@ The deferred remainder of a `postAndVerifyBatch` is published unconditionally to
 
 `postAndVerifyBatch` re-entered from any path (e.g., by the meta hook) reverts `PostBatchReentry` — the guard is `_transientExecutions.length != 0` at the top of the function (there is no separate `_inPostBatch` flag). This prevents corruption of the shared `_transientExecutions` / `_transientLookupCalls` storage by a nested call.
 
-Same-block re-touch of a rollup across separate (non-nested) `postAndVerifyBatch` calls is **permitted**: `_markVerifiedThisBlock` short-circuits silently on a same-block re-touch and entries from the second batch append to the existing per-rollup queue. Orchestrators that need once-per-block-per-rollup exclusivity must enforce it at the social layer.
+Same-block re-touch of a rollup across separate (non-nested) `postAndVerifyBatch` calls is **permitted**: `_markVerifiedBlockPerRollup` wipes the rollup's queue and cursor on every verify, so the second batch's entries REPLACE the first batch's. Safe because state only mutates at consumption and every entry is gated by `StateDelta.currentState` — discarding unconsumed-but-proven entries is a liveness choice, not a safety one.
 
 ---
 
@@ -1297,10 +1310,10 @@ Same-block re-touch of a rollup across separate (non-nested) `postAndVerifyBatch
 
 `postAndVerifyBatch` verifies one proof per `(batch, proofSystem)` pair. Each proof's public-inputs hash covers (see `MULTI_PROVER_DESIGN.md` for the exact construction):
 
-- Every entry hash — `keccak256(abi.encode(entry))` over the FULL `ExecutionEntry` struct (including `stateDeltas` with `currentState`, `proxyEntryHash`, `destinationRollupId`, `L2ToL1Calls`, `expectedL1ToL2Calls`, `callCount`, `returnData`, `rollingHash`).
+- Every entry hash — `keccak256(abi.encode(entry))` over the FULL `ExecutionEntry` struct (including `stateDeltas` with `currentState`, `proxyEntryHash`, `destinationRollupId`, `l2ToL1Calls`, `expectedL1ToL2Calls`, `callCount`, `returnData`, `rollingHash`).
 - Every lookup-call hash — `keccak256(abi.encode(lookupCall))`.
 - Every blob hash (for data availability).
-- Per-rollup `(blockHash, timestamp)` fetched via `IRollupContract.getTimestampAndBlockHash()` and folded into the per-PS accumulator `acc_k` (one quadruple per attesting rollup).
+- Per-rollup `(blockHash, timestamp)` fetched via `IRollupContract.getTimestampAndBlockHash(batch.blockNumber)` and folded into the per-PS accumulator `acc_k` (one quadruple per attesting rollup).
 - `keccak256(callData)`.
 - `crossProofSystemInteractions` (binds cross-PS messages within the batch).
 - The per-rollup vkey row (`vkMatrix[r][j]`) for the rollup's `proofSystemIndex[]` subset.
@@ -1311,7 +1324,7 @@ A malicious caller producing a forged batch would have to forge proofs from ever
 
 ### I.2 Reentrancy
 
-The protocol is intentionally reentrant. `_processNCalls` calls into proxies, which forward to destination contracts, which may call back into proxies. Reentrant calls are routed to `_consumeNestedAction` via the `_insideExecution()` check. The transient `_currentCallNumber` cursor naturally serializes everything within one entry.
+The protocol is intentionally reentrant. `_processNCalls` calls into proxies, which forward to destination contracts, which may call back into proxies. Reentrant calls are routed to `_consumeNestedAction` via the `_insideExecution()` check. The transient call cursor (`_currentL2ToL1Call` / `_currentIncomingCall`) naturally serializes everything within one entry.
 
 `postAndVerifyBatch` re-entry from the meta hook is blocked by a single guard: `if (_transientExecutions.length != 0) revert PostBatchReentry()` at the top of the function. The transient-stream length doubles as the reentry flag — it is non-zero whenever a `postAndVerifyBatch` call is mid-flight and zero in between calls. Same-block re-touch across separate (non-nested) calls is permitted — see H.9.
 
@@ -1347,7 +1360,7 @@ Per-rollup ownership operations (`addProofSystem`, `removeProofSystem`, `updateV
 
 `postAndVerifyBatch` reentry from anywhere (meta hook, manager callback, etc.) is blocked by `PostBatchReentry` via the `_transientExecutions.length != 0` check at the top of the function.
 
-Multiple top-level `postAndVerifyBatch` calls hitting the same rollup in the same block are permitted by design: `_markVerifiedThisBlock` short-circuits silently on a same-block re-touch and entries from the second batch append to the existing queue. Builders cannot rely on once-per-block-per-rollup exclusivity; if exclusivity is required, the orchestrator must enforce it at the social layer.
+Multiple top-level `postAndVerifyBatch` calls hitting the same rollup in the same block are permitted by design: `_markVerifiedBlockPerRollup` wipes the rollup's queue and cursor on every verify, so the second batch fully SUPERSEDES the first for that rollup (no append). Builders cannot rely on once-per-block-per-rollup exclusivity; if exclusivity is required, the orchestrator must enforce it at the social layer.
 
 ### I.6 Cross-Chain Proxy Identity
 

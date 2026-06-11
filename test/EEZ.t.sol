@@ -326,16 +326,16 @@ contract EEZTest is Base {
         (uint256 rid,) = _makeRollupLocal(bytes32(0), alice);
         ExecutionEntry[] memory entries = new ExecutionEntry[](1);
         entries[0] = _immediateEntry(rid, bytes32(0), keccak256("s"));
-        ps.setVerifyResult(false);
+        // Verification on with no pinned hash — rejects every proof.
+        ps.setShouldVerify(true);
         vm.expectRevert(EEZ.InvalidProof.selector);
         _postBatch(rid, entries);
     }
 
-    /// @notice Multiple verifications for the same rollup in the same block are now allowed:
+    /// @notice Multiple verifications for the same rollup in the same block are allowed:
     ///         the second batch picks up where the first left off (state has advanced to s1,
-    ///         the second batch transitions s1 → s2). The once-per-block-per-rollup guard was
-    ///         removed; same-block re-touches just append onto the existing queue without
-    ///         resetting the cursor.
+    ///         the second batch transitions s1 → s2). Each verify wipes the rollup's queue,
+    ///         so the second batch fully replaces the first's entries.
     function test_PostBatch_SameBlockSameRollupOk() public {
         (uint256 rid,) = _makeRollupLocal(bytes32(0), alice);
         ExecutionEntry[] memory entries1 = new ExecutionEntry[](1);
