@@ -5,14 +5,7 @@ import {Test, Vm} from "forge-std/Test.sol";
 import {EEZL2} from "../src/L2/EEZL2.sol";
 import {EEZBase} from "../src/base/EEZBase.sol";
 import {CrossChainProxy} from "../src/base/CrossChainProxy.sol";
-import {
-    ExecutionEntry,
-    StateDelta,
-    L2ToL1Call,
-    ExpectedL1ToL2Call,
-    LookupCall,
-    ProxyInfo
-} from "../src/interfaces/IEEZ.sol";
+import {ExecutionEntry, CrossChainCall, ExpectedOutgoingCrossChainCall, LookupCall} from "../src/interfaces/IEEZL2.sol";
 
 contract L2TestTarget {
     uint256 public value;
@@ -102,10 +95,10 @@ contract EEZL2Test is Test {
         manager.loadExecutionTable(entries, noStatic);
     }
 
-    /// @notice Helper to build a simple entry with one call, no nested actions
+    /// @notice Helper to build a simple entry with one call, no nested calls
     function _buildSimpleEntry(
         bytes32 crossChainCallHash,
-        L2ToL1Call memory cc,
+        CrossChainCall memory cc,
         bytes memory returnData,
         bytes32 rollingHash
     )
@@ -113,13 +106,11 @@ contract EEZL2Test is Test {
         view
         returns (ExecutionEntry memory entry)
     {
-        L2ToL1Call[] memory calls = new L2ToL1Call[](1);
+        CrossChainCall[] memory calls = new CrossChainCall[](1);
         calls[0] = cc;
-        entry.stateDeltas = new StateDelta[](0);
         entry.proxyEntryHash = crossChainCallHash;
-        entry.destinationRollupId = TEST_ROLLUP_ID;
-        entry.L2ToL1Calls = calls;
-        entry.expectedL1ToL2Calls = new ExpectedL1ToL2Call[](0);
+        entry.incomingCalls = calls;
+        entry.expectedOutgoingCalls = new ExpectedOutgoingCrossChainCall[](0);
         entry.callCount = 1;
         entry.returnData = returnData;
         entry.rollingHash = rollingHash;
@@ -131,11 +122,9 @@ contract EEZL2Test is Test {
         view
         returns (ExecutionEntry memory entry)
     {
-        entry.stateDeltas = new StateDelta[](0);
         entry.proxyEntryHash = crossChainCallHash;
-        entry.destinationRollupId = TEST_ROLLUP_ID;
-        entry.L2ToL1Calls = new L2ToL1Call[](0);
-        entry.expectedL1ToL2Calls = new ExpectedL1ToL2Call[](0);
+        entry.incomingCalls = new CrossChainCall[](0);
+        entry.expectedOutgoingCalls = new ExpectedOutgoingCrossChainCall[](0);
         entry.callCount = 0;
         entry.returnData = returnData;
         entry.rollingHash = bytes32(0);
@@ -179,7 +168,7 @@ contract EEZL2Test is Test {
         bytes32 crossChainCallHash =
             _computeActionHash(TEST_ROLLUP_ID, address(target), 0, callData, address(this), TEST_ROLLUP_ID);
 
-        L2ToL1Call memory cc = L2ToL1Call({
+        CrossChainCall memory cc = CrossChainCall({
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (42)),
@@ -206,7 +195,7 @@ contract EEZL2Test is Test {
         bytes32 crossChainCallHash =
             _computeActionHash(TEST_ROLLUP_ID, address(target), 0, callData, address(this), TEST_ROLLUP_ID);
 
-        L2ToL1Call memory cc = L2ToL1Call({
+        CrossChainCall memory cc = CrossChainCall({
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (42)),
@@ -309,7 +298,7 @@ contract EEZL2Test is Test {
     //
     // L2 has no transient table: `_consumeAndExecute` misses on the (empty) `executions`,
     // delegates to `_tryRevertedTopLevelLookup`, which scans the persistent `lookupCalls` for a
-    // `failed` entry keyed at (hash, callNumber=0, lastNestedActionConsumed=0) and reverts with
+    // `failed` entry keyed at (hash, callNumber=0, lastOutgoingCallConsumed=0) and reverts with
     // the cached `returnData`. `executionIndex` is never advanced. The negative case (empty
     // lookupCalls + no entry → ExecutionNotFound) is covered by
     // `test_ExecuteCrossChainCall_RevertsExecutionNotFound` above. See docs §D.3.
@@ -323,12 +312,11 @@ contract EEZL2Test is Test {
 
         LookupCall[] memory lookups = new LookupCall[](1);
         lookups[0].crossChainCallHash = h;
-        lookups[0].destinationRollupId = TEST_ROLLUP_ID;
         lookups[0].returnData = payload;
         lookups[0].failed = true;
         lookups[0].callNumber = 0;
-        lookups[0].lastNestedActionConsumed = 0;
-        lookups[0].calls = new L2ToL1Call[](0);
+        lookups[0].lastOutgoingCallConsumed = 0;
+        lookups[0].incomingCalls = new CrossChainCall[](0);
         lookups[0].rollingHash = bytes32(0);
 
         ExecutionEntry[] memory entries = new ExecutionEntry[](0);
@@ -356,7 +344,7 @@ contract EEZL2Test is Test {
         bytes32 crossChainCallHash =
             _computeActionHash(TEST_ROLLUP_ID, address(target), 0, callData, address(this), TEST_ROLLUP_ID);
 
-        L2ToL1Call memory cc = L2ToL1Call({
+        CrossChainCall memory cc = CrossChainCall({
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (42)),
@@ -383,7 +371,7 @@ contract EEZL2Test is Test {
         bytes32 crossChainCallHash =
             _computeActionHash(TEST_ROLLUP_ID, address(target), 0, callData, address(this), TEST_ROLLUP_ID);
 
-        L2ToL1Call memory cc = L2ToL1Call({
+        CrossChainCall memory cc = CrossChainCall({
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.getValue, ()),
@@ -418,7 +406,7 @@ contract EEZL2Test is Test {
         bytes32 crossChainCallHash =
             _computeActionHash(TEST_ROLLUP_ID, address(target), 0, callData, address(this), TEST_ROLLUP_ID);
 
-        L2ToL1Call memory cc = L2ToL1Call({
+        CrossChainCall memory cc = CrossChainCall({
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.getValue, ()),
@@ -467,7 +455,7 @@ contract EEZL2Test is Test {
         bytes32 crossChainCallHash =
             _computeActionHash(TEST_ROLLUP_ID, address(target), 0, callData, address(this), TEST_ROLLUP_ID);
 
-        L2ToL1Call memory cc = L2ToL1Call({
+        CrossChainCall memory cc = CrossChainCall({
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (42)),
@@ -484,17 +472,17 @@ contract EEZL2Test is Test {
         s;
     }
 
-    // ── UnconsumedCalls ──
+    // ── UnconsumedIncomingCalls ──
 
-    function test_UnconsumedCalls_Reverts() public {
+    function test_UnconsumedIncomingCalls_Reverts() public {
         address proxy = manager.createCrossChainProxy(address(target), TEST_ROLLUP_ID);
         bytes memory callData = abi.encodeCall(L2TestTarget.setValue, (42));
 
         bytes32 crossChainCallHash =
             _computeActionHash(TEST_ROLLUP_ID, address(target), 0, callData, address(this), TEST_ROLLUP_ID);
 
-        L2ToL1Call[] memory calls = new L2ToL1Call[](2);
-        calls[0] = L2ToL1Call({
+        CrossChainCall[] memory calls = new CrossChainCall[](2);
+        calls[0] = CrossChainCall({
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (42)),
@@ -502,7 +490,7 @@ contract EEZL2Test is Test {
             sourceRollupId: TEST_ROLLUP_ID,
             revertSpan: 0
         });
-        calls[1] = L2ToL1Call({
+        calls[1] = CrossChainCall({
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (99)),
@@ -515,17 +503,16 @@ contract EEZL2Test is Test {
         bytes32 rollingHash = _rollingHashSingleCall(retData);
 
         ExecutionEntry memory entry;
-        entry.stateDeltas = new StateDelta[](0);
         entry.proxyEntryHash = crossChainCallHash;
-        entry.L2ToL1Calls = calls;
-        entry.expectedL1ToL2Calls = new ExpectedL1ToL2Call[](0);
+        entry.incomingCalls = calls;
+        entry.expectedOutgoingCalls = new ExpectedOutgoingCrossChainCall[](0);
         entry.callCount = 1;
         entry.returnData = "";
         entry.rollingHash = rollingHash;
 
         _loadSingleEntry(entry);
 
-        vm.expectRevert(EEZBase.UnconsumedCalls.selector);
+        vm.expectRevert(EEZL2.UnconsumedIncomingCalls.selector);
         (bool s,) = proxy.call(callData);
         s;
     }
@@ -539,8 +526,8 @@ contract EEZL2Test is Test {
         bytes32 crossChainCallHash =
             _computeActionHash(TEST_ROLLUP_ID, address(target), 0, callData, address(this), TEST_ROLLUP_ID);
 
-        L2ToL1Call[] memory calls = new L2ToL1Call[](2);
-        calls[0] = L2ToL1Call({
+        CrossChainCall[] memory calls = new CrossChainCall[](2);
+        calls[0] = CrossChainCall({
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (10)),
@@ -548,7 +535,7 @@ contract EEZL2Test is Test {
             sourceRollupId: TEST_ROLLUP_ID,
             revertSpan: 0
         });
-        calls[1] = L2ToL1Call({
+        calls[1] = CrossChainCall({
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (20)),
@@ -566,10 +553,9 @@ contract EEZL2Test is Test {
         hash = keccak256(abi.encodePacked(hash, CALL_END, uint256(2), true, ret2));
 
         ExecutionEntry memory entry;
-        entry.stateDeltas = new StateDelta[](0);
         entry.proxyEntryHash = crossChainCallHash;
-        entry.L2ToL1Calls = calls;
-        entry.expectedL1ToL2Calls = new ExpectedL1ToL2Call[](0);
+        entry.incomingCalls = calls;
+        entry.expectedOutgoingCalls = new ExpectedOutgoingCrossChainCall[](0);
         entry.callCount = 2;
         entry.returnData = "";
         entry.rollingHash = hash;
@@ -598,8 +584,8 @@ contract EEZL2Test is Test {
         bytes32 crossChainCallHash =
             _computeActionHash(TEST_ROLLUP_ID, address(target), 0, callData, address(this), TEST_ROLLUP_ID);
 
-        L2ToL1Call[] memory calls = new L2ToL1Call[](1);
-        calls[0] = L2ToL1Call({
+        CrossChainCall[] memory calls = new CrossChainCall[](1);
+        calls[0] = CrossChainCall({
             targetAddress: address(revTarget),
             value: 0,
             data: hex"deadbeef",
@@ -614,10 +600,9 @@ contract EEZL2Test is Test {
         hash = keccak256(abi.encodePacked(hash, CALL_END, uint256(1), false, revertData));
 
         ExecutionEntry memory entry;
-        entry.stateDeltas = new StateDelta[](0);
         entry.proxyEntryHash = crossChainCallHash;
-        entry.L2ToL1Calls = calls;
-        entry.expectedL1ToL2Calls = new ExpectedL1ToL2Call[](0);
+        entry.incomingCalls = calls;
+        entry.expectedOutgoingCalls = new ExpectedOutgoingCrossChainCall[](0);
         entry.callCount = 1;
         entry.returnData = "";
         entry.rollingHash = hash;
@@ -684,7 +669,7 @@ contract EEZL2Test is Test {
         bytes32 crossChainCallHash =
             _computeActionHash(TEST_ROLLUP_ID, address(target), 0, callData, address(this), TEST_ROLLUP_ID);
 
-        L2ToL1Call memory cc = L2ToL1Call({
+        CrossChainCall memory cc = CrossChainCall({
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (42)),
@@ -723,7 +708,7 @@ contract EEZL2Test is Test {
         bytes32 crossChainCallHash =
             _computeActionHash(TEST_ROLLUP_ID, address(target), 0, callData, address(this), TEST_ROLLUP_ID);
 
-        L2ToL1Call memory cc = L2ToL1Call({
+        CrossChainCall memory cc = CrossChainCall({
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (42)),
@@ -769,7 +754,7 @@ contract EEZL2Test is Test {
         bytes32 crossChainCallHash =
             _computeActionHash(TEST_ROLLUP_ID, address(target), 0, callData, address(this), TEST_ROLLUP_ID);
 
-        L2ToL1Call memory cc = L2ToL1Call({
+        CrossChainCall memory cc = CrossChainCall({
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (42)),

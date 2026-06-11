@@ -127,7 +127,7 @@ contract E2EBridgeExecute is Script {
             stateDeltas: stateDeltas,
             proxyEntryHash: callHash,
             destinationRollupId: L2_ROLLUP_ID,
-            L2ToL1Calls: new L2ToL1Call[](0),
+            l2ToL1Calls: new L2ToL1Call[](0),
             expectedL1ToL2Calls: new ExpectedL1ToL2Call[](0),
             callCount: 0,
             returnData: "",

@@ -21,7 +21,7 @@ import {
     ExpectedL1ToL2Call,
     LookupCall,
     ProxyInfo,
-    ExpectedQueueIndex
+    ExpectedQueueIndexPerRollup
 } from "../src/interfaces/IEEZ.sol";
 import {EEZBase} from "../src/base/EEZBase.sol";
 import {CrossChainProxy} from "../src/base/CrossChainProxy.sol";
@@ -308,7 +308,7 @@ contract EEZTest is Base {
         entries[0].stateDeltas = deltas;
         entries[0].proxyEntryHash = bytes32(0);
         entries[0].destinationRollupId = r1; // any rollup in batch is fine for inline
-        entries[0].L2ToL1Calls = new L2ToL1Call[](0);
+        entries[0].l2ToL1Calls = new L2ToL1Call[](0);
         entries[0].expectedL1ToL2Calls = new ExpectedL1ToL2Call[](0);
         entries[0].rollingHash = bytes32(0);
 
@@ -374,7 +374,7 @@ contract EEZTest is Base {
         e1[0].stateDeltas = new StateDelta[](0);
         e1[0].proxyEntryHash = ah;
         e1[0].destinationRollupId = rid;
-        e1[0].L2ToL1Calls = new L2ToL1Call[](0);
+        e1[0].l2ToL1Calls = new L2ToL1Call[](0);
         e1[0].expectedL1ToL2Calls = new ExpectedL1ToL2Call[](0);
         e1[0].rollingHash = bytes32(0);
         _postBatchSingle(rid, e1, 0);
@@ -477,7 +477,7 @@ contract EEZTest is Base {
         entries[0].stateDeltas = deltas;
         entries[0].proxyEntryHash = bytes32(0);
         entries[0].destinationRollupId = r1;
-        entries[0].L2ToL1Calls = new L2ToL1Call[](0);
+        entries[0].l2ToL1Calls = new L2ToL1Call[](0);
         entries[0].expectedL1ToL2Calls = new ExpectedL1ToL2Call[](0);
         entries[0].rollingHash = bytes32(0);
 
@@ -512,7 +512,7 @@ contract EEZTest is Base {
         entries[0].stateDeltas = deltas;
         entries[0].proxyEntryHash = ah;
         entries[0].destinationRollupId = rid;
-        entries[0].L2ToL1Calls = calls;
+        entries[0].l2ToL1Calls = calls;
         entries[0].expectedL1ToL2Calls = new ExpectedL1ToL2Call[](0);
         entries[0].callCount = 1;
         entries[0].rollingHash = rh;
@@ -596,7 +596,7 @@ contract EEZTest is Base {
         entries[0].stateDeltas = deltas;
         entries[0].proxyEntryHash = bytes32(0);
         entries[0].destinationRollupId = r1;
-        entries[0].L2ToL1Calls = new L2ToL1Call[](0);
+        entries[0].l2ToL1Calls = new L2ToL1Call[](0);
         entries[0].expectedL1ToL2Calls = new ExpectedL1ToL2Call[](0);
         entries[0].rollingHash = bytes32(0);
 
@@ -619,7 +619,7 @@ contract EEZTest is Base {
         entries[0].stateDeltas = deltas;
         entries[0].proxyEntryHash = bytes32(0);
         entries[0].destinationRollupId = rid;
-        entries[0].L2ToL1Calls = new L2ToL1Call[](0);
+        entries[0].l2ToL1Calls = new L2ToL1Call[](0);
         entries[0].expectedL1ToL2Calls = new ExpectedL1ToL2Call[](0);
         entries[0].rollingHash = bytes32(0);
         // EtherDeltaMismatch raised inside attemptApplyImmediate → caught → ImmediateEntrySkipped.
@@ -639,7 +639,7 @@ contract EEZTest is Base {
         entries[0].stateDeltas = deltas;
         entries[0].proxyEntryHash = bytes32(0);
         entries[0].destinationRollupId = rid;
-        entries[0].L2ToL1Calls = new L2ToL1Call[](0);
+        entries[0].l2ToL1Calls = new L2ToL1Call[](0);
         entries[0].expectedL1ToL2Calls = new ExpectedL1ToL2Call[](0);
         entries[0].rollingHash = bytes32(0);
         // InsufficientRollupBalance raised inside attemptApplyImmediate → caught → ImmediateEntrySkipped.
@@ -727,7 +727,7 @@ contract EEZTest is Base {
         entries[0].stateDeltas = deltas;
         entries[0].proxyEntryHash = ah;
         entries[0].destinationRollupId = rid;
-        entries[0].L2ToL1Calls = calls;
+        entries[0].l2ToL1Calls = calls;
         entries[0].expectedL1ToL2Calls = new ExpectedL1ToL2Call[](0);
         entries[0].callCount = 1;
         entries[0].rollingHash = bytes32(uint256(0xdead)); // wrong!
@@ -757,12 +757,12 @@ contract EEZTest is Base {
         entries[0].stateDeltas = deltas;
         entries[0].proxyEntryHash = ah;
         entries[0].destinationRollupId = rid;
-        entries[0].L2ToL1Calls = calls;
+        entries[0].l2ToL1Calls = calls;
         entries[0].expectedL1ToL2Calls = new ExpectedL1ToL2Call[](0);
         entries[0].callCount = 1; // promise only one call but provide two
         entries[0].rollingHash = _rollingHashSingleCall("");
         _postBatchSingle(rid, entries, 0);
-        vm.expectRevert(EEZBase.UnconsumedCalls.selector);
+        vm.expectRevert(EEZ.UnconsumedL2ToL1Calls.selector);
         proxyAddr.call(cd);
     }
 
@@ -815,8 +815,8 @@ contract EEZTest is Base {
     // A reverting top-level cross-chain call isn't an `ExecutionEntry` — it's a
     // `LookupCall { failed: true }`. When `_consumeAndExecute` finds no matching entry it
     // delegates to `_tryRevertedTopLevelLookup`, which scans the transient table then the
-    // routed rollup's `lookupQueue` for a `failed` lookup keyed by `(hash, callNumber=0,
-    // lastNestedActionConsumed=0)` and reverts with the cached `returnData`. The entry cursor
+    // routed rollup's `lookupQueue` for a `failed` lookup keyed by `(hash, l2ToL1CallNumber=0,
+    // lastL1ToL2CallConsumed=0)` and reverts with the cached `returnData`. The entry cursor
     // is never advanced — the lookup consumes no queue slot. See docs §D.3 / §F.4.
 
     /// @notice Builds a top-level failed `LookupCall` (no sub-calls) keyed at (hash, 0, 0).
@@ -829,9 +829,9 @@ contract EEZTest is Base {
         lc.destinationRollupId = rid;
         lc.returnData = payload;
         lc.failed = true;
-        lc.callNumber = 0;
-        lc.lastNestedActionConsumed = 0;
-        lc.calls = new L2ToL1Call[](0);
+        lc.l2ToL1CallNumber = 0;
+        lc.lastL1ToL2CallConsumed = 0;
+        lc.l2ToL1Calls = new L2ToL1Call[](0);
         lc.rollingHash = bytes32(0);
     }
 
@@ -925,7 +925,13 @@ contract EEZTest is Base {
 
     /// @notice Top-level failed LookupCall keyed at `(hash, 0, 0)` whose sub-execution replays one
     ///         real sub-call `subTarget.setValue(subValue)` (callCount = 1) then reverts `payload`.
-    function _failedLookupWithSubcall(uint256 rid, bytes32 hash, bytes memory payload, address subTarget, uint256 subValue)
+    function _failedLookupWithSubcall(
+        uint256 rid,
+        bytes32 hash,
+        bytes memory payload,
+        address subTarget,
+        uint256 subValue
+    )
         internal
         view
         returns (LookupCall memory lc)
@@ -943,13 +949,13 @@ contract EEZTest is Base {
         lc.destinationRollupId = rid;
         lc.returnData = payload;
         lc.failed = true;
-        lc.callNumber = 0;
-        lc.lastNestedActionConsumed = 0;
-        lc.calls = subCalls;
+        lc.l2ToL1CallNumber = 0;
+        lc.lastL1ToL2CallConsumed = 0;
+        lc.l2ToL1Calls = subCalls;
         lc.expectedL1ToL2Calls = new ExpectedL1ToL2Call[](0);
         lc.callCount = 1;
         lc.rollingHash = _rollingHashSingleCall(""); // CALL_BEGIN(1) → CALL_END(1, true, "")
-        lc.expectedQueueIndices = new ExpectedQueueIndex[](0);
+        lc.expectedQueueIndices = new ExpectedQueueIndexPerRollup[](0);
     }
 
     /// @notice Happy path: the failed lookup replays its sub-execution, then reverts with the
@@ -1008,8 +1014,8 @@ contract EEZTest is Base {
         bytes32 h = _computeActionHash(rid, address(target), 0, cd, address(this), MAINNET_ROLLUP_ID);
 
         LookupCall memory lc = _failedLookup(rid, h, hex"deadbeef"); // plain failed lookup
-        ExpectedQueueIndex[] memory pins = new ExpectedQueueIndex[](1);
-        pins[0] = ExpectedQueueIndex({rollupId: rid, executionQueueIndex: 5}); // live index is 0 → mismatch
+        ExpectedQueueIndexPerRollup[] memory pins = new ExpectedQueueIndexPerRollup[](1);
+        pins[0] = ExpectedQueueIndexPerRollup({rollupId: rid, executionQueueIndex: 5}); // live index is 0 → mismatch
         lc.expectedQueueIndices = pins;
         LookupCall[] memory lookups = new LookupCall[](1);
         lookups[0] = lc;

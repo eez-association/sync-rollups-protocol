@@ -3,6 +3,11 @@ pragma solidity ^0.8.28;
 
 import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../../src/EEZ.sol";
 import {IEEZ, ExecutionEntry, LookupCall, L2ToL1Call, ExpectedL1ToL2Call} from "../../../src/interfaces/IEEZ.sol";
+import {
+    LookupCall as L2LookupCall,
+    CrossChainCall,
+    ExpectedOutgoingCrossChainCall
+} from "../../../src/interfaces/IEEZL2.sol";
 
 // ══════════════════════════════════════════════════════════════════════
 //  Rolling hash tag constants (must match EEZ.sol / EEZL2.sol)
@@ -170,4 +175,22 @@ function noNestedActions() pure returns (ExpectedL1ToL2Call[] memory) {
 /// @notice Returns an empty L2ToL1Call[].
 function noCalls() pure returns (L2ToL1Call[] memory) {
     return new L2ToL1Call[](0);
+}
+
+// L2 (IEEZL2) variants — Solidity can't overload free functions by return type alone,
+// so the L2-typed empties get an `L2` infix.
+
+/// @notice Returns an empty L2 LookupCall[] (IEEZL2).
+function noL2LookupCalls() pure returns (L2LookupCall[] memory) {
+    return new L2LookupCall[](0);
+}
+
+/// @notice Returns an empty ExpectedOutgoingCrossChainCall[] (IEEZL2).
+function noL2OutgoingCalls() pure returns (ExpectedOutgoingCrossChainCall[] memory) {
+    return new ExpectedOutgoingCrossChainCall[](0);
+}
+
+/// @notice Returns an empty CrossChainCall[] (IEEZL2).
+function noL2Calls() pure returns (CrossChainCall[] memory) {
+    return new CrossChainCall[](0);
 }

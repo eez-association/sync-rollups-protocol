@@ -158,7 +158,9 @@ struct LookupCall {
     /// this lookup call was observed by the prover. Used as part of the lookup key in
     /// `staticCallLookup` and the failed-lookup-call fallback in `_consumeNestedAction`.
     /// For a static read observed *inside* a failed lookup's sub-execution, this is the
-    /// failed lookup's fresh sub-cursor value (disambiguated by `_insideFailedLookup`).
+    /// failed lookup's fresh sub-cursor value. NOTE: the lookup key does NOT encode which
+    /// context is active — the prover must keep keys collision-free across the entry and
+    /// any failed-lookup sub-executions.
     uint64 l2ToL1CallNumber;
     /// Disambiguates multiple lookup calls fired during the same outer call (e.g., a
     /// reentrant view query that triggers further static lookups). Matches

@@ -15,7 +15,7 @@ contract MockProofSystem is IProofSystem {
 }
 
 /// @notice Helper that executes postAndVerifyBatch + incrementProxy in a single transaction.
-/// @dev Same-block requirement for executeL1ToL2Call after postAndVerifyBatch.
+/// @dev Same-block requirement for executeCrossChainCall after postAndVerifyBatch.
 contract Batcher {
     function execute(
         EEZ rollups,
@@ -129,7 +129,7 @@ contract E2EExecute is Script {
             stateDeltas: stateDeltas,
             proxyEntryHash: callHash,
             destinationRollupId: 1,
-            L2ToL1Calls: new L2ToL1Call[](0),
+            l2ToL1Calls: new L2ToL1Call[](0),
             expectedL1ToL2Calls: new ExpectedL1ToL2Call[](0),
             callCount: 0,
             returnData: abi.encode(uint256(1)),

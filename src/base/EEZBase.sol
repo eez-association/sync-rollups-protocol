@@ -10,7 +10,8 @@ import {CrossChainProxy} from "./CrossChainProxy.sol";
 ///      specific execution struct (those structs differ per side — `IEEZL1.sol` vs `IEEZL2.sol`):
 ///        - Rolling-hash tag constants, the `_rollingHash` accumulator, and the fold helpers
 ///          (they operate on primitives, so they don't reference any execution struct).
-///        - Neutral transient pointers: `_currentEntryIndex` and the `_failedLookup*` cursors.
+///        - Neutral transient pointers: `_currentEntryIndex`, `_insideFailedLookup`, and
+///          `_failedLookupIndex`.
 ///        - The `authorizedProxies` registry, the external `createCrossChainProxy` entry point,
 ///          and the internal CREATE2 deploy helper (`_createCrossChainProxyInternal`).
 ///        - Pure / view helpers (`computeCrossChainCallHash`, `computeCrossChainProxyAddress`).
@@ -19,15 +20,16 @@ import {CrossChainProxy} from "./CrossChainProxy.sol";
 ///          direction in their name.
 ///
 ///      What lives in the children (`EEZ` / `EEZL2`) instead, because it names the per-side
-///      execution structs or a per-side directional cursor:
-///        - The directional cursors (`_currentL2ToL1Call` / `_lastL1ToL2CallConsumed` on L1;
-///          the L1↔L2-flipped pair on L2) and `_insideExecution()`.
+///      execution structs or a per-side cursor:
+///        - The call cursors — absolute-directional on L1 (`_currentL2ToL1Call` /
+///          `_lastL1ToL2CallConsumed`), self-relative on L2 (`_currentIncomingCall` /
+///          `_lastOutgoingCallConsumed`) — and `_insideExecution()`.
 ///        - `_processNCalls`, `_consumeNestedAction`, `_consumeAndExecute`.
 ///        - `_activeCalls` / `_activeNested`, `_getCurrentEntryStoragePointer`,
 ///          `_currentFailedLookup`, `_resolveLookupCall`, `_processNLookupCalls`,
 ///          `_replayFailedLookup`, `staticCallLookup`.
-///        - The directionally-named events (`L1ToL2CallConsumed`, …) and errors
-///          (`UnconsumedL2ToL1Calls`, …).
+///        - The per-side events and errors (L1: `L1ToL2CallConsumed`, `UnconsumedL2ToL1Calls`, …;
+///          L2: `OutgoingCallConsumed`, `UnconsumedIncomingCalls`, …).
 abstract contract EEZBase is IEEZ {
     // ──────────────────────────────────────────────
     //  Rolling-hash tag constants
@@ -36,7 +38,6 @@ abstract contract EEZBase is IEEZ {
     uint8 internal constant CALL_END = 2;
     uint8 internal constant NESTED_BEGIN = 3;
     uint8 internal constant NESTED_END = 4;
-
 
     // ──────────────────────────────────────────────
     //  Storage shared with children
@@ -66,13 +67,11 @@ abstract contract EEZBase is IEEZ {
     bool transient _insideFailedLookup;
 
     /// @notice Locates the failed LookupCall currently being replayed. Storage refs can't be
-    ///         transient, so the child encodes (index, rollupId) here and reconstructs the
-    ///         storage pointer in `_currentFailedLookup()`. The source table is NOT stored:
-    ///         L1 re-derives it from `_transientExecutions.length` (transient prefix vs
-    ///         persistent queue); L2 has a single table. `rollupId` is only used for the L1
-    ///         persistent `lookupQueue` (0 for a transient-table match and on L2).
+    ///         transient, so the child encodes the index here and reconstructs the storage
+    ///         pointer in `_currentFailedLookup()`. The source table is NOT stored: L1
+    ///         re-derives it from `_transientExecutions.length` (transient prefix vs persistent
+    ///         queue, the latter keyed by L1's own `_failedLookupRollupId`); L2 has a single table.
     uint256 transient _failedLookupIndex;
-    uint256 transient _failedLookupRollupId;
 
     // ──────────────────────────────────────────────
     //  Events
@@ -109,9 +108,7 @@ abstract contract EEZBase is IEEZ {
     ///      from L1's `_consumeNestedAction` no-match path. The EVM rolls back the transient
     ///      write on revert, so it has to ride out in the payload. L2 has no such flag and
     ///      always sends `false`.
-    error ContextResult(
-        bytes32 rollingHash, uint256 reentrantConsumed, uint256 callsProcessed, bool callNotFound
-    );
+    error ContextResult(bytes32 rollingHash, uint256 reentrantConsumed, uint256 callsProcessed, bool callNotFound);
 
     /// @notice Error when `executeInContextAndRevert` reverts with an unexpected error
     error UnexpectedContextRevert(bytes revertData);

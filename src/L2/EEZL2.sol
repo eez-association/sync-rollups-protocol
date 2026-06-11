@@ -2,13 +2,18 @@
 pragma solidity ^0.8.28;
 
 import {CrossChainProxy} from "../base/CrossChainProxy.sol";
-import {L2ToL1Call, ExpectedL1ToL2Call, LookupCall, ExecutionEntry, ProxyInfo} from "../interfaces/IEEZ.sol";
+import {CrossChainCall, ExpectedOutgoingCrossChainCall, LookupCall, ExecutionEntry} from "../interfaces/IEEZL2.sol";
+import {ProxyInfo} from "../interfaces/IEEZ.sol";
 import {EEZBase} from "../base/EEZBase.sol";
 
 /// @title EEZL2
 /// @notice L2-side contract for cross-chain execution via pre-computed execution tables
 /// @dev No rollups, no state deltas, no ZK proofs. System address loads execution tables,
 ///      which are consumed sequentially via proxy calls (`executeCrossChainCall`).
+/// @dev SELF-RELATIVE directional vocabulary, mirroring L1's directional style: `incomingCalls`
+///      holds the cross-chain calls executed ON this L2 on behalf of remote callers (the
+///      counterparty may be L1 OR another L2), and `expectedOutgoingCalls` holds the pre-computed
+///      results of reentrant calls fired FROM this L2 during execution. See `IEEZL2.sol`.
 contract EEZL2 is EEZBase {
     /// @notice The rollup ID this L2 belongs to
     uint256 public immutable ROLLUP_ID;
@@ -31,14 +36,23 @@ contract EEZL2 is EEZBase {
     /// @notice Index of the next execution entry to consume
     uint256 public executionIndex;
 
+    // ──────────────────────────────────────────────
+    //  Transient execution cursors
+    // ──────────────────────────────────────────────
+
+    /// @notice 1-indexed global call counter and cursor into `entry.incomingCalls[]`.
+    /// @dev `_currentIncomingCall != 0` also doubles as the `_insideExecution()` predicate.
+    uint256 transient _currentIncomingCall;
+
+    /// @notice Sequential reentrant (outgoing) call consumption counter.
+    /// @dev Also used by `staticCallLookup` to disambiguate multiple lookup calls within the same call.
+    uint256 transient _lastOutgoingCallConsumed;
+
     /// @notice Error when caller is not the system address
     error Unauthorized();
 
     /// @notice Error when constructor is given the reserved mainnet rollup id (0)
     error InvalidRollupId();
-
-    /// @notice Error when constructor is given the zero address for the system address
-    error InvalidSystemAddress();
 
     /// @notice Error when execution is attempted in a different block than the last load
     error ExecutionNotInCurrentBlock();
@@ -55,6 +69,13 @@ contract EEZL2 is EEZBase {
     /// @notice Entry 0's `proxyEntryHash` doesn't match the hash computed from the explicit params
     error EntryHashMismatch();
 
+    /// @notice Error when not all calls (`entry.incomingCalls`) were consumed after execution
+    error UnconsumedIncomingCalls();
+
+    /// @notice Error when not all reentrant (outgoing) calls (`entry.expectedOutgoingCalls`) were
+    ///         consumed after execution
+    error UnconsumedOutgoingCalls();
+
     /// @notice Emitted when execution entries are loaded into the execution table
     event ExecutionTableLoaded(ExecutionEntry[] entries);
 
@@ -70,6 +91,23 @@ contract EEZL2 is EEZBase {
         address sourceAddress,
         uint256 sourceRollup
     );
+
+    /// @notice Emitted after each call completes in `_processNCalls`.
+    /// @dev Not emitted for calls inside a revertSpan (those events are rolled back by the revert).
+    event CallResult(uint256 indexed entryIndex, uint256 indexed callNumber, bool success, bytes returnData);
+
+    /// @notice Emitted when a reentrant (outgoing) call is consumed during reentrant execution
+    event OutgoingCallConsumed(
+        uint256 indexed entryIndex, uint256 indexed nestedNumber, bytes32 crossChainCallHash, uint256 callCount
+    );
+
+    /// @notice Emitted after an entry's execution completes and all verifications pass
+    event EntryExecuted(
+        uint256 indexed entryIndex, bytes32 rollingHash, uint256 callsProcessed, uint256 outgoingCallsConsumed
+    );
+
+    /// @notice Emitted after a revert span is processed via `executeInContextAndRevert`
+    event RevertSpanExecuted(uint256 indexed entryIndex, uint256 startCallNumber, uint256 span);
 
     /// @param _rollupId Non-zero; 0 is reserved as the mainnet sentinel in call hashes.
     /// @param _systemAddress The privileged address allowed to load execution tables
@@ -117,6 +155,15 @@ contract EEZL2 is EEZBase {
     }
 
     // ──────────────────────────────────────────────
+    //  Predicates
+    // ──────────────────────────────────────────────
+
+    /// @notice Returns true if currently inside a cross-chain call execution
+    function _insideExecution() internal view returns (bool) {
+        return _currentIncomingCall != 0;
+    }
+
+    // ──────────────────────────────────────────────
     //  Execution entry points
     // ──────────────────────────────────────────────
 
@@ -147,7 +194,7 @@ contract EEZL2 is EEZBase {
         emit CrossChainCallExecuted(crossChainCallHash, msg.sender, sourceAddress, callData, msg.value);
 
         if (_insideExecution()) {
-            // Inside a cross-chain call: consume the next nested action
+            // Inside a cross-chain call: consume the next reentrant action
             return _consumeNestedAction(crossChainCallHash);
         }
 
@@ -162,7 +209,7 @@ contract EEZL2 is EEZBase {
     ///      `_processNCalls` makes the actual proxy invocation, advances the call counter,
     ///      folds tagged events into the rolling hash, and handles `revertSpan`. Reentrant
     ///      cross-chain calls during execution see `_insideExecution() == true` and consume
-    ///      from `executions[0].nestedActions`.
+    ///      from `executions[0].expectedOutgoingCalls`.
     /// @param destination The L2 destination address (target of the inbound call)
     /// @param value The ETH value forwarded to the destination
     /// @param data The calldata for the destination
@@ -202,30 +249,30 @@ contract EEZL2 is EEZBase {
         emit IncomingCrossChainCallExecuted(crossChainCallHash, destination, value, data, sourceAddress, sourceRollup);
 
         // 3. No entry-context preamble needed: `_currentEntryIndex`, `_rollingHash`,
-        //    `_currentCallNumber`, `_lastNestedActionConsumed` are all `transient` and
+        //    `_currentIncomingCall`, `_lastOutgoingCallConsumed` are all `transient` and
         //    default to zero at the start of every tx. SYSTEM_ADDRESS invokes this as a
         //    top-level call, once per tx — so they're already what `_processNCalls`
-        //    expects (entry index 0, fresh rolling hash, call cursor at 0, nested cursor at 0).
+        //    expects (entry index 0, fresh rolling hash, call cursor at 0, reentrant cursor at 0).
         ExecutionEntry storage entry = executions[0];
 
         // 4. Bind the emitted call hash to the entry (mirrors L1 `_consumeAndExecute`).
         if (entry.proxyEntryHash != crossChainCallHash) revert EntryHashMismatch();
 
-        // 5. Drive the flat call processor — `entry.L2ToL1Calls[0]` is the inbound call,
+        // 5. Drive the flat call processor — `entry.incomingCalls[0]` is the inbound call,
         //    delivered via the source proxy by `_processNCalls`
         _processNCalls(entry.callCount);
 
         // 6. Verify invariants (mirrors `_consumeAndExecute`'s post-checks)
         if (_rollingHash != entry.rollingHash) revert RollingHashMismatch();
-        if (_currentCallNumber != entry.L2ToL1Calls.length) revert UnconsumedCalls();
-        if (_lastNestedActionConsumed != entry.expectedL1ToL2Calls.length) revert UnconsumedNestedActions();
+        if (_currentIncomingCall != entry.incomingCalls.length) revert UnconsumedIncomingCalls();
+        if (_lastOutgoingCallConsumed != entry.expectedOutgoingCalls.length) revert UnconsumedOutgoingCalls();
 
         // 7. Advance past entries[0] so follow-up `executeCrossChainCall`s don't re-consume it.
         //    SYSTEM_ADDRESS is not reentry-reachable so no `_insideExecution()` guard is needed.
         executionIndex = 1;
 
-        emit EntryExecuted(0, _rollingHash, _currentCallNumber, _lastNestedActionConsumed);
-        _currentCallNumber = 0; // reset so _insideExecution() returns false
+        emit EntryExecuted(0, _rollingHash, _currentIncomingCall, _lastOutgoingCallConsumed);
+        _currentIncomingCall = 0; // reset so _insideExecution() returns false
 
         return entry.returnData;
     }
@@ -236,33 +283,54 @@ contract EEZL2 is EEZBase {
 
     /// @notice The execution entry currently being processed. L2 has a single table, so the
     ///         transient `_currentEntryIndex` indexes `executions` directly.
-    function _getCurrentEntryStoragePointer() internal view override returns (ExecutionEntry storage) {
+    function _getCurrentEntryStoragePointer() internal view returns (ExecutionEntry storage) {
         return executions[_currentEntryIndex];
     }
 
     /// @notice The failed LookupCall currently being replayed. L2 has a single `lookupCalls`
     ///         table, indexed directly by the transient pointer.
-    function _currentFailedLookup() internal view override returns (LookupCall storage) {
+    function _currentFailedLookup() internal view returns (LookupCall storage) {
         return lookupCalls[_failedLookupIndex];
     }
 
-    /// @notice Consumes the next nested action, or replays a pre-computed reverting
-    ///         lookup call when no ExpectedL1ToL2Call matches.
+    // ──────────────────────────────────────────────
+    //  Active-execution accessors
+    // ──────────────────────────────────────────────
+    //
+    // `_processNCalls` and `_consumeNestedAction` operate on whichever flat-call / reentrant
+    // table is active: the containing `ExecutionEntry`, or the `LookupCall` being replayed
+    // while `_insideFailedLookup`.
+
+    /// @notice The flat call array driving the current execution.
+    function _activeCalls() internal view returns (CrossChainCall[] storage) {
+        return
+            _insideFailedLookup ? _currentFailedLookup().incomingCalls : _getCurrentEntryStoragePointer().incomingCalls;
+    }
+
+    /// @notice The reentrant (outgoing) table for the current execution.
+    function _activeNested() internal view returns (ExpectedOutgoingCrossChainCall[] storage) {
+        return _insideFailedLookup
+            ? _currentFailedLookup().expectedOutgoingCalls
+            : _getCurrentEntryStoragePointer().expectedOutgoingCalls;
+    }
+
+    /// @notice Consumes the next reentrant action, or replays a pre-computed reverting
+    ///         lookup call when no ExpectedOutgoingCrossChainCall matches.
     /// @dev L2 reverts immediately on no-match (no deferred-revert flag like L1). The
     ///      system-loaded table is trusted, so a no-match is unrecoverable. The post-increment
     ///      below is safe because every fall-through path reverts and rolls the bump back.
     function _consumeNestedAction(bytes32 crossChainCallHash) internal returns (bytes memory) {
-        // Active nested table: the containing entry's, or — while replaying a failed lookup —
-        // that lookup's own `expectedL1ToL2Calls`.
-        ExpectedL1ToL2Call[] storage expectedCalls = _activeNested();
-        uint256 idx = _lastNestedActionConsumed++;
+        // Active reentrant table: the containing entry's, or — while replaying a failed lookup —
+        // that lookup's own `expectedOutgoingCalls`.
+        ExpectedOutgoingCrossChainCall[] storage expectedCalls = _activeNested();
+        uint256 idx = _lastOutgoingCallConsumed++;
 
-        // 1. ExpectedL1ToL2Call priority. The `++` above is the commit; if we fall through, every
+        // 1. ExpectedOutgoingCrossChainCall priority. The `++` above is the commit; if we fall through, every
         //    fallback path reverts and the EVM rolls the bump back.
         if (idx < expectedCalls.length && expectedCalls[idx].crossChainCallHash == crossChainCallHash) {
-            ExpectedL1ToL2Call storage nested = expectedCalls[idx];
+            ExpectedOutgoingCrossChainCall storage nested = expectedCalls[idx];
             uint256 nestedNumber = idx + 1; // 1-indexed
-            emit NestedActionConsumed(_currentEntryIndex, nestedNumber, crossChainCallHash, nested.callCount);
+            emit OutgoingCallConsumed(_currentEntryIndex, nestedNumber, crossChainCallHash, nested.callCount);
             _rollingHashNestedBegin(nestedNumber);
             _processNCalls(nested.callCount);
             _rollingHashNestedEnd(nestedNumber);
@@ -270,16 +338,15 @@ contract EEZL2 is EEZBase {
         }
 
         // 2. Fallback. Lookup key uses `idx` (pre-bump) — that's what the prover observed. A
-        //    match carrying a real state-mutating sub-execution (`callCount > 0`) replays as a
-        //    mini-entry via `_replayFailedLookup`; otherwise it falls to `_resolveLookupCall`,
-        //    which replays any read-only sub-calls then revives the cached revert. Both revert.
-        uint64 callNum = uint64(_currentCallNumber);
+        //    `failed` match replays as a mini-entry via `_replayFailedLookup` (sub-calls, if
+        //    any, run for real), then reverts with the cached `returnData`.
+        uint64 callNum = uint64(_currentIncomingCall);
         uint64 lastNA = uint64(idx);
         for (uint256 i = 0; i < lookupCalls.length; i++) {
             LookupCall storage sc = lookupCalls[i];
             if (
                 sc.failed && sc.crossChainCallHash == crossChainCallHash && sc.callNumber == callNum
-                    && sc.lastNestedActionConsumed == lastNA
+                    && sc.lastOutgoingCallConsumed == lastNA
             ) {
                 _replayFailedLookup(sc, i); // always reverts
             }
@@ -291,14 +358,14 @@ contract EEZL2 is EEZBase {
 
     /// @notice Top-level fallback: scan persistent `lookupCalls` for a `failed` `LookupCall`
     ///         keyed at the top-level context `(crossChainCallHash, 0, 0)` — disjoint from the
-    ///         nested path (`callNumber > 0`). A match is resolved by `_replayFailedLookup`
+    ///         reentrant path (`callNumber > 0`). A match is resolved by `_replayFailedLookup`
     ///         (always reverts); no match returns so the caller reverts `ExecutionNotFound`.
     function _tryRevertedTopLevelLookup(bytes32 crossChainCallHash) internal {
         for (uint256 i = 0; i < lookupCalls.length; i++) {
             LookupCall storage sc = lookupCalls[i];
             if (
                 sc.failed && sc.crossChainCallHash == crossChainCallHash && sc.callNumber == 0
-                    && sc.lastNestedActionConsumed == 0
+                    && sc.lastOutgoingCallConsumed == 0
             ) {
                 _replayFailedLookup(sc, i); // always reverts
             }
@@ -308,7 +375,7 @@ contract EEZL2 is EEZBase {
     /// @notice Consumes the next execution entry, executes calls, and verifies rolling hash
     /// @dev Miss path: when the cursor is out of bounds or the next entry's `proxyEntryHash` doesn't
     ///      match, `_tryRevertedTopLevelLookup` scans persistent `lookupCalls` for a `failed=true`
-    ///      `LookupCall` keyed by `(crossChainCallHash, callNumber=0, lastNestedActionConsumed=0)`.
+    ///      `LookupCall` keyed by `(crossChainCallHash, callNumber=0, lastOutgoingCallConsumed=0)`.
     ///      On match, that helper reverts with the cached `returnData` (so the caller's `try/catch`
     ///      observes the prover-specified revert). On no match the helper returns and we revert
     ///      `ExecutionNotFound`. The cursor is NOT advanced on the miss path.
@@ -328,17 +395,17 @@ contract EEZL2 is EEZBase {
 
         _currentEntryIndex = idx;
         _rollingHash = bytes32(0);
-        _currentCallNumber = 0;
-        _lastNestedActionConsumed = 0;
+        _currentIncomingCall = 0;
+        _lastOutgoingCallConsumed = 0;
 
         _processNCalls(entry.callCount);
 
         if (_rollingHash != entry.rollingHash) revert RollingHashMismatch();
-        if (_currentCallNumber != entry.L2ToL1Calls.length) revert UnconsumedCalls();
-        if (_lastNestedActionConsumed != entry.expectedL1ToL2Calls.length) revert UnconsumedNestedActions();
+        if (_currentIncomingCall != entry.incomingCalls.length) revert UnconsumedIncomingCalls();
+        if (_lastOutgoingCallConsumed != entry.expectedOutgoingCalls.length) revert UnconsumedOutgoingCalls();
 
-        emit EntryExecuted(idx, _rollingHash, _currentCallNumber, _lastNestedActionConsumed);
-        _currentCallNumber = 0; // reset so _insideExecution() returns false
+        emit EntryExecuted(idx, _rollingHash, _currentIncomingCall, _lastOutgoingCallConsumed);
+        _currentIncomingCall = 0; // reset so _insideExecution() returns false
 
         return entry.returnData;
     }
@@ -348,24 +415,23 @@ contract EEZL2 is EEZBase {
         if (msg.sender != address(this)) revert NotSelf();
         _processNCalls(callCount);
         // L2 has no deferred no-match flag — always `false`.
-        revert ContextResult(_rollingHash, _lastNestedActionConsumed, _currentCallNumber, false);
+        revert ContextResult(_rollingHash, _lastOutgoingCallConsumed, _currentIncomingCall, false);
     }
 
-    /// @notice Processes N calls from the flat entry.L2ToL1Calls[] array
-    /// @dev The `int256` return exists only to match the base signature (L1 reports ether out);
-    ///      L2 has no ether accounting, so it always returns 0.
-    function _processNCalls(uint256 count) internal override returns (int256) {
+    /// @notice Processes N calls from the flat entry.incomingCalls[] array
+    /// @dev L2 has no ether accounting (unlike L1), so this returns nothing.
+    function _processNCalls(uint256 count) internal {
         // Active flat-call array: the entry's, or the failed lookup's while replaying one.
-        L2ToL1Call[] storage calls = _activeCalls();
+        CrossChainCall[] storage calls = _activeCalls();
         uint256 processed = 0;
         while (processed < count) {
-            uint256 revertSpan = calls[_currentCallNumber].revertSpan;
+            uint256 revertSpan = calls[_currentIncomingCall].revertSpan;
 
             if (revertSpan == 0) {
-                L2ToL1Call memory cc = calls[_currentCallNumber];
-                _currentCallNumber++;
+                CrossChainCall memory cc = calls[_currentIncomingCall];
+                _currentIncomingCall++;
 
-                _rollingHashCallBegin(_currentCallNumber);
+                _rollingHashCallBegin(_currentIncomingCall);
 
                 address sourceProxy = computeCrossChainProxyAddress(cc.sourceAddress, cc.sourceRollupId);
                 if (authorizedProxies[sourceProxy].originalAddress == address(0)) {
@@ -376,17 +442,17 @@ contract EEZL2 is EEZBase {
                     value: cc.value
                 }(abi.encodeCall(CrossChainProxy.executeOnBehalf, (cc.targetAddress, cc.data)));
 
-                _rollingHashCallEnd(_currentCallNumber, success, retData);
-                emit CallResult(_currentEntryIndex, _currentCallNumber, success, retData);
+                _rollingHashCallEnd(_currentIncomingCall, success, retData);
+                emit CallResult(_currentEntryIndex, _currentIncomingCall, success, retData);
                 processed++;
             } else {
-                uint256 savedCallNumber = _currentCallNumber;
-                calls[_currentCallNumber].revertSpan = 0;
+                uint256 savedCallNumber = _currentIncomingCall;
+                calls[_currentIncomingCall].revertSpan = 0;
 
                 try this.executeInContextAndRevert(revertSpan) {}
                 catch (bytes memory revertData) {
                     // L2 has no deferred no-match flag — ignore the 4th tuple element.
-                    (_rollingHash, _lastNestedActionConsumed, _currentCallNumber,) = _decodeContextResult(revertData);
+                    (_rollingHash, _lastOutgoingCallConsumed, _currentIncomingCall,) = _decodeContextResult(revertData);
                 }
 
                 calls[savedCallNumber].revertSpan = revertSpan;
@@ -394,7 +460,73 @@ contract EEZL2 is EEZBase {
                 processed += revertSpan;
             }
         }
-        return 0; // L2 has no ether accounting
+    }
+
+    // ──────────────────────────────────────────────
+    //  Lookup-call resolution
+    // ──────────────────────────────────────────────
+
+    /// @notice Resolves a static-context `LookupCall`: returns its cached data, or reverts with
+    ///         it when `failed`. Checks the sub-calls' rolling hash.
+    /// @dev Static path only (`staticCallLookup`). Failed lookups consumed during execution go
+    ///      through `_replayFailedLookup`.
+    function _resolveLookupCall(LookupCall storage sc) internal view returns (bytes memory) {
+        // Always compare: empty `calls[]` hashes to 0, which must match a sub-call-less
+        // lookup's `rollingHash` (0) — so malformed lookups are caught uniformly.
+        if (_processNLookupCalls(sc.incomingCalls) != sc.rollingHash) revert RollingHashMismatch();
+        if (sc.failed) {
+            bytes memory returnData = sc.returnData;
+            assembly {
+                revert(add(returnData, 0x20), mload(returnData))
+            }
+        }
+        return sc.returnData;
+    }
+
+    /// @notice Replays a `failed` LookupCall as a self-contained mini-entry, then reverts with its
+    ///         cached `returnData`. Runs INLINE in the consuming `executeCrossChainCall` frame; the
+    ///         terminal revert discards the sub-call state AND restores the outer cursors (the EVM
+    ///         rolls back every tstore here), so the pre-revert checks need no `ContextResult`
+    ///         escape. Nested failed lookups compose via the same unwind.
+    function _replayFailedLookup(LookupCall storage sc, uint256 index) internal {
+        // Pointer for deeper frames to re-derive this lookup (`_currentFailedLookup()`); storage
+        // refs can't be transient. L2 has a single table, so only the index is needed.
+        _failedLookupIndex = index;
+        _insideFailedLookup = true;
+
+        // Fresh sub-execution context (rolled back by the terminal revert).
+        _rollingHash = bytes32(0);
+        _currentIncomingCall = 0;
+        _lastOutgoingCallConsumed = 0;
+
+        _processNCalls(sc.callCount);
+
+        // Entry-style end checks against the lookup's own expected values.
+        if (_rollingHash != sc.rollingHash) revert RollingHashMismatch();
+        if (_currentIncomingCall != sc.incomingCalls.length) revert UnconsumedIncomingCalls();
+        if (_lastOutgoingCallConsumed != sc.expectedOutgoingCalls.length) revert UnconsumedOutgoingCalls();
+
+        bytes memory returnData = sc.returnData;
+        assembly {
+            revert(add(returnData, 0x20), mload(returnData))
+        }
+    }
+
+    /// @notice Executes the lookup call's optional `calls[]` in static context and computes a
+    ///         rolling hash of the results (untagged static schema). No `revertSpan` handling.
+    /// @dev All proxies referenced must already be deployed; CREATE2 is unavailable inside a
+    ///      STATICCALL frame. The accumulator is a local, not `_rollingHash`, so this is verified
+    ///      against `LookupCall.rollingHash`. See `docs/SYNC_ROLLUPS_PROTOCOL_SPEC.md` §E.2.
+    function _processNLookupCalls(CrossChainCall[] memory calls) internal view returns (bytes32 computedHash) {
+        for (uint256 i = 0; i < calls.length; i++) {
+            CrossChainCall memory cc = calls[i];
+            address sourceProxy = computeCrossChainProxyAddress(cc.sourceAddress, cc.sourceRollupId);
+            // STATICCALL to a codeless address silently succeeds — reject so the prover can't pre-hash a no-op.
+            if (sourceProxy.code.length == 0) revert LookupCallProxyNotDeployed(sourceProxy);
+            (bool success, bytes memory retData) =
+                sourceProxy.staticcall(abi.encodeCall(CrossChainProxy.executeOnBehalf, (cc.targetAddress, cc.data)));
+            computedHash = _rollingHashStaticResult(computedHash, success, retData);
+        }
     }
 
     // ──────────────────────────────────────────────
@@ -402,7 +534,7 @@ contract EEZL2 is EEZBase {
     // ──────────────────────────────────────────────
 
     /// @notice Looks up a pre-computed lookup call result from the lookupCalls table
-    /// @dev Matches by crossChainCallHash + current call number + last nested action consumed.
+    /// @dev Matches by crossChainCallHash + current incoming call number + last outgoing call consumed.
     ///      tload works in static context, so transient tracking variables are readable.
     /// @param sourceAddress The original caller address (msg.sender as seen by the proxy)
     /// @param callData The original calldata sent to the proxy
@@ -420,14 +552,14 @@ contract EEZL2 is EEZBase {
             ROLLUP_ID
         );
 
-        uint64 callNum = uint64(_currentCallNumber);
-        uint64 lastNA = uint64(_lastNestedActionConsumed);
+        uint64 callNum = uint64(_currentIncomingCall);
+        uint64 lastNA = uint64(_lastOutgoingCallConsumed);
 
         for (uint256 i = 0; i < lookupCalls.length; i++) {
             LookupCall storage sc = lookupCalls[i];
             if (
                 sc.crossChainCallHash == crossChainCallHash && sc.callNumber == callNum
-                    && sc.lastNestedActionConsumed == lastNA
+                    && sc.lastOutgoingCallConsumed == lastNA
             ) {
                 return _resolveLookupCall(sc);
             }

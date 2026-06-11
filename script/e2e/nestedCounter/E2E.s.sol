@@ -6,16 +6,29 @@ import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} f
 import {EEZL2} from "../../../src/L2/EEZL2.sol";
 import {IEEZ} from "../../../src/interfaces/IEEZ.sol";
 import {StateDelta, L2ToL1Call, ExpectedL1ToL2Call, ExecutionEntry, LookupCall} from "../../../src/interfaces/IEEZ.sol";
+import {
+    ExecutionEntry as L2ExecutionEntry,
+    LookupCall as L2LookupCall,
+    CrossChainCall,
+    ExpectedOutgoingCrossChainCall
+} from "../../../src/interfaces/IEEZL2.sol";
 import {Counter, CounterAndProxy} from "../../../test/mocks/CounterContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
-import {Action, actionHash, noLookupCalls, getOrCreateProxy, RollingHashBuilder} from "../shared/E2EHelpers.sol";
+import {
+    Action,
+    actionHash,
+    noLookupCalls,
+    noL2LookupCalls,
+    getOrCreateProxy,
+    RollingHashBuilder
+} from "../shared/E2EHelpers.sol";
 
 // ═══════════════════════════════════════════════════════════════════════
 //  NestedCounter scenario — exercises ExecutionEntry.expectedL1ToL2Calls[] (two-sided)
 //
 //  L1 side (Execute):
 //    1. Alice triggers an outer entry consumption via the L1-side CAP@L2 proxy.
-//    2. Entry.L2ToL1Calls[0] invokes CounterAndProxy.incrementProxy() (on L1).
+//    2. Entry.l2ToL1Calls[0] invokes CounterAndProxy.incrementProxy() (on L1).
 //    3. CAP@L1 calls the counter proxy reentrantly — triggers a nested cross-chain call.
 //    4. EEZ._consumeNestedAction matches expectedL1ToL2Calls[0] by crossChainCallHash.
 //    5. Nested action returns abi.encode(uint256(1)) — CAP reads targetCounter = 1.
@@ -29,7 +42,7 @@ import {Action, actionHash, noLookupCalls, getOrCreateProxy, RollingHashBuilder}
 //       L2 into capL2.incrementProxy().
 //    3. capL2.target = counterL1ProxyOnL2 — capL2 reentrant-calls back to L1 via the
 //       L2-side cross-chain proxy. The L2 manager matches the inner hash against
-//       expectedL1ToL2Calls[0] and returns the cached 1.
+//       expectedOutgoingCalls[0] and returns the cached 1.
 //    4. After: capL2.counter == 1, capL2.targetCounter == 1.
 //
 //  The two sides exercise the same flatten primitive (one outer + one nested) — each on
@@ -148,7 +161,7 @@ abstract contract NestedActions {
             stateDeltas: deltas,
             proxyEntryHash: _l1OuterHash(cap, alice),
             destinationRollupId: L2_ROLLUP_ID,
-            L2ToL1Calls: calls,
+            l2ToL1Calls: calls,
             expectedL1ToL2Calls: nested,
             callCount: 1,
             returnData: "",
@@ -161,10 +174,10 @@ abstract contract NestedActions {
     function _l2Entries(address counterL1, address capL2, address alice)
         internal
         pure
-        returns (ExecutionEntry[] memory entries)
+        returns (L2ExecutionEntry[] memory entries)
     {
-        L2ToL1Call[] memory calls = new L2ToL1Call[](1);
-        calls[0] = L2ToL1Call({
+        CrossChainCall[] memory calls = new CrossChainCall[](1);
+        calls[0] = CrossChainCall({
             targetAddress: capL2,
             value: 0,
             data: abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),
@@ -173,18 +186,16 @@ abstract contract NestedActions {
             revertSpan: 0
         });
 
-        ExpectedL1ToL2Call[] memory nested = new ExpectedL1ToL2Call[](1);
-        nested[0] = ExpectedL1ToL2Call({
+        ExpectedOutgoingCrossChainCall[] memory nested = new ExpectedOutgoingCrossChainCall[](1);
+        nested[0] = ExpectedOutgoingCrossChainCall({
             crossChainCallHash: _l2InnerHash(counterL1, capL2), callCount: 0, returnData: abi.encode(uint256(1))
         });
 
-        entries = new ExecutionEntry[](1);
-        entries[0] = ExecutionEntry({
-            stateDeltas: new StateDelta[](0),
+        entries = new L2ExecutionEntry[](1);
+        entries[0] = L2ExecutionEntry({
             proxyEntryHash: _l2OuterHash(capL2, alice),
-            destinationRollupId: L2_ROLLUP_ID,
-            L2ToL1Calls: calls,
-            expectedL1ToL2Calls: nested,
+            incomingCalls: calls,
+            expectedOutgoingCalls: nested,
             callCount: 1,
             returnData: "",
             rollingHash: _expectedRollingHash()
@@ -317,7 +328,7 @@ contract Batcher {
 /// ExecuteL2 — local mode: SYSTEM-driven L2 simulation of the inbound nested call.
 /// `_processNCalls` lazily creates the source proxy for (alice, MAINNET) on first use,
 /// then forwards capL2.incrementProxy() through it; capL2's reentrant call to its
-/// counterL1 proxy hits `_consumeNestedAction`, which matches expectedL1ToL2Calls[0].
+/// counterL1 proxy hits `_consumeNestedAction`, which matches expectedOutgoingCalls[0].
 /// Env: MANAGER_L2, COUNTER_L1, COUNTER_AND_PROXY_L2
 contract ExecuteL2 is Script, NestedActions {
     function run() external {
@@ -337,7 +348,7 @@ contract ExecuteL2 is Script, NestedActions {
                 alice,
                 MAINNET_ROLLUP_ID,
                 _l2Entries(counterL1Addr, capL2Addr, alice),
-                noLookupCalls()
+                noL2LookupCalls()
             );
 
         console.log("done");
@@ -418,7 +429,7 @@ contract ComputeExpected is ComputeExpectedBase, NestedActions {
         address aliceL2 = msg.sender;
 
         ExecutionEntry[] memory l1 = _l1Entries(counterL2Addr, capAddr, aliceL1);
-        ExecutionEntry[] memory l2 = _l2Entries(counterL1Addr, capL2Addr, aliceL2);
+        L2ExecutionEntry[] memory l2 = _l2Entries(counterL1Addr, capL2Addr, aliceL2);
 
         bytes32 l1Hash = _entryHash(l1[0]);
         bytes32 l2Hash = _entryHash(l2[0]);

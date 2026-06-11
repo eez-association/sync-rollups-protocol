@@ -10,8 +10,14 @@ import {
     ExpectedL1ToL2Call,
     ExecutionEntry,
     LookupCall,
-    ExpectedQueueIndex
+    ExpectedQueueIndexPerRollup
 } from "../../../src/interfaces/IEEZ.sol";
+import {
+    ExecutionEntry as L2ExecutionEntry,
+    LookupCall as L2LookupCall,
+    CrossChainCall,
+    ExpectedOutgoingCrossChainCall
+} from "../../../src/interfaces/IEEZL2.sol";
 import {Counter, SafeCounterAndProxy} from "../../../test/mocks/CounterContracts.sol";
 import {ComputeExpectedBase} from "../shared/ComputeExpectedBase.sol";
 import {crossChainCallHash, noLookupCalls, RollingHashBuilder} from "../shared/E2EHelpers.sol";
@@ -24,14 +30,14 @@ import {crossChainCallHash, noLookupCalls, RollingHashBuilder} from "../shared/E
 //    catch { lastCallFailed = true }
 //    counter++
 //
-//  Per CAVEATS.md, a reverting reentrant call is modeled as a `StaticCall`
-//  with `failed = true` (NOT a ExpectedL1ToL2Call — a failed ExpectedL1ToL2Call's revert
+//  Per CAVEATS.md, a reverting reentrant call is modeled as a `LookupCall`
+//  with `failed = true` (NOT an ExpectedL1ToL2Call — a failed ExpectedL1ToL2Call's revert
 //  rolls back the consumption-cursor bump, making consumption silent and
 //  unverifiable). _consumeNestedAction's fallback path scans persistent
-//  staticCalls keyed by (actionHash, _currentCallNumber, lastNestedActionConsumed)
-//  and reverts with the cached returnData when a `failed=true` StaticCall matches.
+//  lookupCalls keyed by (actionHash, call number, last consumed reentrant index)
+//  and reverts with the cached returnData when a `failed=true` LookupCall matches.
 //
-//  Result: nestedActions.length must be 0 and staticCalls contains the
+//  Result: expectedL1ToL2Calls.length must be 0 and lookupCalls contains the
 //  failed=true entry. The rolling hash only has CALL_BEGIN/CALL_END
 //  (no NESTED tags), since the failed reentrant call is replayed as a
 //  static-call revert outside the rolling-hash chain.
@@ -101,7 +107,7 @@ abstract contract NestedCallRevertActions {
             stateDeltas: deltas,
             proxyEntryHash: _outerActionHash(scap, alice),
             destinationRollupId: L2_ROLLUP_ID,
-            L2ToL1Calls: calls,
+            l2ToL1Calls: calls,
             expectedL1ToL2Calls: new ExpectedL1ToL2Call[](0),
             callCount: 1,
             returnData: "",
@@ -110,9 +116,9 @@ abstract contract NestedCallRevertActions {
     }
 
     /// @dev LookupCall that models the reverting reentrant call. Keyed by
-    ///      (innerActionHash, callNumber=1, lastNestedActionConsumed=0) — the
+    ///      (innerActionHash, l2ToL1CallNumber=1, lastL1ToL2CallConsumed=0) — the
     ///      same key the lookup uses when SCAP's inner call hits the manager.
-    ///      `failed=true` makes _resolveStaticCall revert with returnData.
+    ///      `failed=true` makes the lookup fallback revert with returnData.
     function _l1LookupCalls(address counterL2, address scap) internal pure returns (LookupCall[] memory statics) {
         statics = new LookupCall[](1);
         statics[0] = LookupCall({
@@ -120,13 +126,13 @@ abstract contract NestedCallRevertActions {
             destinationRollupId: L2_ROLLUP_ID,
             returnData: bytes("inner reverts"),
             failed: true,
-            callNumber: 1,
-            lastNestedActionConsumed: 0,
-            calls: new L2ToL1Call[](0),
+            l2ToL1CallNumber: 1,
+            lastL1ToL2CallConsumed: 0,
+            l2ToL1Calls: new L2ToL1Call[](0),
             expectedL1ToL2Calls: new ExpectedL1ToL2Call[](0),
             callCount: 0,
             rollingHash: bytes32(0),
-            expectedQueueIndices: new ExpectedQueueIndex[](0)
+            expectedQueueIndices: new ExpectedQueueIndexPerRollup[](0)
         });
     }
 
@@ -156,9 +162,9 @@ abstract contract NestedCallRevertActions {
         );
     }
 
-    function _l2Entries(address scapL2, address batcherL1) internal pure returns (ExecutionEntry[] memory entries) {
-        L2ToL1Call[] memory calls = new L2ToL1Call[](1);
-        calls[0] = L2ToL1Call({
+    function _l2Entries(address scapL2, address batcherL1) internal pure returns (L2ExecutionEntry[] memory entries) {
+        CrossChainCall[] memory calls = new CrossChainCall[](1);
+        calls[0] = CrossChainCall({
             targetAddress: scapL2,
             value: 0,
             data: abi.encodeWithSelector(SafeCounterAndProxy.incrementProxy.selector),
@@ -167,13 +173,11 @@ abstract contract NestedCallRevertActions {
             revertSpan: 0
         });
 
-        entries = new ExecutionEntry[](1);
-        entries[0] = ExecutionEntry({
-            stateDeltas: new StateDelta[](0),
+        entries = new L2ExecutionEntry[](1);
+        entries[0] = L2ExecutionEntry({
             proxyEntryHash: _outerActionHashL2(scapL2, batcherL1),
-            destinationRollupId: L2_ROLLUP_ID,
-            L2ToL1Calls: calls,
-            expectedL1ToL2Calls: new ExpectedL1ToL2Call[](0),
+            incomingCalls: calls,
+            expectedOutgoingCalls: new ExpectedOutgoingCrossChainCall[](0),
             callCount: 1,
             returnData: "",
             rollingHash: _expectedRollingHash()
@@ -183,21 +187,19 @@ abstract contract NestedCallRevertActions {
     /// @dev LookupCall on L2 modelling the reverting reentrant call to Counter on MAINNET.
     ///      Same mechanism as the L1-side LookupCall — _consumeNestedAction falls back
     ///      to the persistent lookupCalls list and reverts with `returnData` when the
-    ///      key (hash, callNumber=1, lastNestedActionConsumed=0) matches.
-    function _l2LookupCalls(address counterL1, address scapL2) internal pure returns (LookupCall[] memory statics) {
-        statics = new LookupCall[](1);
-        statics[0] = LookupCall({
+    ///      key (hash, callNumber=1, lastOutgoingCallConsumed=0) matches.
+    function _l2LookupCalls(address counterL1, address scapL2) internal pure returns (L2LookupCall[] memory statics) {
+        statics = new L2LookupCall[](1);
+        statics[0] = L2LookupCall({
             crossChainCallHash: _innerActionHashL2(counterL1, scapL2),
-            destinationRollupId: L2_ROLLUP_ID,
             returnData: bytes("inner reverts"),
             failed: true,
             callNumber: 1,
-            lastNestedActionConsumed: 0,
-            calls: new L2ToL1Call[](0),
-            expectedL1ToL2Calls: new ExpectedL1ToL2Call[](0),
+            lastOutgoingCallConsumed: 0,
+            incomingCalls: new CrossChainCall[](0),
+            expectedOutgoingCalls: new ExpectedOutgoingCrossChainCall[](0),
             callCount: 0,
-            rollingHash: bytes32(0),
-            expectedQueueIndices: new ExpectedQueueIndex[](0)
+            rollingHash: bytes32(0)
         });
     }
 }
@@ -343,7 +345,7 @@ contract Batcher {
 // ExecuteL2 - L2-side mirror. SYSTEM-driven via executeIncomingCrossChainCall:
 // loads the L2 entry + the failed=true LookupCall, then runs SafeCAP (on L2) incrementProxy().
 // SafeCAP's inner reentrant call hits managerL2._consumeNestedAction, falls back to the
-// persistent lookupCalls list (no ExpectedL1ToL2Call match), finds the failed=true
+// persistent lookupCalls list (no ExpectedOutgoingCrossChainCall match), finds the failed=true
 // LookupCall and reverts with the cached returnData. SafeCAP's try/catch catches it.
 // Final state on L2: SafeCAP.counter=1, SafeCAP.lastCallFailed=true, SafeCAP.targetCounter=0.
 contract ExecuteL2 is Script, NestedCallRevertActions {
@@ -442,8 +444,8 @@ contract ComputeExpected is ComputeExpectedBase, NestedCallRevertActions {
 
         ExecutionEntry[] memory l1 = _l1Entries(scapAddr, alice);
         LookupCall[] memory statics = _l1LookupCalls(counterL2, scapAddr);
-        ExecutionEntry[] memory l2 = _l2Entries(scapL2, alice);
-        LookupCall[] memory l2Statics = _l2LookupCalls(counterL1, scapL2);
+        L2ExecutionEntry[] memory l2 = _l2Entries(scapL2, alice);
+        L2LookupCall[] memory l2Statics = _l2LookupCalls(counterL1, scapL2);
         bytes32 l1Hash = _entryHash(l1[0]);
         bytes32 l2Hash = _entryHash(l2[0]);
 

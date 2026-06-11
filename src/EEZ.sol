@@ -41,7 +41,7 @@ struct RollupIdWithProofSystems {
 ///         accepts via `RollupIdWithProofSystems[r].proofSystemIndex`.
 /// @dev The participating rollups (read off `RollupIdWithProofSystems[r].rollupId`) must be
 ///      strictly increasing — paired with the once-per-block-per-rollup invariant on
-///      `_markVerifiedThisBlock`, this prevents a single batch from verifying the same
+///      `_markVerifiedBlockPerRollup`, this prevents a single batch from verifying the same
 ///      rollup twice. `proofSystems[]` is the batch-global PS list (strictly increasing,
 ///      rejects address(0) and duplicates). Each rollup's `proofSystemIndex[]` is strictly
 ///      increasing too, indices in `[0, proofSystems.length)`, and its length must satisfy
@@ -68,18 +68,17 @@ struct ProofSystemBatchPerVerificationEntries {
     uint64 blockNumber;
 }
 
-/// @notice Per-rollup deferred-consumption queue + once-per-block guard
+/// @notice Per-rollup deferred-consumption queue + per-block reset marker
 /// @dev `lastVerifiedBlock` doubles as:
-///        (a) the once-per-block-per-rollup invariant (a rollup can be verified at most once
-///            per L1 block — required so multiple `postAndVerifyBatch` calls in the same block are
-///            only allowed on disjoint rollup sets);
+///        (a) per-block reset marker — every `postAndVerifyBatch` that touches `rid` wipes this
+///            rollup's queue and cursor (see `_markVerifiedBlockPerRollup`), so a same-block
+///            re-verify REPLACES (does not append to) the prior batch's entries;
 ///        (b) read gate for consumers (entries can only be consumed in the block they were
 ///            posted — `executeCrossChainCall` / `executeL2TX` / `staticCallLookup` all gate
-///            on `lastVerifiedBlock(rid) == block.number`);
+///            on `lastVerifiedBlock(rid) == block.number`), which also means a stale queue from
+///            a prior block is never read — it's simply overwritten on the next verify;
 ///        (c) lockout signal for the registry's owner-escape path `EEZ.setStateRoot`,
-///            which reverts `RollupBatchActiveThisBlock` when this equals `block.number`;
-///        (d) the lazy-reset signal — when `lastVerifiedBlock < block.number` the queue is
-///            considered empty, no explicit cleanup pass needed.
+///            which reverts `RollupBatchActiveThisBlock` when this equals `block.number`.
 struct RollupVerification {
     uint256 lastVerifiedBlock;
     ExecutionEntry[] executionQueue;
@@ -156,7 +155,7 @@ contract EEZ is EEZBase {
     uint256 transient _transientExecutionIndex;
 
     // No dedicated `_inPostBatch` flag — `_transientExecutions.length != 0` already
-    // identifies the dangerous re-entry window (from `_loadTransient` through cleanup).
+    // identifies the dangerous re-entry window (from `_loadTransientExecutions` through cleanup).
     // Steps 1-3 of `postAndVerifyBatch` (validate, verify-STATICCALL, mark-verified) have no
     // external calls, and step 7 (publish) has no external calls either, so neither
     // needs guarding.
@@ -182,6 +181,11 @@ contract EEZ is EEZBase {
     /// @dev Also used by `staticCallLookup` to disambiguate multiple lookup calls within the same call.
     uint256 transient _lastL1ToL2CallConsumed;
 
+    /// @notice Rollup whose persistent `lookupQueue` holds the failed LookupCall being replayed.
+    /// @dev Pairs with the base's `_failedLookupIndex`; 0 for a transient-table match. L1-only —
+    ///      L2 has a single lookup table and needs no rollup routing.
+    uint256 transient _failedLookupRollupId;
+
     /// @notice Emitted when a new rollup is created
     event RollupCreated(uint256 indexed rollupId, address indexed rollupContract, bytes32 initialState);
 
@@ -192,7 +196,9 @@ contract EEZ is EEZBase {
     event L2ExecutionPerformed(uint256 indexed rollupId, bytes32 newState);
 
     /// @notice Emitted when an execution entry is consumed
-    event ExecutionConsumed(bytes32 indexed crossChainCallHash, uint256 indexed rollupId, uint256 indexed executionQueueIndex);
+    event ExecutionConsumed(
+        bytes32 indexed crossChainCallHash, uint256 indexed rollupId, uint256 indexed executionQueueIndex
+    );
 
     /// @notice Emitted when a precomputed L2 transaction is executed
     event L2TXExecuted(uint256 indexed rollupId, uint256 indexed executionQueueIndex);
@@ -374,7 +380,7 @@ contract EEZ is EEZBase {
         // Reentrancy guard. Per-rollup `lastVerifiedBlock` blocks same-rollup re-entry, but a
         // disjoint-rollup nested call (e.g., from the meta hook) would otherwise share the
         // same `_transientExecutions` / `_transientLookupCalls` storage and corrupt them.
-        // `_transientExecutions.length != 0` is true from `_loadTransient` through cleanup,
+        // `_transientExecutions.length != 0` is true from `_loadTransientExecutions` through cleanup,
         // covering the entire window where a meta-hook callback could reach back here.
         // `_insideExecution()` is NOT sufficient — it's false during the meta hook window
         // (between proxy calls), missing the most common reentry path.
@@ -393,7 +399,7 @@ contract EEZ is EEZBase {
         //    are `view` → dispatched via STATICCALL by the compiler. State mutations inside
         //    a STATICCALL frame (including nested calls) revert at the EVM level, so a
         //    malicious manager / verifier cannot reenter (state-mutating). Safe to perform
-        //    these external calls before `_markVerifiedThisBlock`.
+        //    these external calls before `_markVerifiedBlockPerRollup`.
         bytes32[][] memory vkMatrix = _fetchVkMatrix(batch);
         _verifyProofSystemBatch(batch, vkMatrix);
 
@@ -403,11 +409,11 @@ contract EEZ is EEZBase {
         //    `_processNCalls` (which calls into proxies via non-view CALL — those CAN reenter,
         //    so the lastVerifiedBlock guard is what they hit).
         for (uint256 r = 0; r < batch.rollupIdsWithProofSystems.length; r++) {
-            _markVerifiedThisBlock(batch.rollupIdsWithProofSystems[r].rollupId);
+            _markVerifiedBlockPerRollup(batch.rollupIdsWithProofSystems[r].rollupId);
         }
 
         // 4. Build the transient stream from the leading prefix.
-        _loadTransient(batch);
+        _loadTransientExecutions(batch);
 
         // 5. Drain the leading run of transient entries with `proxyEntryHash == 0` inline.
         //    These are the "pure L2 transactions + L2 transactions that touch L1" entries —
@@ -456,7 +462,7 @@ contract EEZ is EEZBase {
         //    lost with the dropped transient leftover will simply fail its `StateRootMismatch`
         //    check at consumption time. Publishing regardless means a hook that consumed
         //    nothing still leaves the deferred queue usable.
-        _publishRemainder(batch);
+        _publishRemainderExecutions(batch);
 
         emit BatchPosted(batch.rollupIdsWithProofSystems.length);
     }
@@ -530,7 +536,7 @@ contract EEZ is EEZBase {
 
         // Every entry's destinationRollupId AND every state delta's rollupId must belong to
         // the batch. The destination check is what prevents an adversarial prover from
-        // routing an entry into a non-participating rollup's queue during `_publishRemainder`.
+        // routing an entry into a non-participating rollup's queue during `_publishRemainderExecutions`.
         // Same constraint for lookup calls.
         for (uint256 i = 0; i < batch.entries.length; i++) {
             ExecutionEntry calldata entry = batch.entries[i];
@@ -674,28 +680,26 @@ contract EEZ is EEZBase {
         }
     }
 
-    /// @notice Marks `rid` as verified this block. Multiple verifications per rollup per
-    ///         block are allowed — subsequent calls in the same block append to the existing
-    ///         queue without resetting the cursor, so already-published entries remain
-    ///         consumable.
-    /// @dev Lazy reset: only on the FIRST touch this block (i.e., `lastVerifiedBlock <
-    ///      block.number`) do we wipe the queue and zero the cursor. On a same-block re-touch
-    ///      we leave the queue / lookupQueue / cursor alone; `_publishRemainder` will push
-    ///      additional entries onto the existing queue.
-    function _markVerifiedThisBlock(uint256 rid) internal {
+    /// @notice Marks `rid` as verified this block and resets its queue.
+    /// @dev Wipes the execution / lookup queues and cursor on EVERY verify — including a
+    ///      same-block re-verify, where a second proven batch fully SUPERSEDES the first for
+    ///      this rollup (no append). Safe because state only mutates at consumption and every
+    ///      entry is gated by `StateDelta.currentState`: any dropped entry a later batch
+    ///      wrongly assumed had applied fails `StateRootMismatch` loudly rather than corrupting
+    ///      state — so discarding unconsumed-but-proven entries is a liveness choice, not a
+    ///      safety one.
+    function _markVerifiedBlockPerRollup(uint256 rid) internal {
         RollupVerification storage rec = verificationByRollup[rid];
-        if (rec.lastVerifiedBlock != block.number) {
-            rec.lastVerifiedBlock = block.number;
-            // First touch this block — clear stale persistent state from prior blocks.
-            if (rec.executionQueue.length != 0) delete rec.executionQueue;
-            if (rec.lookupQueue.length != 0) delete rec.lookupQueue;
-            rec.executionQueueIndex = 0;
-        }
+        rec.lastVerifiedBlock = block.number;
+        // Wipe on every verify: a same-block verify replaces the queue.
+        delete rec.executionQueue;
+        delete rec.lookupQueue;
+        rec.executionQueueIndex = 0;
     }
 
     /// @notice Builds the transient stream from the batch's leading prefix
     /// @dev The bounds are validated in `_validateStructure` so we don't re-check here.
-    function _loadTransient(ProofSystemBatchPerVerificationEntries calldata batch) internal {
+    function _loadTransientExecutions(ProofSystemBatchPerVerificationEntries calldata batch) internal {
         for (uint256 i = 0; i < batch.transientExecutionEntryCount; i++) {
             _transientExecutions.push(batch.entries[i]);
         }
@@ -706,7 +710,7 @@ contract EEZ is EEZBase {
 
     /// @notice Publishes the batch remainder (entries past `transientExecutionEntryCount`)
     ///         into per-rollup queues keyed by `destinationRollupId`
-    function _publishRemainder(ProofSystemBatchPerVerificationEntries calldata batch) internal {
+    function _publishRemainderExecutions(ProofSystemBatchPerVerificationEntries calldata batch) internal {
         for (uint256 i = batch.transientExecutionEntryCount; i < batch.entries.length; i++) {
             uint256 destRid = batch.entries[i].destinationRollupId;
             verificationByRollup[destRid].executionQueue.push(batch.entries[i]);
@@ -859,8 +863,9 @@ contract EEZ is EEZBase {
         }
 
         // Per-rollup queue: route by the active context's destination rollup.
-        uint256 destRid =
-            _insideFailedLookup ? _currentFailedLookup().destinationRollupId : _getCurrentEntryStoragePointer().destinationRollupId;
+        uint256 destRid = _insideFailedLookup
+            ? _currentFailedLookup().destinationRollupId
+            : _getCurrentEntryStoragePointer().destinationRollupId;
         LookupCall[] storage lookupQueue = verificationByRollup[destRid].lookupQueue;
         for (uint256 i = 0; i < lookupQueue.length; i++) {
             LookupCall storage sc = lookupQueue[i];
@@ -1065,7 +1070,7 @@ contract EEZ is EEZBase {
             }
         }
     }
-    
+
     // ──────────────────────────────────────────────
     //  Predicates
     // ──────────────────────────────────────────────
@@ -1251,7 +1256,6 @@ contract EEZ is EEZBase {
         }
     }
 
-
     // ──────────────────────────────────────────────
     //  Rollup management (only registered manager)
     // ──────────────────────────────────────────────
@@ -1277,7 +1281,6 @@ contract EEZ is EEZBase {
         rollups[rollupId].stateRoot = newStateRoot;
         emit StateUpdated(rollupId, newStateRoot);
     }
-
 
     // ──────────────────────────────────────────────
     //  Internal helpers
