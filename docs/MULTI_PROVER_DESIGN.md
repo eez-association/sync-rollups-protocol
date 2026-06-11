@@ -59,7 +59,7 @@ per-rollup-manager refactor on `feature/flatten`. Updated as the design evolves.
 | `src/interfaces/IRollup.sol` | Declares `IRollupContract` — interface the registry calls back into |
 | `src/interfaces/IProofSystem.sol` | Interface for proof-verifying contracts |
 | `src/interfaces/IEEZ.sol` | Shared `ProxyInfo` + `IEEZ` interface, plus the L1 execution structs (`StateDelta`, `ExecutionEntry`, `LookupCall`, `L2ToL1Call`, `ExpectedL1ToL2Call`, …) |
-| `src/interfaces/IEEZL2.sol` | L2 execution structs with self-relative directional names (`CrossChainCall`, `ExpectedOutgoingCrossChainCall`, `ExecutionEntry`, `LookupCall`) — leaner than L1's (no `StateDelta` / `destinationRollupId` / `ExpectedQueueIndexPerRollup`) |
+| `src/interfaces/IEEZL2.sol` | L2 execution structs with self-relative directional names (`CrossChainCall`, `ExpectedOutgoingCrossChainCall`, `ExpectedLookup`, `ExecutionEntry`, `LookupCall`) — leaner than L1's (no `StateDelta` / `destinationRollupId` / `ExpectedStateRootPerRollup`) |
 | `src/interfaces/IMetaCrossChainReceiver.sol` | Callback fired on `postAndVerifyBatch`'s sender to drive the transient stream |
 | `src/base/CrossChainProxy.sol` | CREATE2-deployed proxy per (originalAddress, originalRollupId); immutable `EEZ` points at the manager |
 
@@ -194,8 +194,8 @@ consumers gate on `lastVerifiedBlock == block.number`.
   Routes to `verificationByRollup[rid].lookupQueue` (after scanning the global transient
   lookup-call table first).
 - `_consumeNestedAction`: `ExpectedL1ToL2Call` entries live within an entry (no routing);
-  the failed-lookup fallback scans the transient table then the active context's destination
-  rollup's `lookupQueue`.
+  the failed-lookup fallback scans the entry's own `expectedLookups` table (entry-scoped —
+  no queue routing at all).
 
 ### Transient phase (intra-tx)
 

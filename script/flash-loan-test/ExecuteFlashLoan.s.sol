@@ -7,10 +7,18 @@ import {EEZL2} from "../../src/L2/EEZL2.sol";
 import {Bridge} from "../../src/periphery/Bridge.sol";
 import {FlashLoan} from "../../src/periphery/defiMock/FlashLoan.sol";
 import {FlashLoanBridgeExecutor} from "../../src/periphery/defiMock/FlashLoanBridgeExecutor.sol";
-import {ExecutionEntry, StateDelta, L2ToL1Call, ExpectedL1ToL2Call, LookupCall} from "../../src/interfaces/IEEZ.sol";
+import {
+    ExecutionEntry,
+    StateDelta,
+    L2ToL1Call,
+    ExpectedL1ToL2Call,
+    LookupCall,
+    ExpectedLookup
+} from "../../src/interfaces/IEEZ.sol";
 import {
     ExecutionEntry as L2ExecutionEntry,
     LookupCall as L2LookupCall,
+    ExpectedLookup as L2ExpectedLookup,
     CrossChainCall,
     ExpectedOutgoingCrossChainCall
 } from "../../src/interfaces/IEEZL2.sol";
@@ -120,6 +128,7 @@ contract ExecuteFlashLoanL2 is Script {
             proxyEntryHash: actionHash0,
             incomingCalls: noCalls,
             expectedOutgoingCalls: noNested,
+            expectedLookups: new L2ExpectedLookup[](0),
             callCount: 0,
             returnData: "",
             rollingHash: bytes32(0)
@@ -129,6 +138,7 @@ contract ExecuteFlashLoanL2 is Script {
             proxyEntryHash: actionHash1,
             incomingCalls: noCalls,
             expectedOutgoingCalls: noNested,
+            expectedLookups: new L2ExpectedLookup[](0),
             callCount: 0,
             returnData: "",
             rollingHash: bytes32(0)
@@ -138,6 +148,7 @@ contract ExecuteFlashLoanL2 is Script {
             proxyEntryHash: actionHash2,
             incomingCalls: noCalls,
             expectedOutgoingCalls: noNested,
+            expectedLookups: new L2ExpectedLookup[](0),
             callCount: 0,
             returnData: "",
             rollingHash: bytes32(0)
@@ -311,6 +322,7 @@ contract ExecuteFlashLoanL1 is Script {
             destinationRollupId: L2_ROLLUP_ID,
             l2ToL1Calls: noCalls,
             expectedL1ToL2Calls: noNested,
+            expectedLookups: new ExpectedLookup[](0),
             callCount: 0,
             returnData: "",
             rollingHash: bytes32(0)
@@ -327,6 +339,7 @@ contract ExecuteFlashLoanL1 is Script {
             destinationRollupId: L2_ROLLUP_ID,
             l2ToL1Calls: noCalls,
             expectedL1ToL2Calls: nested1,
+            expectedLookups: new ExpectedLookup[](0),
             callCount: 0,
             returnData: "",
             rollingHash: _computeRollingHashForNested1()
@@ -339,6 +352,7 @@ contract ExecuteFlashLoanL1 is Script {
             destinationRollupId: L2_ROLLUP_ID,
             l2ToL1Calls: noCalls,
             expectedL1ToL2Calls: noNested,
+            expectedLookups: new ExpectedLookup[](0),
             callCount: 0,
             returnData: "",
             rollingHash: bytes32(0)

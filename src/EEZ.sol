@@ -10,7 +10,8 @@ import {
     ExpectedL1ToL2Call,
     LookupCall,
     ExecutionEntry,
-    ExpectedQueueIndexPerRollup,
+    ExpectedLookup,
+    ExpectedStateRootPerRollup,
     ProxyInfo,
     RollupConfig,
     RollupIdWithProofSystems,
@@ -122,15 +123,15 @@ contract EEZ is EEZBase {
     ///      it to msg.value; `executeL2TX` and `attemptApplyImmediate` revert
     ///      `ResidualEntryEtherIn` unless it is already 0 (no value path reaches them) —
     ///      residue can never leak across entries — while reentrant calls ADD. Cleared again
-    ///      at the end of `_applyAndExecute`. Receipts inside a revertSpan or failed-lookup
-    ///      replay roll back with that frame's revert, matching the physical ETH.
+    ///      at the end of `_applyAndExecute`. Receipts inside a revertSpan or a reverted
+    ///      lookup's sub-execution roll back with that frame's revert, matching the physical ETH.
     uint256 transient _entryEtherIn;
 
-    /// @notice Rollup whose persistent `lookupQueue` holds the failed LookupCall being replayed.
-    /// @dev Pairs with the base's `_failedLookupIndex`. Always written as the lookup's
-    ///      `destinationRollupId`; unused while the match came from the transient table. L1-only —
-    ///      L2 has a single lookup table and needs no rollup routing.
-    uint256 transient _failedLookupRollupId;
+    /// @notice Rollup whose persistent `lookupQueue` holds the TOP-LEVEL LookupCall being
+    ///         executed (pairs with the base's `_topLevelLookupIndex`).
+    /// @dev Unused while the match came from the transient table. L1-only — L2 has a single
+    ///      lookup table and needs no rollup routing.
+    uint256 transient _revertedLookupRollupId;
 
     /// @notice Emitted when a new rollup is created
     event RollupCreated(uint256 indexed rollupId, address indexed rollupContract, bytes32 initialState);
@@ -245,10 +246,6 @@ contract EEZ is EEZBase {
     /// @notice Error when an entry's destinationRollupId, a state delta's rollupId, or a
     ///         lookup call's destinationRollupId references a rollup not in the batch
     error RollupNotInBatch(uint256 rollupId);
-
-    /// @notice Error when a static lookup's `expectedQueueIndices[]` pin doesn't match the live
-    ///         per-rollup queue cursor (`verificationByRollup[rollupId].executionQueueIndex`)
-    error ExecutionQueueIndexMismatch(uint256 rollupId);
 
     /// @notice Error when not all L2→L1 calls (`entry.l2ToL1Calls`) were consumed after execution
     error UnconsumedL2ToL1Calls();
@@ -670,11 +667,11 @@ contract EEZ is EEZBase {
         }
         for (uint256 i = batch.transientLookupCallCount; i < batch.l1ToL2lookupCalls.length; i++) {
             uint256 destRid = batch.l1ToL2lookupCalls[i].destinationRollupId;
-            // INVARIANT: a lookup is queued under its own `destinationRollupId`. For a `failed`
-            // lookup this is load-bearing — `_replayFailedLookup` recovers this same rollup from
-            // `sc.destinationRollupId` to re-derive the queue mid-replay. So a failed lookup's
-            // `destinationRollupId` MUST equal the destRID it is keyed to (also bound into its
-            // `crossChainCallHash`). Keep them consistent or the replay reads the wrong queue.
+            // A top-level lookup is queued under its own `destinationRollupId` — coherent by
+            // construction: the consumption scan targets the proxy's `originalRollupId`, which
+            // is also the target rollup bound into `crossChainCallHash`. For a `failed` lookup
+            // the field is additionally load-bearing — `_executeRevertedTopLevelLookup` stores it in
+            // `_revertedLookupRollupId` so `_currentTopLevelLookup` can re-derive the queue mid-execution.
             verificationByRollup[destRid].lookupQueue.push(batch.l1ToL2lookupCalls[i]);
         }
     }
@@ -764,25 +761,27 @@ contract EEZ is EEZBase {
         }
     }
 
-    /// @notice The failed LookupCall currently being replayed, reconstructed from the
-    ///         `_failedLookup*` transient pointer. Only valid while `_insideFailedLookup`.
-    function _currentFailedLookup() internal view returns (LookupCall storage) {
+    /// @notice The TOP-LEVEL LookupCall currently being executed, reconstructed from the
+    ///         transient pointers. Only valid while `_revertedLookupTopLevel`.
+    function _currentTopLevelLookup() internal view returns (LookupCall storage) {
         if (_transientExecutions.length != 0) {
-            return _transientLookupCalls[_failedLookupIndex];
+            return _transientLookupCalls[_topLevelLookupIndex];
         }
-        return verificationByRollup[_failedLookupRollupId].lookupQueue[_failedLookupIndex];
+        return verificationByRollup[_revertedLookupRollupId].lookupQueue[_topLevelLookupIndex];
     }
 
-    /// @notice Consumes the next ExpectedL1ToL2Call entry, or replays a pre-computed
+    /// @notice Consumes the next ExpectedL1ToL2Call entry, or runs a pre-computed
     ///         reverting lookup call when no entry matches.
     /// @dev Routing rules:
     ///      1. ExpectedL1ToL2Call at `_lastL1ToL2CallConsumed` matches `crossChainCallHash`
     ///         → advance the cursor by 1, hash NESTED_BEGIN/END, return cached returnData.
     ///         This is the only path that advances the cursor.
-    ///      2. Otherwise scan `_transientLookupCalls` then the destination rollup's
-    ///         `lookupQueue` for a `failed=true` entry keyed by
+    ///      2. Otherwise scan the active host's nested-lookup table (`_getActiveLookups()` — the
+    ///         entry's `expectedLookups`, or the top-level lookup's own table while one is
+    ///         executing) for a `failed=true` `ExpectedLookup` keyed by
     ///         (crossChainCallHash, _currentL2ToL1Call, idx) where `idx` is the current cursor
-    ///         value → revert with cached returnData.
+    ///         value → execute it and revert with cached returnData. Entry-scoped — no queue
+    ///         routing.
     ///      3. No match → set the deferred-revert flag `_l1ToL2CallNotFound` and return
     ///         empty bytes. The end-of-entry check in `_applyAndExecute` reverts
     ///         `ExecutionNotFound`. The cursor stays at `idx` so further reentrant calls in
@@ -794,7 +793,7 @@ contract EEZ is EEZBase {
     ///      hit on this path only makes sense when the caller has try/catch and expects a
     ///      revert.
     function _consumeNestedAction(bytes32 crossChainCallHash) internal returns (bytes memory) {
-        // Active nested table: the containing entry's, or — while replaying a failed lookup —
+        // Active nested table: the containing entry's, or — while executing a reverted lookup —
         // that lookup's own `expectedL1ToL2Calls`.
         ExpectedL1ToL2Call[] storage expectedCalls = _activeNested();
         uint256 idx = _lastL1ToL2CallConsumed; // pre-commit read; advance only on match
@@ -811,34 +810,21 @@ contract EEZ is EEZBase {
             return nested.returnData;
         }
 
-        // 2. Fallback to a failed-lookup-call entry (key = pre-bump cursor). Any match — transient
-        //    table or persistent `lookupQueue` — is resolved by `_replayFailedLookup`, which always
-        //    reverts (a plain failed lookup is just its `callCount == 0` case). `_currentFailedLookup`
-        //    re-derives the source table from `_transientExecutions.length`.
+        // 2. Fallback to a reverted nested lookup (key = pre-bump cursor) in the active host's
+        //    `expectedLookups` table — entry-scoped, no queue routing. A match is resolved by
+        //    `_executeRevertedNestedLookup`, which always reverts (a plain reverted lookup is just its
+        //    `callCount == 0` case).
         uint64 callNum = uint64(_currentL2ToL1Call);
         uint64 lastNA = uint64(idx);
-        for (uint256 i = 0; i < _transientLookupCalls.length; i++) {
-            LookupCall storage sc = _transientLookupCalls[i];
+        uint64 execIdx = _insideRevertedLookup ? uint64(_revertedLookupIndex + 1) : 0;
+        ExpectedLookup[] storage lookups = _getActiveLookups();
+        for (uint256 i = 0; i < lookups.length; i++) {
+            ExpectedLookup storage el = lookups[i];
             if (
-                sc.failed && sc.crossChainCallHash == crossChainCallHash && sc.l2ToL1CallNumber == callNum
-                    && sc.lastL1ToL2CallConsumed == lastNA
+                el.failed && el.crossChainCallHash == crossChainCallHash && el.l2ToL1CallNumber == callNum
+                    && el.lastL1ToL2CallConsumed == lastNA && el.executingLookupIndex == execIdx
             ) {
-                _replayFailedLookup(sc, i); // always reverts
-            }
-        }
-
-        // Per-rollup queue: route by the active context's destination rollup.
-        uint256 destRid = _insideFailedLookup
-            ? _currentFailedLookup().destinationRollupId
-            : _getCurrentEntryStoragePointer().destinationRollupId;
-        LookupCall[] storage lookupQueue = verificationByRollup[destRid].lookupQueue;
-        for (uint256 i = 0; i < lookupQueue.length; i++) {
-            LookupCall storage sc = lookupQueue[i];
-            if (
-                sc.failed && sc.crossChainCallHash == crossChainCallHash && sc.l2ToL1CallNumber == callNum
-                    && sc.lastL1ToL2CallConsumed == lastNA
-            ) {
-                _replayFailedLookup(sc, i); // always reverts
+                _executeRevertedNestedLookup(i); // always reverts
             }
         }
 
@@ -868,7 +854,7 @@ contract EEZ is EEZBase {
     ///
     ///      Miss path: when the cursor is out of bounds or the next entry's `proxyEntryHash` doesn't match,
     ///      `_tryRevertedTopLevelLookup` scans the transient + persistent lookup tables for a
-    ///      `failed=true` `LookupCall` keyed by `(crossChainCallHash, l2ToL1CallNumber=0, lastL1ToL2CallConsumed=0)`.
+    ///      `failed=true` `LookupCall` matching `crossChainCallHash` with live state-root pins.
     ///      On match, that helper reverts with the cached `returnData` (so the caller's `try/catch` observes
     ///      the prover-specified revert). On no match the helper returns and we revert `ExecutionNotFound`.
     ///      The cursor is NOT advanced on the miss path — a failed top-level call consumes a `LookupCall`,
@@ -876,10 +862,7 @@ contract EEZ is EEZBase {
     /// @param destRid The destination rollup whose queue / transient slot to consume from
     /// @param crossChainCallHash The expected action input hash for the next entry
     /// @return result The pre-computed return data from the action
-    function _consumeAndExecute(uint256 destRid, bytes32 crossChainCallHash)
-        internal
-        returns (bytes memory result)
-    {
+    function _consumeAndExecute(uint256 destRid, bytes32 crossChainCallHash) internal returns (bytes memory result) {
         ExecutionEntry storage entry;
         uint256 idx;
 
@@ -949,7 +932,7 @@ contract EEZ is EEZBase {
     ///         inner `_processNCalls` invocation through `executeInContextAndRevert` keeps its own
     ///         local that is discarded with the revert frame, which is exactly what we want.
     function _processNCalls(uint256 count) internal returns (int256 etherOut) {
-        // Active flat-call array: the entry's, or the failed lookup's while replaying one.
+        // Active flat-call array: the entry's, or the reverted lookup's while one is executing.
         L2ToL1Call[] storage calls = _activeCalls();
         uint256 processed = 0;
         while (processed < count) {
@@ -1025,15 +1008,15 @@ contract EEZ is EEZBase {
         }
     }
 
-    /// @notice Verifies a static lookup's per-rollup execution-queue-index pins against the
-    ///         live `executionQueueIndex` of each listed rollup.
-    function _checkExpectedRollupExecutionQueueIndex(LookupCall storage sc) internal view {
-        ExpectedQueueIndexPerRollup[] storage pins = sc.expectedQueueIndices;
+    /// @notice Whether every state-root pin of a top-level lookup equals the live root.
+    ///         Part of the MATCH predicate (full-scan semantics) — a mismatch skips the
+    ///         candidate instead of reverting.
+    function _stateRootsMatch(LookupCall storage sc) internal view returns (bool) {
+        ExpectedStateRootPerRollup[] storage pins = sc.expectedStateRoots;
         for (uint256 i = 0; i < pins.length; i++) {
-            if (verificationByRollup[pins[i].rollupId].executionQueueIndex != pins[i].executionQueueIndex) {
-                revert ExecutionQueueIndexMismatch(pins[i].rollupId);
-            }
+            if (rollups[pins[i].rollupId].stateRoot != pins[i].stateRoot) return false;
         }
+        return true;
     }
 
     // ──────────────────────────────────────────────
@@ -1049,71 +1032,113 @@ contract EEZ is EEZBase {
     //  Active-execution accessors
     // ──────────────────────────────────────────────
     //
-    // `_processNCalls` and `_consumeNestedAction` operate on whichever flat-call / reentrant
-    // table is active: the containing `ExecutionEntry`, or the `LookupCall` being replayed
-    // while `_insideFailedLookup`.
+    // `_processNCalls` and `_consumeNestedAction` operate on whichever flat-call / reentrant /
+    // nested-lookup tables are active. Three contexts:
+    //   - normal entry execution → the entry's tables;
+    //   - top-level reverted lookup executing (`_revertedLookupTopLevel`) → the pool lookup's tables;
+    //   - nested reverted lookup executing (`_insideRevertedLookup`) → the `ExpectedLookup` at
+    //     `_revertedLookupIndex` within the active host table (`_getActiveLookups()`).
 
     /// @notice The flat L2→L1 call array driving the current execution.
     function _activeCalls() internal view returns (L2ToL1Call[] storage) {
-        return _insideFailedLookup ? _currentFailedLookup().l2ToL1Calls : _getCurrentEntryStoragePointer().l2ToL1Calls;
+        if (_insideRevertedLookup) return _getActiveLookups()[_revertedLookupIndex].l2ToL1Calls;
+        if (_revertedLookupTopLevel) return _currentTopLevelLookup().l2ToL1Calls;
+        return _getCurrentEntryStoragePointer().l2ToL1Calls;
     }
 
     /// @notice The reentrant (L1→L2) table for the current execution.
     function _activeNested() internal view returns (ExpectedL1ToL2Call[] storage) {
-        return _insideFailedLookup
-            ? _currentFailedLookup().expectedL1ToL2Calls
-            : _getCurrentEntryStoragePointer().expectedL1ToL2Calls;
+        if (_insideRevertedLookup) return _getActiveLookups()[_revertedLookupIndex].expectedL1ToL2Calls;
+        if (_revertedLookupTopLevel) return _currentTopLevelLookup().expectedL1ToL2Calls;
+        return _getCurrentEntryStoragePointer().expectedL1ToL2Calls;
+    }
+
+    /// @notice The nested-lookup table of the active HOST — the entry's `expectedLookups`, or
+    ///         the top-level lookup's own table while one is being executed. Deeper reverted-lookup executions
+    ///         within a host resolve from this same flat table.
+    function _getActiveLookups() internal view returns (ExpectedLookup[] storage) {
+        return _revertedLookupTopLevel
+            ? _currentTopLevelLookup().expectedLookups
+            : _getCurrentEntryStoragePointer().expectedLookups;
     }
 
     // ──────────────────────────────────────────────
     //  Lookup-call resolution
     // ──────────────────────────────────────────────
 
-    /// @notice Resolves a static-context `LookupCall`: returns its cached data, or reverts with
-    ///         it when `failed`. Checks the queue-index pins and the sub-calls' rolling hash.
-    /// @dev Static path only (`staticCallLookup`). Failed lookups consumed during execution go
-    ///      through `_replayFailedLookup`.
-    function _resolveLookupCall(LookupCall storage sc) internal view returns (bytes memory) {
-        _checkExpectedRollupExecutionQueueIndex(sc);
-        // Always compare: empty `calls[]` hashes to 0, which must match a sub-call-less lookup's
-        // `rollingHash` (0) — so malformed lookups are caught uniformly.
-        if (_processNLookupCalls(sc.l2ToL1Calls) != sc.rollingHash) revert RollingHashMismatch();
-        if (sc.failed) {
-            bytes memory returnData = sc.returnData;
+    /// @notice Shared static-resolution body: run the sub-calls (untagged schema, always
+    ///         compared — an empty `calls[]` hashes to 0, which must match a sub-call-less
+    ///         lookup's `rollingHash`), then return the cached data, or revert with it when
+    ///         `failed`.
+    function _resolveStaticLookup(L2ToL1Call[] storage calls, bytes32 rollingHash, bool failed, bytes memory returnData)
+        internal
+        view
+        returns (bytes memory)
+    {
+        if (_processNLookupCalls(calls) != rollingHash) revert RollingHashMismatch();
+        if (failed) {
             assembly {
                 revert(add(returnData, 0x20), mload(returnData))
             }
         }
-        return sc.returnData;
+        return returnData;
     }
 
-    /// @notice Replays a `failed` LookupCall as a self-contained mini-entry, then reverts with its
-    ///         cached `returnData`. Runs INLINE in the consuming `executeCrossChainCall` frame; the
-    ///         terminal revert discards the sub-call state AND restores the outer cursors (the EVM
+    /// @notice Runs a reverted NESTED lookup (`_getActiveLookups()[index]`) as a self-contained
+    ///         mini-entry, then reverts with its cached `returnData`.
+    function _executeRevertedNestedLookup(uint256 index) internal {
+        ExpectedLookup storage el = _getActiveLookups()[index];
+
+        // Pointer for deeper frames (`_activeCalls()` / `_activeNested()`); storage refs
+        // can't be transient.
+        _revertedLookupIndex = index;
+        _insideRevertedLookup = true;
+
+        _executeRevertedLookup(
+            el.callCount, el.rollingHash, el.l2ToL1Calls.length, el.expectedL1ToL2Calls.length, el.returnData
+        );
+    }
+
+    /// @notice Runs a reverted TOP-LEVEL `LookupCall` as a self-contained mini-entry, then
+    ///         reverts with its cached `returnData`. The pool lookup becomes the active HOST:
+    ///         its tables drive the sub-execution, including its own `expectedLookups` for nested
+    ///         lookups observed inside it.
+    function _executeRevertedTopLevelLookup(LookupCall storage sc, uint256 index) internal {
+        // Host pointers for deeper frames; the pool is re-derived in `_currentTopLevelLookup`.
+        _topLevelLookupIndex = index;
+        _revertedLookupRollupId = sc.destinationRollupId;
+        _revertedLookupTopLevel = true;
+
+        _executeRevertedLookup(
+            sc.callCount, sc.rollingHash, sc.l2ToL1Calls.length, sc.expectedL1ToL2Calls.length, sc.returnData
+        );
+    }
+
+    /// @notice Shared execution tail for reverted lookups: fresh sub-execution context, run the
+    ///         sub-calls, entry-style end checks, then the terminal revert with the cached
+    ///         `returnData`. Runs INLINE in the consuming `executeCrossChainCall` frame; the
+    ///         revert discards the sub-call state AND restores the outer cursors (the EVM
     ///         rolls back every tstore here), so the pre-revert checks need no `ContextResult`
-    ///         escape. Nested failed lookups compose via the same unwind.
-    function _replayFailedLookup(LookupCall storage sc, uint256 index) internal {
-        _checkExpectedRollupExecutionQueueIndex(sc); // content-addressing pin, same as the static path
-
-        // Pointer for deeper frames to re-derive this lookup (`_currentFailedLookup()`); storage
-        // refs can't be transient.
-        _failedLookupIndex = index;
-        _failedLookupRollupId = sc.destinationRollupId;
-        _insideFailedLookup = true;
-
-        // Fresh sub-execution context (rolled back by the terminal revert).
+    ///         escape. Deeper reverted-lookup executions compose via the same unwind.
+    function _executeRevertedLookup(
+        uint256 callCount,
+        bytes32 rollingHash,
+        uint256 callsLength,
+        uint256 reentrantLength,
+        bytes memory returnData
+    )
+        internal
+    {
         _rollingHash = bytes32(0);
         _currentL2ToL1Call = 0;
         _lastL1ToL2CallConsumed = 0;
 
-        _processNCalls(sc.callCount);
+        _processNCalls(callCount);
 
-        // Entry-style end checks against the lookup's own expected values.
-        if (_rollingHash != sc.rollingHash) revert RollingHashMismatch();
-        if (_currentL2ToL1Call != sc.l2ToL1Calls.length) revert UnconsumedL2ToL1Calls();
-        if (_lastL1ToL2CallConsumed != sc.expectedL1ToL2Calls.length) revert UnconsumedL1ToL2Calls();
+        if (_rollingHash != rollingHash) revert RollingHashMismatch();
+        if (_currentL2ToL1Call != callsLength) revert UnconsumedL2ToL1Calls();
+        if (_lastL1ToL2CallConsumed != reentrantLength) revert UnconsumedL1ToL2Calls();
 
-        bytes memory returnData = sc.returnData;
         assembly {
             revert(add(returnData, 0x20), mload(returnData))
         }
@@ -1140,22 +1165,16 @@ contract EEZ is EEZBase {
     //  Lookup call lookup
     // ──────────────────────────────────────────────
 
-    /// @notice Looks up a pre-computed lookup call result, scanning the transient table
-    ///         first then the destination rollup's static queue
-    /// @dev Matches by crossChainCallHash + current L2→L1 call number + last L1→L2 call consumed.
-    ///      Consults `_transientLookupCalls` first (populated only while a postAndVerifyBatch is
-    ///      executing its transient prefix) and falls through to the per-rollup
-    ///      `lookupQueue` keyed by `proxyInfo.originalRollupId`. tload works in static
-    ///      context, so the transient tracking variables used to compute the match keys
-    ///      are readable.
-    /// @dev TODO (perf): if the batch has many lookup calls, the linear scan is O(n).
-    ///      Idea: have the orchestrator sort `lookupCalls[]` by a derived key (e.g., the
-    ///      lookup tuple `keccak256(crossChainCallHash, l2ToL1CallNumber, lastL1ToL2CallConsumed)`,
-    ///      treated as a `uint256`) so on-chain we can binary-search → O(log n). Same
-    ///      `_consumeNestedAction` fallback could use the same ordering. The proof would
-    ///      need to enforce sort order (cheap: `keys[i+1] > keys[i]`) and the publicInputsHash
-    ///      already binds the array via `lookupCallHashes`, so re-ordering by the prover
-    ///      can't sneak in. Punted until profiling shows it matters.
+    /// @notice Looks up a pre-computed lookup result.
+    /// @dev Inside an execution: scans the active host's entry-scoped `expectedLookups` by
+    ///      `(crossChainCallHash, l2ToL1CallNumber, lastL1ToL2CallConsumed)`. Outside: scans
+    ///      the transient table then the routed rollup's `lookupQueue` for a top-level
+    ///      `LookupCall` matching `crossChainCallHash` with every state-root pin live (full
+    ///      scan — a non-matching candidate is skipped). tload works in static context, so
+    ///      the transient tracking variables are readable.
+    /// @dev TODO (perf): linear scans are O(n) — sort + binary-search once profiling shows
+    ///      it matters (the publicInputsHash already binds the arrays, so prover re-ordering
+    ///      can't sneak in).
     /// @param sourceAddress The original caller address (msg.sender as seen by the proxy)
     /// @param callData The original calldata sent to the proxy
     /// @return The pre-computed return data
@@ -1168,26 +1187,36 @@ contract EEZ is EEZBase {
             destRid, proxyInfo.originalAddress, 0, callData, sourceAddress, MAINNET_ROLLUP_ID
         );
 
-        uint64 callNum = uint64(_currentL2ToL1Call);
-        uint64 lastNA = uint64(_lastL1ToL2CallConsumed);
+        // Nested: entry-scoped table of the active host, keyed by the live cursors.
+        if (_insideExecution()) {
+            uint64 callNum = uint64(_currentL2ToL1Call);
+            uint64 lastNA = uint64(_lastL1ToL2CallConsumed);
+            uint64 execIdx = _insideRevertedLookup ? uint64(_revertedLookupIndex + 1) : 0;
+            ExpectedLookup[] storage lookups = _getActiveLookups();
+            for (uint256 i = 0; i < lookups.length; i++) {
+                ExpectedLookup storage el = lookups[i];
+                if (
+                    el.crossChainCallHash == crossChainCallHash && el.l2ToL1CallNumber == callNum
+                        && el.lastL1ToL2CallConsumed == lastNA && el.executingLookupIndex == execIdx
+                ) {
+                    return _resolveStaticLookup(el.l2ToL1Calls, el.rollingHash, el.failed, el.returnData);
+                }
+            }
+            revert ExecutionNotFound();
+        }
 
+        // Top-level: transient pool first, then the routed rollup's persistent queue.
         for (uint256 i = 0; i < _transientLookupCalls.length; i++) {
             LookupCall storage sc = _transientLookupCalls[i];
-            if (
-                sc.crossChainCallHash == crossChainCallHash && sc.l2ToL1CallNumber == callNum
-                    && sc.lastL1ToL2CallConsumed == lastNA
-            ) {
-                return _resolveLookupCall(sc);
+            if (sc.crossChainCallHash == crossChainCallHash && _stateRootsMatch(sc)) {
+                return _resolveStaticLookup(sc.l2ToL1Calls, sc.rollingHash, sc.failed, sc.returnData);
             }
         }
         LookupCall[] storage lookupQueue = verificationByRollup[destRid].lookupQueue;
         for (uint256 i = 0; i < lookupQueue.length; i++) {
             LookupCall storage sc = lookupQueue[i];
-            if (
-                sc.crossChainCallHash == crossChainCallHash && sc.l2ToL1CallNumber == callNum
-                    && sc.lastL1ToL2CallConsumed == lastNA
-            ) {
-                return _resolveLookupCall(sc);
+            if (sc.crossChainCallHash == crossChainCallHash && _stateRootsMatch(sc)) {
+                return _resolveStaticLookup(sc.l2ToL1Calls, sc.rollingHash, sc.failed, sc.returnData);
             }
         }
 
@@ -1195,28 +1224,22 @@ contract EEZ is EEZBase {
     }
 
     /// @notice Top-level fallback: scan the transient table then the routed rollup's persistent
-    ///         `lookupQueue` for a `failed` `LookupCall` keyed at the top-level context
-    ///         `(crossChainCallHash, 0, 0)` — disjoint from the reentrant path (`l2ToL1CallNumber > 0`).
-    ///         A match is resolved by `_replayFailedLookup` (always reverts); no match returns so
-    ///         the caller reverts `ExecutionNotFound`.
+    ///         `lookupQueue` for a `failed` `LookupCall` matching `crossChainCallHash` with
+    ///         every state-root pin live (full scan). Only reachable outside an execution —
+    ///         nested lookups live on the entry. A match is resolved by `_executeRevertedTopLevelLookup`
+    ///         (always reverts); no match returns so the caller reverts `ExecutionNotFound`.
     function _tryRevertedTopLevelLookup(bytes32 crossChainCallHash, uint256 destRid) internal {
         for (uint256 i = 0; i < _transientLookupCalls.length; i++) {
             LookupCall storage sc = _transientLookupCalls[i];
-            if (
-                sc.failed && sc.crossChainCallHash == crossChainCallHash && sc.l2ToL1CallNumber == 0
-                    && sc.lastL1ToL2CallConsumed == 0
-            ) {
-                _replayFailedLookup(sc, i); // always reverts
+            if (sc.failed && sc.crossChainCallHash == crossChainCallHash && _stateRootsMatch(sc)) {
+                _executeRevertedTopLevelLookup(sc, i); // always reverts
             }
         }
         LookupCall[] storage lookupQueue = verificationByRollup[destRid].lookupQueue;
         for (uint256 i = 0; i < lookupQueue.length; i++) {
             LookupCall storage sc = lookupQueue[i];
-            if (
-                sc.failed && sc.crossChainCallHash == crossChainCallHash && sc.l2ToL1CallNumber == 0
-                    && sc.lastL1ToL2CallConsumed == 0
-            ) {
-                _replayFailedLookup(sc, i); // always reverts
+            if (sc.failed && sc.crossChainCallHash == crossChainCallHash && _stateRootsMatch(sc)) {
+                _executeRevertedTopLevelLookup(sc, i); // always reverts
             }
         }
     }

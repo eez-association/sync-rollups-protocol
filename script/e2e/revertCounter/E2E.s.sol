@@ -4,10 +4,18 @@ pragma solidity ^0.8.28;
 import {Script, console} from "forge-std/Script.sol";
 import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../../src/EEZ.sol";
 import {EEZL2} from "../../../src/L2/EEZL2.sol";
-import {StateDelta, L2ToL1Call, ExpectedL1ToL2Call, ExecutionEntry, LookupCall} from "../../../src/interfaces/IEEZ.sol";
+import {
+    StateDelta,
+    L2ToL1Call,
+    ExpectedL1ToL2Call,
+    ExecutionEntry,
+    LookupCall,
+    ExpectedLookup
+} from "../../../src/interfaces/IEEZ.sol";
 import {
     ExecutionEntry as L2ExecutionEntry,
     LookupCall as L2LookupCall,
+    ExpectedLookup as L2ExpectedLookup,
     CrossChainCall,
     ExpectedOutgoingCrossChainCall
 } from "../../../src/interfaces/IEEZL2.sol";
@@ -30,7 +38,7 @@ import {
 //  successfully on the destination, but its prover output marks it as
 //  reverted in the source-chain view of the world (e.g., a higher-level
 //  transaction the call was part of was rolled back). When the destination
-//  replays the entry, revertSpan=1 forces the state effects to disappear
+//  runs the entry, revertSpan=1 forces the state effects to disappear
 //  while the rolling hash still commits to (success=true, retData=1).
 //
 //  L1 side (Execute):
@@ -131,6 +139,7 @@ abstract contract RevertActions {
             destinationRollupId: L2_ROLLUP_ID,
             l2ToL1Calls: calls,
             expectedL1ToL2Calls: noNestedActions(),
+            expectedLookups: new ExpectedLookup[](0),
             callCount: 1,
             returnData: "",
             rollingHash: _expectedRollingHash()
@@ -160,6 +169,7 @@ abstract contract RevertActions {
             proxyEntryHash: _outerActionHash(counterL2, alice),
             incomingCalls: calls,
             expectedOutgoingCalls: new ExpectedOutgoingCrossChainCall[](0),
+            expectedLookups: new L2ExpectedLookup[](0),
             callCount: 1,
             returnData: "",
             rollingHash: _expectedRollingHash()

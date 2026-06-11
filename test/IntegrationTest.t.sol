@@ -12,11 +12,13 @@ import {
     L2ToL1Call,
     ExpectedL1ToL2Call,
     LookupCall,
+    ExpectedLookup,
     ProxyInfo
 } from "../src/interfaces/IEEZ.sol";
 import {
     ExecutionEntry as L2ExecutionEntry,
     LookupCall as L2LookupCall,
+    ExpectedLookup as L2ExpectedLookup,
     CrossChainCall,
     ExpectedOutgoingCrossChainCall
 } from "../src/interfaces/IEEZL2.sol";
@@ -242,6 +244,7 @@ contract IntegrationTest is Test {
                 destinationRollupId: L2_ROLLUP_ID,
                 l2ToL1Calls: calls,
                 expectedL1ToL2Calls: nestedActions,
+                expectedLookups: new ExpectedLookup[](0),
                 callCount: 0,
                 returnData: abi.encode(uint256(1)),
                 rollingHash: bytes32(0)
@@ -293,6 +296,7 @@ contract IntegrationTest is Test {
                 proxyEntryHash: crossChainCallHash,
                 incomingCalls: calls,
                 expectedOutgoingCalls: expectedOutgoingCalls,
+                expectedLookups: new L2ExpectedLookup[](0),
                 callCount: 0,
                 returnData: abi.encode(uint256(1)),
                 rollingHash: bytes32(0)
@@ -362,6 +366,7 @@ contract IntegrationTest is Test {
                 destinationRollupId: L2_ROLLUP_ID,
                 l2ToL1Calls: calls,
                 expectedL1ToL2Calls: nestedActions,
+                expectedLookups: new ExpectedLookup[](0),
                 callCount: 0,
                 returnData: abi.encode(uint256(1)),
                 rollingHash: bytes32(0)
@@ -401,6 +406,7 @@ contract IntegrationTest is Test {
                 proxyEntryHash: l2ActionHash,
                 incomingCalls: calls,
                 expectedOutgoingCalls: expectedOutgoingCalls,
+                expectedLookups: new L2ExpectedLookup[](0),
                 callCount: 1,
                 returnData: "",
                 rollingHash: rollingHash
@@ -468,6 +474,7 @@ contract IntegrationTest is Test {
                 proxyEntryHash: l2ActionHash,
                 incomingCalls: calls,
                 expectedOutgoingCalls: expectedOutgoingCalls,
+                expectedLookups: new L2ExpectedLookup[](0),
                 callCount: 0,
                 returnData: abi.encode(uint256(1)),
                 rollingHash: bytes32(0)
@@ -517,6 +524,7 @@ contract IntegrationTest is Test {
                 destinationRollupId: L2_ROLLUP_ID,
                 l2ToL1Calls: calls,
                 expectedL1ToL2Calls: nestedActions,
+                expectedLookups: new ExpectedLookup[](0),
                 callCount: 1,
                 returnData: "",
                 rollingHash: rollingHash

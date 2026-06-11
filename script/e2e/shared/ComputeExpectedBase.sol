@@ -2,10 +2,18 @@
 pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
-import {StateDelta, L2ToL1Call, ExpectedL1ToL2Call, ExecutionEntry, LookupCall} from "../../../src/interfaces/IEEZ.sol";
+import {
+    StateDelta,
+    L2ToL1Call,
+    ExpectedL1ToL2Call,
+    ExpectedLookup,
+    ExecutionEntry,
+    LookupCall
+} from "../../../src/interfaces/IEEZ.sol";
 import {
     ExecutionEntry as L2ExecutionEntry,
     LookupCall as L2LookupCall,
+    ExpectedLookup as L2ExpectedLookup,
     CrossChainCall,
     ExpectedOutgoingCrossChainCall
 } from "../../../src/interfaces/IEEZL2.sol";
@@ -167,12 +175,9 @@ abstract contract ComputeExpectedBase is Script {
     }
 
     function _logLookupCall(uint256 idx, LookupCall memory sc) internal pure {
-        console.log("  [%s] STATIC crossChainCallHash=%s", idx, vm.toString(sc.crossChainCallHash));
+        console.log("  [%s] TOP-LEVEL crossChainCallHash=%s", idx, vm.toString(sc.crossChainCallHash));
         console.log(
-            "      callNumber=%s  lastL1ToL2=%s  failed=%s",
-            sc.l2ToL1CallNumber,
-            sc.lastL1ToL2CallConsumed,
-            sc.failed ? "true" : "false"
+            "      failed=%s  rootPins=%s", sc.failed ? "true" : "false", vm.toString(sc.expectedStateRoots.length)
         );
         if (sc.returnData.length > 0) {
             console.log("      returnData: %s", _shortBytes(sc.returnData));
@@ -180,15 +185,36 @@ abstract contract ComputeExpectedBase is Script {
     }
 
     function _logLookupCall(uint256 idx, L2LookupCall memory sc) internal pure {
-        console.log("  [%s] STATIC crossChainCallHash=%s", idx, vm.toString(sc.crossChainCallHash));
-        console.log(
-            "      callNumber=%s  lastOutgoing=%s  failed=%s",
-            sc.callNumber,
-            sc.lastOutgoingCallConsumed,
-            sc.failed ? "true" : "false"
-        );
+        console.log("  [%s] TOP-LEVEL crossChainCallHash=%s", idx, vm.toString(sc.crossChainCallHash));
+        console.log("      failed=%s", sc.failed ? "true" : "false");
         if (sc.returnData.length > 0) {
             console.log("      returnData: %s", _shortBytes(sc.returnData));
+        }
+    }
+
+    function _logNestedLookup(uint256 idx, ExpectedLookup memory el) internal pure {
+        console.log("  [%s] NESTED-LOOKUP crossChainCallHash=%s", idx, vm.toString(el.crossChainCallHash));
+        console.log(
+            "      callNumber=%s  lastL1ToL2=%s  failed=%s",
+            el.l2ToL1CallNumber,
+            el.lastL1ToL2CallConsumed,
+            el.failed ? "true" : "false"
+        );
+        if (el.returnData.length > 0) {
+            console.log("      returnData: %s", _shortBytes(el.returnData));
+        }
+    }
+
+    function _logNestedLookup(uint256 idx, L2ExpectedLookup memory el) internal pure {
+        console.log("  [%s] NESTED-LOOKUP crossChainCallHash=%s", idx, vm.toString(el.crossChainCallHash));
+        console.log(
+            "      callNumber=%s  lastOutgoing=%s  failed=%s",
+            el.callNumber,
+            el.lastOutgoingCallConsumed,
+            el.failed ? "true" : "false"
+        );
+        if (el.returnData.length > 0) {
+            console.log("      returnData: %s", _shortBytes(el.returnData));
         }
     }
 

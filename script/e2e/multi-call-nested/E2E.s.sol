@@ -5,10 +5,18 @@ import {Script, console} from "forge-std/Script.sol";
 import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../../src/EEZ.sol";
 import {EEZL2} from "../../../src/L2/EEZL2.sol";
 import {IEEZ} from "../../../src/interfaces/IEEZ.sol";
-import {StateDelta, L2ToL1Call, ExpectedL1ToL2Call, ExecutionEntry, LookupCall} from "../../../src/interfaces/IEEZ.sol";
+import {
+    StateDelta,
+    L2ToL1Call,
+    ExpectedL1ToL2Call,
+    ExecutionEntry,
+    LookupCall,
+    ExpectedLookup
+} from "../../../src/interfaces/IEEZ.sol";
 import {
     ExecutionEntry as L2ExecutionEntry,
     LookupCall as L2LookupCall,
+    ExpectedLookup as L2ExpectedLookup,
     CrossChainCall,
     ExpectedOutgoingCrossChainCall
 } from "../../../src/interfaces/IEEZL2.sol";
@@ -214,6 +222,7 @@ abstract contract MCNActions {
             destinationRollupId: L2_ROLLUP_ID,
             l2ToL1Calls: calls0,
             expectedL1ToL2Calls: noNestedActions(),
+            expectedLookups: new ExpectedLookup[](0),
             callCount: 1,
             returnData: "", // incrementProxy() returns void
             rollingHash: _l1NestedHash(1)
@@ -224,6 +233,7 @@ abstract contract MCNActions {
             destinationRollupId: L2_ROLLUP_ID,
             l2ToL1Calls: calls1,
             expectedL1ToL2Calls: noNestedActions(),
+            expectedLookups: new ExpectedLookup[](0),
             callCount: 1,
             returnData: "",
             rollingHash: _l1NestedHash(2)
@@ -234,6 +244,7 @@ abstract contract MCNActions {
             destinationRollupId: L2_ROLLUP_ID,
             l2ToL1Calls: noCalls(), // no L1-side execution; CounterL2 is L2-local
             expectedL1ToL2Calls: noNestedActions(),
+            expectedLookups: new ExpectedLookup[](0),
             callCount: 0,
             returnData: abi.encode(uint256(1)), // app.execute decodes this as `simpleResult`
             rollingHash: bytes32(0)
@@ -291,6 +302,7 @@ abstract contract MCNActions {
             proxyEntryHash: outerCAP2,
             incomingCalls: calls0,
             expectedOutgoingCalls: nested0,
+            expectedLookups: new L2ExpectedLookup[](0),
             callCount: 1,
             returnData: "",
             rollingHash: _l2NestedHash()
@@ -299,6 +311,7 @@ abstract contract MCNActions {
             proxyEntryHash: outerCAP2,
             incomingCalls: calls1,
             expectedOutgoingCalls: nested1,
+            expectedLookups: new L2ExpectedLookup[](0),
             callCount: 1,
             returnData: "",
             rollingHash: _l2NestedHash()
@@ -307,6 +320,7 @@ abstract contract MCNActions {
             proxyEntryHash: outerCounterL2,
             incomingCalls: calls2,
             expectedOutgoingCalls: new ExpectedOutgoingCrossChainCall[](0),
+            expectedLookups: new L2ExpectedLookup[](0),
             callCount: 1,
             returnData: abi.encode(uint256(1)),
             rollingHash: _l2SimpleHash()

@@ -5,10 +5,18 @@ import {Script, console} from "forge-std/Script.sol";
 import {EEZL2} from "../../../src/L2/EEZL2.sol";
 import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../../src/EEZ.sol";
 import {IEEZ} from "../../../src/interfaces/IEEZ.sol";
-import {StateDelta, L2ToL1Call, ExpectedL1ToL2Call, ExecutionEntry, LookupCall} from "../../../src/interfaces/IEEZ.sol";
+import {
+    StateDelta,
+    L2ToL1Call,
+    ExpectedL1ToL2Call,
+    ExecutionEntry,
+    LookupCall,
+    ExpectedLookup
+} from "../../../src/interfaces/IEEZ.sol";
 import {
     ExecutionEntry as L2ExecutionEntry,
     LookupCall as L2LookupCall,
+    ExpectedLookup as L2ExpectedLookup,
     CrossChainCall,
     ExpectedOutgoingCrossChainCall
 } from "../../../src/interfaces/IEEZL2.sol";
@@ -88,7 +96,7 @@ abstract contract NestedL2Actions {
         );
     }
 
-    /// Rolling hash replay: CALL_BEGIN(1) → NESTED_BEGIN(1) → NESTED_END(1) → CALL_END(1, true, "")
+    /// Rolling hash chain: CALL_BEGIN(1) → NESTED_BEGIN(1) → NESTED_END(1) → CALL_END(1, true, "")
     function _expectedRollingHash() internal pure returns (bytes32 h) {
         h = bytes32(0);
         h = h.appendCallBegin(1);
@@ -122,6 +130,7 @@ abstract contract NestedL2Actions {
             proxyEntryHash: _l2OuterHash(cap, alice),
             incomingCalls: calls,
             expectedOutgoingCalls: nested,
+            expectedLookups: new L2ExpectedLookup[](0),
             callCount: 1,
             returnData: "",
             rollingHash: _expectedRollingHash()
@@ -157,6 +166,7 @@ abstract contract NestedL2Actions {
             destinationRollupId: L2_ROLLUP_ID,
             l2ToL1Calls: calls,
             expectedL1ToL2Calls: nested,
+            expectedLookups: new ExpectedLookup[](0),
             callCount: 1,
             returnData: "",
             rollingHash: _expectedRollingHash()
@@ -304,7 +314,7 @@ contract DeferredL2TXBatcher {
     }
 }
 
-/// Execute — L1 mirror: postBatch (deferred) + executeL2TX drains the entry, replaying
+/// Execute — L1 mirror: postBatch (deferred) + executeL2TX drains the entry, running
 /// the nested-call pattern entirely on L1.
 contract Execute is Script, NestedL2Actions {
     function run() external {

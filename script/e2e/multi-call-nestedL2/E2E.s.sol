@@ -4,10 +4,18 @@ pragma solidity ^0.8.28;
 import {Script, console} from "forge-std/Script.sol";
 import {EEZL2} from "../../../src/L2/EEZL2.sol";
 import {EEZ, ProofSystemBatchPerVerificationEntries, RollupIdWithProofSystems} from "../../../src/EEZ.sol";
-import {StateDelta, L2ToL1Call, ExpectedL1ToL2Call, ExecutionEntry, LookupCall} from "../../../src/interfaces/IEEZ.sol";
+import {
+    StateDelta,
+    L2ToL1Call,
+    ExpectedL1ToL2Call,
+    ExecutionEntry,
+    LookupCall,
+    ExpectedLookup
+} from "../../../src/interfaces/IEEZ.sol";
 import {
     ExecutionEntry as L2ExecutionEntry,
     LookupCall as L2LookupCall,
+    ExpectedLookup as L2ExpectedLookup,
     CrossChainCall,
     ExpectedOutgoingCrossChainCall
 } from "../../../src/interfaces/IEEZL2.sol";
@@ -108,6 +116,7 @@ abstract contract MultiCallNestedL2Actions {
             destinationRollupId: L2_ROLLUP_ID,
             l2ToL1Calls: calls0,
             expectedL1ToL2Calls: new ExpectedL1ToL2Call[](0),
+            expectedLookups: new ExpectedLookup[](0),
             callCount: 1,
             returnData: abi.encode(uint256(1)),
             rollingHash: _expectedRollingHashL1(1)
@@ -118,6 +127,7 @@ abstract contract MultiCallNestedL2Actions {
             destinationRollupId: L2_ROLLUP_ID,
             l2ToL1Calls: calls1,
             expectedL1ToL2Calls: new ExpectedL1ToL2Call[](0),
+            expectedLookups: new ExpectedLookup[](0),
             callCount: 1,
             returnData: abi.encode(uint256(2)),
             rollingHash: _expectedRollingHashL1(2)
@@ -161,6 +171,7 @@ abstract contract MultiCallNestedL2Actions {
             proxyEntryHash: _outerActionHash(cap, alice),
             incomingCalls: calls,
             expectedOutgoingCalls: nested,
+            expectedLookups: new L2ExpectedLookup[](0),
             callCount: 2,
             returnData: "",
             rollingHash: _expectedRollingHash()

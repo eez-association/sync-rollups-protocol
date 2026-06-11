@@ -18,7 +18,7 @@ pragma solidity ^0.8.28;
 //
 //  Deliberately LEANER than L1's structs: L2 has a single rollup, no state deltas,
 //  and no per-rollup queue interleaving, so the L1-only fields are dropped entirely
-//  (no `StateDelta`, `destinationRollupId`, or `ExpectedQueueIndexPerRollup`). L2
+//  (no `StateDelta`, `destinationRollupId`, or `ExpectedStateRootPerRollup`). L2
 //  never hashes a whole entry/lookup, so its layout is free to diverge from L1's.
 //
 //  Casing: types/events/errors are PascalCase (`CrossChainCall`, `OutgoingCallConsumed`,
@@ -26,7 +26,7 @@ pragma solidity ^0.8.28;
 //  (`incomingCalls`, `expectedOutgoingCalls`, `_currentIncomingCall`).
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// @notice A cross-chain call executed/replayed within an execution entry
+/// @notice A cross-chain call executed within an execution entry
 /// @dev revertSpan > 0 opens an isolated revert context spanning the next revertSpan calls (including this one)
 struct CrossChainCall {
     address targetAddress;
@@ -53,12 +53,45 @@ struct ExpectedOutgoingCrossChainCall {
     bytes returnData;
 }
 
+/// @notice NESTED lookup: the pre-computed result of a reentrant cross-chain call that is
+///         looked up rather than executed — a reentrant STATICCALL (static mode) or a
+///         reverting reentrant call the caller try/catches (reverted mode). Lives INSIDE the
+///         entry (`ExecutionEntry.expectedLookups`) — entry-scoped by construction. Matched by
+///         `(crossChainCallHash, callNumber, lastOutgoingCallConsumed)`.
+/// @dev Reverted mode (`failed == true`) runs `incomingCalls` as a mini-entry (tagged hash
+///      schema, partitioned by `callCount` against `expectedOutgoingCalls`) then reverts with
+///      `returnData`; static mode runs them via STATICCALL (untagged schema) and returns
+///      it. A reverted lookup's own deeper lookups resolve from the SAME host table (Solidity
+///      forbids recursive structs) — the prover must keep keys collision-free across the
+///      entry and its execution contexts.
+struct ExpectedLookup {
+    bytes32 crossChainCallHash;
+    bytes returnData;
+    bool failed;
+    /// `_currentIncomingCall` at observation (1-indexed; a sub-execution's fresh sub-cursor inside one).
+    uint64 callNumber;
+    /// `_lastOutgoingCallConsumed` at observation.
+    uint64 lastOutgoingCallConsumed;
+    /// Execution context at observation: 0 = fired at entry/host level; k = fired inside the
+    /// sub-execution of `expectedLookups[k-1]` of the same host. Makes the key context-unambiguous
+    /// (enforced — no longer a prover convention).
+    uint64 executingLookupIndex;
+    /// Sub-calls executed at resolution: STATICCALL (static mode) or real calls (reverted mode).
+    CrossChainCall[] incomingCalls;
+    /// Reverted-mode reentrant table for the sub-execution. Empty for static mode.
+    ExpectedOutgoingCrossChainCall[] expectedOutgoingCalls;
+    /// Reverted-mode top-level iterations over `incomingCalls[]` (0 for static mode).
+    uint256 callCount;
+    /// Expected hash of the executed sub-calls: untagged schema (static), tagged (reverted).
+    bytes32 rollingHash;
+}
+
 /// @notice Represents an execution entry with pre-computed calls and return hash verification
 /// @dev Execution entries always SUCCEED at the top level — `executeCrossChainCall` returns
 ///      `entry.returnData` as success. There is no `failed` flag because **a reverting
 ///      top-level call isn't an execution; it's a lookup**. Reverting cross-chain results
 ///      are expressed via `LookupCall { failed: true }` consumed through `staticCallLookup`
-///      (static-context entry point) or the failed-reentry fallback in `_consumeNestedAction`.
+///      (static-context entry point) or the reverted-lookup fallback in `_consumeNestedAction`.
 ///      Naturally-reverting INNER calls inside an entry are still expressible: the proxy
 ///      `.call` returns `(false, retData)` and the rolling hash captures it via `CALL_END`;
 ///      the entry's outer `executeCrossChainCall` still returns success with `entry.returnData`.
@@ -97,6 +130,9 @@ struct ExecutionEntry {
     /// Parallel partition table: each `ExpectedOutgoingCrossChainCall` consumes a slice of `incomingCalls[]`
     /// during a reentrant frame. Order matches the order in which reentrant calls fire.
     ExpectedOutgoingCrossChainCall[] expectedOutgoingCalls;
+    /// Nested lookups (reentrant static reads + try/catch'd reverting reentrant calls)
+    /// consumed during this entry — entry-scoped; see `ExpectedLookup`.
+    ExpectedLookup[] expectedLookups;
     /// Top-level iterations. Together with `expectedOutgoingCalls[i].callCount`, partitions
     /// `incomingCalls[]` across the execution tree. See the natspec above.
     uint256 callCount;
@@ -104,50 +140,37 @@ struct ExecutionEntry {
     bytes32 rollingHash;
 }
 
-/// @notice Pre-computed result for a lookup call or a call that reverts.
-/// @dev Two modes, split on `failed`:
-///      - **Static (`failed == false`)** — read-only reentry resolved via `staticCallLookup`.
-///        `incomingCalls[]` (if any) replay in STATICCALL context and are hashed into `rollingHash`
-///        with the untagged static schema; reentry is encoded as *separate*
-///        `LookupCall`s sharing the same `(callNumber, lastOutgoingCallConsumed)`.
-///      - **Failed (`failed == true`)** — a reverting reentrant call resolved via the
-///        `_consumeNestedAction` fallback. When it carries a sub-execution (`callCount > 0`),
-///        it replays as a mini-entry: `incomingCalls[]` run as real calls and
-///        `expectedOutgoingCalls[]` supply reentry, folded into `rollingHash` with the tagged
-///        `CALL_*/NESTED_*` schema and checked like an entry, then the call reverts with
-///        `returnData`.
-///      Loaded via loadExecutionTable (L2). All proxies referenced by `incomingCalls` must be
-///      deployed before resolution.
+/// @notice TOP-LEVEL lookup: the pre-computed result of a top-level cross-chain call that is
+///         looked up rather than executed — a read-only call resolved via `staticCallLookup`,
+///         or a reverting call executed via `_tryRevertedTopLevelLookup`. Lives in the
+///         persistent `lookupCalls` table and is consumable ONLY outside an execution
+///         (`!_insideExecution()`). Nested lookups live inside
+///         `ExecutionEntry.expectedLookups` instead — see `ExpectedLookup`.
+/// @dev Match key: `crossChainCallHash` alone (L2 has no state roots, so no pins). Failed
+///      mode (`failed == true`) runs its sub-execution as a mini-entry (`incomingCalls`
+///      partitioned by `callCount` against `expectedOutgoingCalls`, nested lookups from its
+///      own `expectedLookups` table), then reverts with `returnData`. Static mode runs
+///      `incomingCalls` via STATICCALL (untagged schema) and returns `returnData` (or reverts
+///      with it when `failed`). All proxies referenced by `incomingCalls` must be deployed
+///      before static resolution. Loaded via loadExecutionTable / executeIncomingCrossChainCall.
 struct LookupCall {
     bytes32 crossChainCallHash;
     bytes returnData;
     bool failed;
-    /// 1-indexed global call number — the value of `_currentIncomingCall` at the moment this
-    /// lookup call was observed by the prover. Used as part of the lookup key in `staticCallLookup`
-    /// and the failed-lookup-call fallback in `_consumeNestedAction`. For a static read
-    /// observed *inside* a failed lookup's sub-execution, this is the failed lookup's fresh
-    /// sub-cursor value. NOTE: the lookup key does NOT encode which context is active — the
-    /// prover must keep keys collision-free across the entry and any failed-lookup
-    /// sub-executions.
-    uint64 callNumber;
-    /// Disambiguates multiple lookup calls fired during the same outer call (e.g., a
-    /// reentrant view query that triggers further static lookups). Matches
-    /// `_lastOutgoingCallConsumed` at the moment of observation.
-    uint64 lastOutgoingCallConsumed;
-    /// Sub-calls replayed during resolution. Static mode: STATICCALL, no `revertSpan`.
-    /// Failed mode: real calls (may host reentry and `revertSpan`), partitioned
+    /// Sub-calls executed during resolution. Static mode: STATICCALL, no `revertSpan`.
+    /// Reverted mode: real calls (may host reentry and `revertSpan`), partitioned
     /// against `expectedOutgoingCalls` exactly like `ExecutionEntry.incomingCalls`.
     CrossChainCall[] incomingCalls;
-    /// Failed-mode reentrant table — outgoing calls triggered while replaying `incomingCalls[]`.
-    /// Reuses the entry struct and is consumed sequentially by `_consumeNestedAction` while
-    /// `_insideFailedLookup` is set. Empty for static-mode lookups.
+    /// Reverted-mode reentrant table for the sub-execution. Empty for static mode.
     ExpectedOutgoingCrossChainCall[] expectedOutgoingCalls;
-    /// Failed-mode top-level iterations over `incomingCalls[]` (the entry-style `callCount`
-    /// partition: `callCount + Σ expectedOutgoingCalls[i].callCount == incomingCalls.length`).
-    /// Zero for static-mode lookups.
+    /// Reverted-mode nested lookups consumed during the sub-execution (the sub-execution's own flat table —
+    /// deeper reverted-lookup executions resolve from this same table). Empty for static mode.
+    ExpectedLookup[] expectedLookups;
+    /// Reverted-mode top-level iterations over `incomingCalls[]` (the entry-style `callCount`
+    /// partition). Zero for static mode.
     uint256 callCount;
-    /// Expected rolling hash of the replayed sub-calls — checked at resolution when
-    /// `incomingCalls[]` is non-empty. Static mode uses the untagged schema
-    /// (`_processNLookupCalls`); failed mode uses the tagged entry schema (`_replayFailedLookup`).
+    /// Expected rolling hash of the executed sub-calls — always checked (an empty
+    /// `incomingCalls[]` must carry `rollingHash == 0`). Untagged schema in static mode
+    /// (`_processNLookupCalls`); tagged entry schema in reverted mode.
     bytes32 rollingHash;
 }

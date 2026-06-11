@@ -1,287 +1,258 @@
-# LookupCall Specification
+# Lookup Specification (nested `ExpectedLookup` + top-level `LookupCall`)
 
-`LookupCall` is the replay structure for a cross-chain call that is **looked up** rather than
+A lookup is the sub-execution structure for a cross-chain call that is **looked up** rather than
 executed as a normal `ExecutionEntry` — either because it is **read-only** (a STATICCALL) or
-because it **reverts** (the caller made a reentrant call inside a `try/catch` and expects the
-revert). This document specifies the data model and the two resolution modes, with particular
-attention to the `callCount` partition — the field that is easy to get wrong.
+because it **reverts** (the caller made the call inside a `try/catch` and expects the revert).
 
-It complements `EXECUTION_TABLE_SPEC.md` (how `ExecutionEntry`s are built) and
+Since the entry-scoping redesign there are **two lookup structs in two homes**:
+
+| Struct | Lives in | Serves | Match key |
+|---|---|---|---|
+| `ExpectedLookup` (**nested**) | `ExecutionEntry.expectedLookups[]` (and a top-level lookup's own `expectedLookups[]` during its sub-execution) | reentrant static reads + try/catch'd reverting reentrant calls, fired `_insideExecution()` | `(crossChainCallHash, l2ToL1CallNumber, lastL1ToL2CallConsumed, executingLookupIndex)` |
+| `LookupCall` (**top-level**) | the storage pool: `_transientLookupCalls` / per-rollup `lookupQueue` (L1), `lookupCalls` (L2) | top-level static reads + top-level reverting calls, consumable ONLY when `!_insideExecution()` | `crossChainCallHash` + every `expectedStateRoots` pin live (L1; L2: hash alone) |
+
+This split is what makes lookups **entry-scoped by construction**: a nested lookup can only
+resolve from the entry (or executed top-level lookup) that carries it — no queue routing, no
+cross-entry collisions, no cross-rollup routing concerns. Field names below are L1's
+(`src/interfaces/IEEZ.sol`); L2 (`src/interfaces/IEEZL2.sol`) mirrors with self-relative names
+(`callNumber`, `lastOutgoingCallConsumed`, `incomingCalls`, `expectedOutgoingCalls`) and drops
+the L1-only fields (`destinationRollupId`, `expectedStateRoots`).
+
+This document complements `EXECUTION_TABLE_SPEC.md` (how `ExecutionEntry`s are built) and
 `SYNC_ROLLUPS_PROTOCOL_SPEC.md` §E/§F (rolling hash, lookup resolution).
 
-Field names in the body are L1's (`src/interfaces/IEEZ.sol`); L2 (`src/interfaces/IEEZL2.sol`)
-defines a leaner mirror struct with self-relative names — see §3 and §8.
-
 ---
 
-## 1. Why LookupCall has the shape it has
+## 1. The two modes (shared by both structs)
 
-The protocol has **two parallel replay structures**. Only one originally supported reentrant
-L1→L2 ("nested") calls:
-
-| Structure | flat calls | nested table | execution |
-|---|---|---|---|
-| `ExecutionEntry` | `l2ToL1Calls[]` | `expectedL1ToL2Calls[]` | real CALL, state applied |
-| `LookupCall` (old) | `calls[]` | — | STATICCALL, read-only |
-
-`LookupCall.calls[]` existed only for **read-only static reentry** (`staticCallLookup`), where
-sub-calls can't change state — so a nested table was never needed.
-
-Then `LookupCall` also became the backing for the **revert** path: a reverting reentrant call
-consumed via the failed-reentry fallback in `_consumeNestedAction`. A call that *actually
-executed and then reverted* may have triggered its own reentrant L1→L2 calls before reverting —
-which the old `calls[]` could not represent. So `LookupCall` gained an `expectedL1ToL2Calls[]`
-table and a `callCount`, making a **failed** lookup able to replay as a self-contained
-mini-entry. That is the whole point of the new fields.
-
----
-
-## 2. The two modes
-
-A `LookupCall` is interpreted in one of two modes, selected by `failed`:
+A lookup is interpreted in one of two modes, selected by `failed`:
 
 ### (A) Static — `failed == false`
-- Resolved by `staticCallLookup` (a `view` entry point) → `_resolveLookupCall`.
-- Read-only. `l2ToL1Calls[]` (if any) are replayed in **STATICCALL** context via `_processNLookupCalls`
-  and hashed with the **untagged** schema (`keccak256(prev, success, retData)` per sub-call),
-  checked against `rollingHash`.
+- Nested: resolved by `staticCallLookup`'s in-execution branch;
+  top-level: by its pool branch. Both resolve through the shared
+  `_resolveStaticLookup`.
+- Read-only. The sub-call array (if any) is executed in **STATICCALL** context via
+  `_processNLookupCalls` and hashed with the **untagged** schema
+  (`keccak256(prev, success, retData)` per sub-call), checked against `rollingHash`.
 - **No nested table, no partition** — `expectedL1ToL2Calls` is empty and **`callCount == 0`**.
-- Multiple reentrant reads "at the same moment" are encoded as **separate** `LookupCall`s that
-  share the same `(l2ToL1CallNumber, lastL1ToL2CallConsumed)`.
-- `expectedQueueIndices[]` pins each rollup's queue cursor at observation time (L1 only — the
-  L2 struct has no such field).
+- Multiple reentrant reads "at the same moment" are encoded as **separate** nested lookups
+  sharing the same `(l2ToL1CallNumber, lastL1ToL2CallConsumed, executingLookupIndex)`.
 
 ### (B) Failed — `failed == true`
-Resolved during execution — the reentrant fallback in `_consumeNestedAction` or the top-level
-fallback `_tryRevertedTopLevelLookup` — **always** via `_replayFailedLookup`. Two shapes by
+Resolved during execution, **always via a sub-execution** (`_executeRevertedNestedLookup` for nested,
+`_executeRevertedTopLevelLookup` for top-level — both end in `_executeRevertedLookup`). Two shapes by
 `callCount`:
 
 | `l2ToL1Calls.length` | `callCount` | resolution | hash schema |
 |---|---|---|---|
-| `0` | `0` | plain cached revert: `_replayFailedLookup` runs a no-op sub-execution, then reverts | (none; `rollingHash` must be `0`) |
-| `> 0` | `> 0` | **real state-mutating sub-execution** replayed as a mini-entry, then reverts | **tagged** |
+| `0` | `0` | plain cached revert: the sub-execution runs a no-op sub-execution, then reverts | (none; `rollingHash` must be `0`) |
+| `> 0` | `> 0` | **real state-mutating sub-execution** executed as a mini-entry, then reverts | **tagged** |
 
-There is **no `callCount`-based routing**: a plain failed lookup is just the `callCount == 0`
-case of the same `_replayFailedLookup` path (a touch more gas, much clearer code). `l2ToL1Calls.length > 0`
-with `callCount == 0` is **invalid** — the end check `_currentL2ToL1Call == l2ToL1Calls.length`
-(`UnconsumedL2ToL1Calls`) would fail. A failed lookup never resolves via `_resolveLookupCall`; that's the static-context path
-(`staticCallLookup` only), which still handles a *static read that happens to revert*.
+There is **no `callCount`-based routing**: a plain reverted lookup is just the `callCount == 0`
+case of the same execution path. `l2ToL1Calls.length > 0` with `callCount == 0` is **invalid** —
+the end check `_currentL2ToL1Call == l2ToL1Calls.length` (`UnconsumedL2ToL1Calls`) would fail.
+A reverted lookup never resolves via the static resolvers' return path; `staticCallLookup` still
+handles a *static read that happens to revert* (it reverts with `returnData`).
 
-In both shapes the call ultimately **reverts with `returnData`**, which the caller's `try/catch`
-observes.
+In both shapes the call ultimately **reverts with `returnData`**, which the caller's
+`try/catch` observes.
 
 ---
 
-## 3. Field reference
+## 2. Field reference
 
 ```solidity
 // L1 — src/interfaces/IEEZ.sol
-struct ExpectedQueueIndexPerRollup { uint256 rollupId; uint256 executionQueueIndex; }
 
-struct LookupCall {
+/// NESTED lookup — lives inside the entry (or a top-level lookup's sub-execution table).
+struct ExpectedLookup {
     bytes32 crossChainCallHash;        // identity of the looked-up call
-    uint256 destinationRollupId;       // routes to verificationByRollup[rid].lookupQueue
     bytes   returnData;                // returned on success / reverted-with on failure
-    bool    failed;                    // mode selector (see §2)
-    uint64  l2ToL1CallNumber;          // _currentL2ToL1Call at observation (content-addressing)
+    bool    failed;                    // mode selector (see §1)
+    uint64  l2ToL1CallNumber;          // _currentL2ToL1Call at observation
     uint64  lastL1ToL2CallConsumed;    // _lastL1ToL2CallConsumed at observation
-    L2ToL1Call[]         l2ToL1Calls;        // sub-calls replayed during resolution
-    ExpectedL1ToL2Call[] expectedL1ToL2Calls; // failed-mode nested table (reused from entries)
-    uint256              callCount;    // failed-mode top-level iteration count — see §4
-    bytes32 rollingHash;               // expected hash of the replayed sub-calls
-    ExpectedQueueIndexPerRollup[] expectedQueueIndices; // per-rollup execution-queue-index pins
+    uint64  executingLookupIndex;      // execution context at observation — see §5
+    L2ToL1Call[]         l2ToL1Calls;        // sub-calls executed at resolution
+    ExpectedL1ToL2Call[] expectedL1ToL2Calls; // reverted-mode reentrant table
+    uint256              callCount;    // reverted-mode top-level iteration count — see §3
+    bytes32 rollingHash;               // expected hash of the executed sub-calls
 }
 
-// L2 — src/interfaces/IEEZL2.sol (no destinationRollupId, no expectedQueueIndices)
+/// TOP-LEVEL lookup — lives in the storage pool; consumable only outside an execution.
+struct ExpectedStateRootPerRollup { uint256 rollupId; bytes32 stateRoot; }
+
 struct LookupCall {
     bytes32 crossChainCallHash;
+    uint256 destinationRollupId;       // which lookupQueue this is published under (L1)
     bytes   returnData;
     bool    failed;
-    uint64  callNumber;                // _currentIncomingCall at observation
-    uint64  lastOutgoingCallConsumed;  // _lastOutgoingCallConsumed at observation
-    CrossChainCall[]                 incomingCalls;         // sub-calls replayed during resolution
-    ExpectedOutgoingCrossChainCall[] expectedOutgoingCalls; // failed-mode nested table
-    uint256                          callCount;
+    L2ToL1Call[]         l2ToL1Calls;
+    ExpectedL1ToL2Call[] expectedL1ToL2Calls;
+    ExpectedLookup[]     expectedLookups;   // nested lookups consumed while a reverted lookup executes
+    uint256              callCount;
     bytes32 rollingHash;
+    ExpectedStateRootPerRollup[] expectedStateRoots; // part of the MATCH — see §6
 }
 ```
 
-- **`l2ToL1Calls`** (L2: `incomingCalls`) — the flat list of sub-calls. Static mode: STATICCALL,
-  read-only, `revertSpan` not allowed. Failed real-execution mode: **real** calls (may host
-  nested reentry and `revertSpan`), partitioned against `expectedL1ToL2Calls` exactly like
-  `ExecutionEntry.l2ToL1Calls`.
-- **`expectedL1ToL2Calls`** (L2: `expectedOutgoingCalls`) — the failed-mode nested table:
-  pre-computed results for reentrant L1→L2 (L2: outgoing) calls fired *during* the
-  sub-execution, consumed sequentially by `_consumeNestedAction` while `_insideFailedLookup`
-  is set. Empty in static mode. Reuses the entry struct (`ExpectedL1ToL2Call` /
-  `ExpectedOutgoingCrossChainCall`) so the same `_processNCalls` / `_consumeNestedAction`
-  machinery drives it.
-- **`callCount`** — the partition parameter; see §4. **Zero for static mode** and for plain
-  failed reverts.
-- **`rollingHash`** — checked against the replayed sub-calls. Untagged schema in static mode,
-  tagged `CALL_*/NESTED_*` schema in failed real-execution mode (because nesting boundaries
-  must be captured).
-- **`l2ToL1CallNumber` / `lastL1ToL2CallConsumed`** (L2: `callNumber` / `lastOutgoingCallConsumed`)
-  — content-addressing coordinates: the cursor values the prover observed when the looked-up
-  call fired. For a static read observed *inside* a failed lookup's sub-execution, these are the
-  failed lookup's **fresh sub-cursor** values. NOTE: the lookup key does **not** encode which
-  context is active — the prover must keep keys collision-free across the entry and any
-  failed-lookup sub-executions (see §7).
-- **`destinationRollupId` / `expectedQueueIndices`** — L1-only; see §7 and §8.
+Notes:
+
+- **No cursor coordinates on the top-level struct.** The old `(0, 0)` key encoded "top-level"
+  implicitly; the explicit `!_insideExecution()` gate replaces it.
+- **`expectedLookups` on `LookupCall`** exists so a top-level reverted lookup can host nested
+  lookups of its own. `ExpectedLookup` cannot nest itself (Solidity forbids recursive structs):
+  deeper lookups inside ANY lookup sub-execution resolve from the **same host table** — the entry's
+  `expectedLookups`, or the executed top-level lookup's. `executingLookupIndex` (§5) makes
+  those flat-table keys context-unambiguous.
+- **`destinationRollupId`** (top-level, L1) routes publishing into
+  `verificationByRollup[rid].lookupQueue`. It is coherent by construction: the consumption
+  scan targets the proxy's `originalRollupId`, which is the target rollup bound into
+  `crossChainCallHash`.
 
 ---
 
-## 4. The `callCount` partition (read this carefully)
+## 3. The `callCount` partition (read this carefully)
 
-`callCount` exists **only for a failed-mode real sub-execution** and means exactly what
-`ExecutionEntry.callCount` means: it is the number of **top-level** iterations the
-sub-execution's `_processNCalls` runs over `l2ToL1Calls[]`.
-
-A real sub-execution's `l2ToL1Calls[]` is the **full flat list** of every call it makes, in execution
-order, partitioned between the top-level frame and any reentrant (nested) frames:
-
-```
-callCount                         = iterations the TOP-LEVEL frame runs
-expectedL1ToL2Calls[i].callCount  = iterations the i-th nested frame runs
-```
-
-with the **partition invariant**, checked on-chain at the end of the replay:
+`callCount` exists **only for a reverted-mode real sub-execution** and means exactly what
+`ExecutionEntry.callCount` means: the number of **top-level** iterations the sub-execution's
+`_processNCalls` runs over `l2ToL1Calls[]`, with the partition invariant checked on-chain at
+the end of the sub-execution:
 
 ```
 callCount + Σ expectedL1ToL2Calls[i].callCount == l2ToL1Calls.length
 ```
 
 A single global cursor (`_currentL2ToL1Call`; L2: `_currentIncomingCall`) advances
-**monotonically** over `l2ToL1Calls[]` — there
-is only one cursor across the whole sub-tree. When a top-level call triggers a reentrant L1→L2
-proxy call, control re-enters via `executeCrossChainCall` → `_consumeNestedAction`, which runs
-`_processNCalls(expectedL1ToL2Calls[i].callCount)` over the **same** `l2ToL1Calls[]`, advancing the
-same cursor; the top-level frame resumes where the cursor left off.
+monotonically over the sub-execution's `l2ToL1Calls[]` — one cursor across the whole sub-tree,
+exactly like an entry.
 
 ### Worked example
 `l2ToL1Calls.length = 4`:
 - call 0: top-level, no reentry.
-- call 1: top-level, triggers a reentrant L1→L2 call → matched against `expectedL1ToL2Calls[0]`,
+- call 1: top-level, triggers a reentrant call → matched against `expectedL1ToL2Calls[0]`,
   whose `callCount = 2` consumes calls 2 and 3 inside the nested frame.
 
-⇒ `callCount = 2` (calls 0 and 1 at the top-level frame), `expectedL1ToL2Calls[0].callCount = 2`
-(calls 2, 3 nested), and `2 + 2 == 4 == l2ToL1Calls.length`. `_currentL2ToL1Call == 4` at the end.
+⇒ `callCount = 2`, `expectedL1ToL2Calls[0].callCount = 2`, and `2 + 2 == 4`.
 
-### Why `callCount == 0` for static (and plain) lookups
-Static lookups (and plain failed reverts) **do not run a partitioned execution**. Their `l2ToL1Calls[]`
-are replayed *flatly* by `_processNLookupCalls` — a simple loop that STATICCALLs every element
-and folds an untagged hash. There is no top-level/nested frame split, no `_currentL2ToL1Call`
-cursor, and no nested table — so there is nothing to partition. `callCount` is therefore unused
-and **must be 0** (a prover convention — `_resolveLookupCall` never reads it). On-chain, the
-path split is by **context**, not by `callCount`: a `failed` lookup matched during execution
-always resolves via `_replayFailedLookup` (with `callCount == 0` the sub-execution is a no-op),
-and `staticCallLookup` always resolves via `_resolveLookupCall`.
+### Why `callCount == 0` for static (and plain failed) lookups
+Static lookups run their `l2ToL1Calls[]` *flatly* via `_processNLookupCalls` — a simple
+STATICCALL loop with an untagged hash. No frame split, no cursor, no nested table — nothing to
+partition. `callCount` is unused and **must be 0** (a prover convention — the static resolvers
+never read it). The mode split is by **context**, not by `callCount`: a `failed` lookup
+matched during execution always runs; `staticCallLookup` always resolves statically.
 
-> Pitfall: setting `callCount = 0` while providing a non-empty `expectedL1ToL2Calls` is
-> malformed — a nested frame can only be entered from a top-level call, so a real sub-execution
-> always has `callCount >= 1`. Conversely, `callCount > 0` on a static lookup is dead weight:
-> `_resolveLookupCall` ignores it, and a `failed == false` lookup is never matched by the
+> Pitfall: `callCount = 0` with a non-empty `expectedL1ToL2Calls` is malformed — a nested
+> frame can only be entered from a top-level call, so a real sub-execution always has
+> `callCount >= 1`. Conversely, a `failed == false` lookup is never matched by the
 > execution-context fallbacks (they require `failed == true`).
 
 ---
 
-## 5. Resolution mechanics
+## 4. Resolution mechanics
 
-### Static context (`staticCallLookup`, `view`) — `_resolveLookupCall`
-Handles a static read, whether it returns or reverts:
-1. `_checkExpectedRollupExecutionQueueIndex(sc)` — verify `expectedQueueIndices[]` against the
-   live per-rollup `executionQueueIndex` (L1 only; L2 has neither the field nor the function).
-2. **Always** `_processNLookupCalls(sc.l2ToL1Calls)` (STATICCALL each, untagged hash) and require it
-   equals `rollingHash`. Empty `l2ToL1Calls[]` hashes to 0, which must equal a sub-call-less lookup's
-   `rollingHash` (0).
-3. If `failed` → `revert(returnData)`, else return `returnData`.
+### Static context (`staticCallLookup`, `view`)
+Branches on `_insideExecution()`:
 
-### Execution context (failed lookups) — `_replayFailedLookup`
-Every failed lookup consumed during execution (reentrant or top-level), **whatever its
-`callCount`**, runs inline in the consuming `executeCrossChainCall` frame:
+- **Inside an execution** → scan the active host's `expectedLookups`
+  (`_getActiveLookups()` — the entry's table, or the executed top-level lookup's) for the 4-tuple
+  key.
+- **Outside** → scan `_transientLookupCalls` then the routed rollup's `lookupQueue`
+  (L2: the single `lookupCalls` pool) for `crossChainCallHash` with **all state-root pins
+  live** (§6).
+
+Both branches resolve through `_resolveStaticLookup`: run the sub-calls statically, require the
+untagged hash to equal `rollingHash` (an empty array must carry `rollingHash == 0`), then
+return `returnData` — or revert with it when `failed`.
+
+### Execution context (reverted lookups) — `_executeRevertedNestedLookup` / `_executeRevertedTopLevelLookup`
+Both run inline in the consuming `executeCrossChainCall` frame and share `_executeRevertedLookup`:
+
 ```
-_checkExpectedRollupExecutionQueueIndex(sc)        // same pin as the static path (L1 only)
-set _insideFailedLookup + pointer (_failedLookupIndex; L1 also _failedLookupRollupId = sc.destinationRollupId)
+set the sub-execution pointers:
+  nested:    _revertedLookupIndex = index; _insideRevertedLookup = true
+  top-level: _topLevelLookupIndex = index; _revertedLookupTopLevel = true
+             (+ _revertedLookupRollupId = destinationRollupId on L1, to re-derive the pool)
 reset sub-cursors (_rollingHash, _currentL2ToL1Call, _lastL1ToL2CallConsumed = 0)
-_processNCalls(sc.callCount)                         // 0 ⇒ no-op; nested reentry → _consumeNestedAction over sc.expectedL1ToL2Calls
-require _rollingHash == sc.rollingHash
-require _currentL2ToL1Call == sc.l2ToL1Calls.length  // partition invariant
-require _lastL1ToL2CallConsumed == sc.expectedL1ToL2Calls.length
-revert(sc.returnData)
+_processNCalls(callCount)                  // 0 ⇒ no-op; reentry → _consumeNestedAction
+require _rollingHash == rollingHash
+require _currentL2ToL1Call == l2ToL1Calls.length          // partition invariant
+require _lastL1ToL2CallConsumed == expectedL1ToL2Calls.length
+revert(returnData)
 ```
+
 The terminal `revert` discards the sub-call **state changes** *and* restores the outer cursors
-(the EVM rolls back every tstore write in this frame); the pre-revert hash/count checks need no
-`ContextResult` escape. Nested failed lookups compose for free via that same revert unwind.
+(the EVM rolls back every tstore write in this frame); the pre-revert checks need no
+`ContextResult` escape. Deeper reverted-lookup executions compose for free via that same revert unwind.
+
+A top-level reverted lookup is reachable from `_tryRevertedTopLevelLookup` (the
+`_consumeAndExecute` miss path); a nested one from the fallback inside `_consumeNestedAction`.
 
 ---
 
-## 6. Rolling-hash schemas
+## 5. Context binding: `executingLookupIndex` (enforced, not convention)
 
-- **Static / flat replay** (`_processNLookupCalls`): untagged
-  `keccak256(prev, success, retData)` per sub-call. Safe because the surrounding `LookupCall` is
-  already content-addressed by `(crossChainCallHash, l2ToL1CallNumber, lastL1ToL2CallConsumed)`,
-  which pins the call/nesting context the entry-level tags would otherwise disambiguate.
-- **Failed real sub-execution** (`_replayFailedLookup` via `_processNCalls`): the **tagged**
-  entry schema (`CALL_BEGIN`/`CALL_END`/`NESTED_BEGIN`/`NESTED_END`), because the nesting
-  boundaries inside the sub-execution must be captured — identical to how an `ExecutionEntry`'s
-  rolling hash is built.
+Every nested lookup records the execution context it fires in:
 
----
+- `0` — fired at entry/host level (no nested reverted-lookup execution active);
+- `k` — fired inside the sub-execution of `expectedLookups[k-1]` of the same host.
 
-## 7. Scope, content addressing, and cursors
-
-- **`_insideFailedLookup`** (transient) re-points `_activeCalls()` / `_activeNested()` inside a
-  failed sub-execution: reentrant state-changing calls consume the **lookup's** `expectedL1ToL2Calls`
-  (not the entry's), and a mid-replay STATIC read is keyed by the failed lookup's **fresh
-  sub-cursor** `(l2ToL1CallNumber, lastL1ToL2CallConsumed)`. The lookup key itself does **not**
-  encode whether a failed-lookup sub-execution is active — `staticCallLookup` matches only on
-  `(crossChainCallHash, l2ToL1CallNumber, lastL1ToL2CallConsumed)`, so the prover must keep keys
-  collision-free across the entry and any failed-lookup sub-executions.
-- **`expectedQueueIndices`** (L1 only) pins a lookup to a specific point in the **per-rollup
-  execution-queue interleaving**: at resolve time the contract requires
-  `verificationByRollup[rollupId].executionQueueIndex == executionQueueIndex` for each entry, else
-  `ExecutionQueueIndexMismatch`. Checked by `_checkExpectedRollupExecutionQueueIndex` on **both**
-  resolution paths — static (`_resolveLookupCall`) and failed (`_replayFailedLookup`). It's the
-  content-addressing key that keeps a cached result valid only against the consumption
-  interleaving it was proven for. (Replaces the earlier state-root idea.)
+At match time the scan compares it against the live context
+(`_insideRevertedLookup ? _revertedLookupIndex + 1 : 0`). Together with the two cursor
+coordinates this makes the flat host table unambiguous across the entry and all of its
+execution contexts — the old "prover must keep keys collision-free across contexts" note is now
+an **on-chain check**. (Only identical keys at the SAME depth chain — e.g. the same lookup sub-execution
+entered from two different colliding paths — remain a prover-care item, and those already
+require fully colliding keys elsewhere.)
 
 ---
 
-## 8. L1 / L2 differences
+## 6. State-root pins (top-level, L1 only)
 
-The two sides intentionally diverge:
-- They define **different `LookupCall` structs** (see §3). `destinationRollupId` and
-  `expectedQueueIndices` are **L1-only** — the L2 struct drops them entirely (no parity
-  placeholders): L2 has a single rollup and a single sequential table, so there is nothing to
-  route or pin. `_checkExpectedRollupExecutionQueueIndex` exists only in `EEZ.sol`; L2's
-  `_resolveLookupCall` / `_replayFailedLookup` have no pin step.
-- Field naming differs: L1 is absolute-directional (`l2ToL1CallNumber`, `lastL1ToL2CallConsumed`,
-  `l2ToL1Calls`, `expectedL1ToL2Calls` of type `ExpectedL1ToL2Call`); L2 is self-relative
-  (`callNumber`, `lastOutgoingCallConsumed`, `incomingCalls`, `expectedOutgoingCalls` of type
-  `ExpectedOutgoingCrossChainCall`), because an L2's counterparty can be L1 **or** another L2.
-- L1 scans a **transient** lookup table (`_transientLookupCalls`, the meta-hook window) then the
-  persistent per-rollup `lookupQueue`; L2 scans only the persistent `lookupCalls` loaded via
-  `loadExecutionTable`.
-- The failed-lookup pointer: L1 stores `(_failedLookupIndex, _failedLookupRollupId)` and
-  re-derives the source table from `_transientExecutions.length`; L2 needs only
-  `_failedLookupIndex` (single table).
+`expectedStateRoots[]` content-addresses a top-level lookup to a point on each pinned
+rollup's trajectory: a candidate only **matches** when every pin equals the live
+`rollups[rollupId].stateRoot` (full-scan semantics — a mismatching candidate is skipped, the
+scan continues; no dedicated error). Replaces the old `expectedQueueIndices` cursor pins,
+with three concrete wins:
+
+- **Split-independent** — roots don't depend on the transient/persistent split
+  (`transientExecutionEntryCount` stays an unproven dispatch parameter, as documented).
+- **Transient-phase capable** — roots advance entry-by-entry during the batch; the old
+  cursor pins were blind there (all per-rollup cursors are 0).
+- **Re-verify robust** — a same-block re-verify resets cursors but the root trajectory
+  continues coherently.
+
+Use them to pin a cached read to the cross-rollup interleaving it was proven against. The
+prover decides which rollups to pin; an empty array matches unconditionally.
 
 ---
 
-## 9. Invariants (summary)
+## 7. L1 / L2 differences
 
-- `failed == false` ⇒ `callCount == 0`, `expectedL1ToL2Calls.length == 0`.
+- L2's structs drop `destinationRollupId` and `expectedStateRoots` entirely (single rollup,
+  no state roots) and use self-relative names. The L2 top-level pool (`lookupCalls`) is
+  matched by `crossChainCallHash` alone.
+- L1 scans the **transient** pool (`_transientLookupCalls`, the meta-hook window) before the
+  persistent per-rollup `lookupQueue`; L2 scans only `lookupCalls`.
+- Sub-execution pointers: both sides use `_revertedLookupIndex` / `_insideRevertedLookup` (nested) and
+  `_topLevelLookupIndex` / `_revertedLookupTopLevel` (top-level host); L1 additionally keeps
+  `_revertedLookupRollupId` to re-derive the persistent pool, with the transient-vs-persistent
+  source re-derived from `_transientExecutions.length`.
+
+---
+
+## 8. Invariants (summary)
+
+- `failed == false` ⇒ `callCount == 0`, `expectedL1ToL2Calls.length == 0` (and for top-level:
+  `expectedLookups.length == 0`).
 - `callCount > 0` ⇒ `failed == true`, real sub-execution, tagged hash, and
   `callCount + Σ expectedL1ToL2Calls[i].callCount == l2ToL1Calls.length`.
-- A failed lookup with `l2ToL1Calls.length > 0` requires `callCount > 0` — no read-only static
-  sub-calls in a failed lookup (the `_currentL2ToL1Call == l2ToL1Calls.length` check —
-  `UnconsumedL2ToL1Calls` — would fail).
+- A reverted lookup with `l2ToL1Calls.length > 0` requires `callCount > 0`.
 - `expectedL1ToL2Calls.length > 0` ⇒ `callCount >= 1` (nesting requires a top-level caller).
-- Static `l2ToL1Calls[]` use the untagged hash; failed real-execution `l2ToL1Calls[]` use the tagged hash.
-- Failed lookups always resolve via `_replayFailedLookup` (reentrant *and* top-level); static
-  reads via `_resolveLookupCall`.
-- `destinationRollupId` (L1 only) MUST equal the queue the lookup is published under —
-  load-bearing for `_replayFailedLookup` / `_currentFailedLookup` to recover the queue
-  mid-replay.
-- A failed lookup always reverts with `returnData`; a static lookup returns it (or reverts with
-  it if that static read is itself `failed`).
+- Static sub-calls use the untagged hash; failed sub-executions use the tagged hash.
+- Nested lookups resolve ONLY from the active host's `expectedLookups`; top-level lookups
+  ONLY from the pool and ONLY when `!_insideExecution()`.
+- A reverted lookup always reverts with `returnData`; a static lookup returns it (or reverts
+  with it if that static read is itself `failed`).
+- PROVER OBLIGATION: cross-rollup consistency of a *sub-call-less* nested static read is
+  attested at the proof layer — the entry's deltas pin only the rollups they touch (top-level
+  lookups can use state-root pins instead).

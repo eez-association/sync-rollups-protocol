@@ -141,9 +141,7 @@ contract BlockNumberBindingTest is Base {
         vm.roll(500);
         vm.warp(123_456);
         ProofSystemBatchPerVerificationEntries memory batch = _batchWithBlockNumber(type(uint64).max);
-        ps.setExpectedPublicInputsHash(
-            _expectedPublicInputsHash(batch, block.timestamp, blockhash(block.number - 1))
-        );
+        ps.setExpectedPublicInputsHash(_expectedPublicInputsHash(batch, block.timestamp, blockhash(block.number - 1)));
         rollups.postAndVerifyBatch(batch);
         _assertEntryApplied();
     }

@@ -5,7 +5,14 @@ import {Test, Vm} from "forge-std/Test.sol";
 import {EEZL2} from "../src/L2/EEZL2.sol";
 import {EEZBase} from "../src/base/EEZBase.sol";
 import {CrossChainProxy} from "../src/base/CrossChainProxy.sol";
-import {ExecutionEntry, CrossChainCall, ExpectedOutgoingCrossChainCall, LookupCall} from "../src/interfaces/IEEZL2.sol";
+import {
+    ExecutionEntry,
+    CrossChainCall,
+    ExpectedOutgoingCrossChainCall,
+    ExpectedLookup,
+    LookupCall
+} from "../src/interfaces/IEEZL2.sol";
+import {Counter, SafeCounterAndProxy} from "./mocks/CounterContracts.sol";
 
 contract L2TestTarget {
     uint256 public value;
@@ -293,7 +300,7 @@ contract EEZL2Test is Test {
     }
 
     // ──────────────────────────────────────────────
-    //  Top-level failed-LookupCall fallback
+    //  Top-level reverted-LookupCall fallback
     // ──────────────────────────────────────────────
     //
     // L2 has no transient table: `_consumeAndExecute` misses on the (empty) `executions`,
@@ -302,7 +309,7 @@ contract EEZL2Test is Test {
     // the cached `returnData`. `executionIndex` is never advanced. The negative case (empty
     // lookupCalls + no entry → ExecutionNotFound) is covered by
     // `test_ExecuteCrossChainCall_RevertsExecutionNotFound` above. See docs §D.3.
-    function test_FailedLookupCall_TopLevel_Reverts() public {
+    function test_RevertedLookup_TopLevel_Reverts() public {
         address proxy = manager.createCrossChainProxy(address(target), TEST_ROLLUP_ID);
 
         bytes memory cd = abi.encodeCall(L2TestTarget.setValue, (7));
@@ -314,8 +321,6 @@ contract EEZL2Test is Test {
         lookups[0].crossChainCallHash = h;
         lookups[0].returnData = payload;
         lookups[0].failed = true;
-        lookups[0].callNumber = 0;
-        lookups[0].lastOutgoingCallConsumed = 0;
         lookups[0].incomingCalls = new CrossChainCall[](0);
         lookups[0].rollingHash = bytes32(0);
 
@@ -328,13 +333,64 @@ contract EEZL2Test is Test {
         (bool ok, bytes memory ret) = proxy.call(cd);
         assertFalse(ok);
         assertEq(ret, payload);
-        assertEq(manager.executionIndex(), idxBefore, "failed lookup must not advance executionIndex");
+        assertEq(manager.executionIndex(), idxBefore, "reverted lookup must not advance executionIndex");
 
-        // Content-addressed + replayable: a second identical call reverts identically, still no advance.
+        // Content-addressed + repeatable: a second identical call reverts identically, still no advance.
         (ok, ret) = proxy.call(cd);
         assertFalse(ok);
         assertEq(ret, payload);
         assertEq(manager.executionIndex(), idxBefore);
+    }
+
+    /// @notice NESTED reverted lookup, entry-scoped (L2 mirror): a reentrant call with no
+    ///         ExpectedOutgoingCrossChainCall match falls back to the entry's own
+    ///         `expectedLookups`, reverts with the cached returnData, and the caller's try/catch
+    ///         absorbs it.
+    function test_NestedRevertedLookup_EntryScoped_RevertsAndCatches() public {
+        // Inner target: proxy on L2 for a Counter living on MAINNET (rollup 0).
+        address counterL1 = address(0xC0117E1);
+        address counterProxy = manager.createCrossChainProxy(counterL1, 0);
+        SafeCounterAndProxy scap = new SafeCounterAndProxy(Counter(counterProxy));
+
+        address outerProxy = manager.createCrossChainProxy(address(scap), TEST_ROLLUP_ID);
+        bytes memory outerCd = abi.encodeCall(SafeCounterAndProxy.incrementProxy, ());
+        bytes memory innerCd = abi.encodeCall(Counter.increment, ());
+
+        bytes32 outerHash = _computeActionHash(TEST_ROLLUP_ID, address(scap), 0, outerCd, address(this), TEST_ROLLUP_ID);
+        // L2 forces sourceRollupId = ROLLUP_ID for reentrant calls it issues.
+        bytes32 innerHash = _computeActionHash(0, counterL1, 0, innerCd, address(scap), TEST_ROLLUP_ID);
+
+        CrossChainCall memory cc = CrossChainCall({
+            targetAddress: address(scap),
+            value: 0,
+            data: outerCd,
+            sourceAddress: address(this),
+            sourceRollupId: TEST_ROLLUP_ID,
+            revertSpan: 0
+        });
+        ExecutionEntry memory entry = _buildSimpleEntry(outerHash, cc, "", _rollingHashSingleCall(""));
+
+        ExpectedLookup[] memory lookups = new ExpectedLookup[](1);
+        lookups[0] = ExpectedLookup({
+            crossChainCallHash: innerHash,
+            returnData: bytes("inner reverts"),
+            failed: true,
+            callNumber: 1,
+            lastOutgoingCallConsumed: 0,
+            executingLookupIndex: 0,
+            incomingCalls: new CrossChainCall[](0),
+            expectedOutgoingCalls: new ExpectedOutgoingCrossChainCall[](0),
+            callCount: 0,
+            rollingHash: bytes32(0)
+        });
+        entry.expectedLookups = lookups;
+        _loadSingleEntry(entry);
+
+        (bool ok,) = outerProxy.call(outerCd);
+        assertTrue(ok, "outer call must succeed");
+        assertEq(scap.counter(), 1, "outer call must run");
+        assertTrue(scap.lastCallFailed(), "inner call must revert via the entry-scoped lookup");
+        assertEq(scap.targetCounter(), 0, "inner call must not have executed");
     }
 
     function test_ExecuteCrossChainCall_SimpleResult() public {

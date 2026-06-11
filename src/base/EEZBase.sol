@@ -10,8 +10,8 @@ import {CrossChainProxy} from "./CrossChainProxy.sol";
 ///      specific execution struct (those structs differ per side — `IEEZ.sol` vs `IEEZL2.sol`):
 ///        - Rolling-hash tag constants, the `_rollingHash` accumulator, and the fold helpers
 ///          (they operate on primitives, so they don't reference any execution struct).
-///        - Neutral transient pointers: `_currentEntryIndex`, `_insideFailedLookup`, and
-///          `_failedLookupIndex`.
+///        - Neutral transient pointers: `_currentEntryIndex`, `_insideRevertedLookup`,
+///          `_revertedLookupIndex`, `_revertedLookupTopLevel`, and `_topLevelLookupIndex`.
 ///        - The `authorizedProxies` registry, the external `createCrossChainProxy` entry point,
 ///          and the internal CREATE2 deploy helper (`_createCrossChainProxyInternal`).
 ///        - Pure / view helpers (`computeCrossChainCallHash`, `computeCrossChainProxyAddress`).
@@ -25,9 +25,9 @@ import {CrossChainProxy} from "./CrossChainProxy.sol";
 ///          `_lastL1ToL2CallConsumed`), self-relative on L2 (`_currentIncomingCall` /
 ///          `_lastOutgoingCallConsumed`) — and `_insideExecution()`.
 ///        - `_processNCalls`, `_consumeNestedAction`, `_consumeAndExecute`.
-///        - `_activeCalls` / `_activeNested`, `_getCurrentEntryStoragePointer`,
-///          `_currentFailedLookup`, `_resolveLookupCall`, `_processNLookupCalls`,
-///          `_replayFailedLookup`, `staticCallLookup`.
+///        - `_activeCalls` / `_activeNested` / `_getActiveLookups`, `_getCurrentEntryStoragePointer`,
+///          `_currentTopLevelLookup`, `_resolveStaticLookup`, `_processNLookupCalls`,
+///          `_executeRevertedNestedLookup` / `_executeRevertedTopLevelLookup`, `staticCallLookup`.
 ///        - The per-side events and errors (L1: `L1ToL2CallConsumed`, `UnconsumedL2ToL1Calls`, …;
 ///          L2: `OutgoingCallConsumed`, `UnconsumedIncomingCalls`, …).
 abstract contract EEZBase is IEEZ {
@@ -59,19 +59,29 @@ abstract contract EEZBase is IEEZ {
     ///      Both meanings are consistent — the child decides where the cursor points.
     uint256 transient _currentEntryIndex;
 
-    /// @notice True while replaying a `failed` LookupCall's sub-execution (`_replayFailedLookup`).
-    /// @dev Scopes `_activeCalls()` / `_activeNested()` and the inner-static branch of
-    ///      `staticCallLookup` to the failed lookup instead of the containing entry. Always
-    ///      cleared by the terminal revert of the replay — and, for nested failed lookups,
+    /// @notice True while executing a reverted NESTED lookup (`_executeRevertedNestedLookup`) — the
+    ///         `ExpectedLookup` at `_revertedLookupIndex` within the active host table.
+    /// @dev Scopes `_activeCalls()` / `_activeNested()` to that lookup instead of the host.
+    ///      Always cleared by the terminal revert of the sub-execution — and, for deeper reverted-lookup executions,
     ///      restored to the parent's value by that same revert unwind (transient).
-    bool transient _insideFailedLookup;
+    bool transient _insideRevertedLookup;
 
-    /// @notice Locates the failed LookupCall currently being replayed. Storage refs can't be
-    ///         transient, so the child encodes the index here and reconstructs the storage
-    ///         pointer in `_currentFailedLookup()`. The source table is NOT stored: L1
-    ///         re-derives it from `_transientExecutions.length` (transient prefix vs persistent
-    ///         queue, the latter keyed by L1's own `_failedLookupRollupId`); L2 has a single table.
-    uint256 transient _failedLookupIndex;
+    /// @notice Index of the nested `ExpectedLookup` being executed, within the active host
+    ///         table (`_getActiveLookups()`). Storage refs can't be transient, so the child
+    ///         reconstructs the pointer from this index.
+    uint256 transient _revertedLookupIndex;
+
+    /// @notice True while a reverted TOP-LEVEL `LookupCall` is the active host
+    ///         (`_executeRevertedTopLevelLookup`) — the pool lookup at `_topLevelLookupIndex` supplies
+    ///         the flat calls, reentrant table, and nested-lookup table instead of an entry.
+    bool transient _revertedLookupTopLevel;
+
+    /// @notice Pool index of the top-level `LookupCall` being executed. Kept separate from
+    ///         `_revertedLookupIndex` so a nested reverted-lookup execution inside a top-level reverted-lookup execution doesn't
+    ///         clobber the pool coordinate. L1 re-derives the pool (transient table vs
+    ///         per-rollup queue keyed by `_revertedLookupRollupId`) from
+    ///         `_transientExecutions.length`; L2 has a single table.
+    uint256 transient _topLevelLookupIndex;
 
     // ──────────────────────────────────────────────
     //  Events
@@ -224,7 +234,7 @@ abstract contract EEZBase is IEEZ {
     // because they're verified against `LookupCall.rollingHash`, a separate accumulator
     // whose surrounding lookup key already pins the entry/call/nesting context. See spec §E.2.
     //
-    // These tags are protocol constants — a call replayed on either chain MUST hash the same
+    // These tags are protocol constants — a call executed on either chain MUST hash the same
     // way for the proof, so the "nested" wording here is the neutral rolling-hash frame
     // concept, NOT a direction (the directional naming lives in the per-side children).
 
