@@ -2,17 +2,17 @@
 
 ## 0. Introduction
 
-The binary format for publishing cross-chain activity — typically in data blobs — as a
-single stream of uniform messages: a fixed header (§1) followed by `message_count`
-messages (§2). **Everything is a message** — chain-local operations, cross-chain calls,
-results, reverts, and transaction boundaries differ only by message type.
+The binary format for publishing cross-chain activity in data blobs. Each blob is a
+fixed header (§1) followed by `message_count` uniform messages (§2). **Everything is a
+message** — chain-local operations, cross-chain calls, results, reverts, and transaction
+boundaries differ only by message type.
 
-The stream is the protocol's publication layer: it describes *what happened* across the
-chain set, in execution order, for off-chain consumers — provers, nodes, indexers. It is
-not parsed on-chain. This document specifies only the byte framing; carrier-specific
-rules (e.g. packing bytes into blob field elements) are out of scope, and the same
-stream may equally travel as calldata. How the described activity is *verified* on-chain
-is the subject of `CORE_PROTOCOL_SPEC.md` and `EXECUTION_ENTRY_SPEC.md`; §7 maps this
+Blobs are the protocol's publication layer: they describe *what happened* across the
+chain set, in execution order, for off-chain consumers — provers, nodes, indexers. They
+are not parsed on-chain. This document specifies only the byte framing; carrier-specific
+rules (e.g. packing bytes into blob field elements) are out of scope, and the same bytes
+may equally travel as calldata. How the described activity is *verified* on-chain is the
+subject of `CORE_PROTOCOL_SPEC.md` and `EXECUTION_ENTRY_SPEC.md`; §7 maps this
 document's vocabulary onto theirs. A byte-exact test vector lives in §6.
 
 Excalidraw: https://excalidraw.com/#json=Z3jnEhvOs2YNCW-kPD4D9,5ayFroISG8KGF0vY2UBf_Q
@@ -21,7 +21,7 @@ Excalidraw: https://excalidraw.com/#json=Z3jnEhvOs2YNCW-kPD4D9,5ayFroISG8KGF0vY2
 
 ## 1. Initial header
 
-The byte stream opens with a fixed 16-byte header:
+Every blob opens with a fixed 16-byte header:
 
 ```c
 struct HeaderV1 {            // offset  size
@@ -29,7 +29,7 @@ struct HeaderV1 {            // offset  size
     u16  version;            //   4      2    = 1
     u16  flags;              //   6      2    = 0 in v1
     u32  message_count;      //   8      4    number of Messages following the header
-    u32  file_size;          //  12      4    bytes of this blob actually used
+    u32  blob_size;          //  12      4    bytes of this blob actually used
 };                           // total size = 16 bytes (multiple of 8)
 ```
 
@@ -38,9 +38,9 @@ struct HeaderV1 {            // offset  size
 * **`flags`** — reserved feature flags; `0` in v1. Readers MUST reject unknown non-zero
   flags unless explicitly configured to ignore them.
 * **`message_count`** — number of `Message` envelopes (§2) following the header.
-* **`file_size`** — total used length of the stream, header included: bytes
-  `[0, file_size)` are meaningful; anything after — e.g. blob padding up to the next
-  blob boundary — MUST be ignored.
+* **`blob_size`** — total used length of the blob, header included: bytes
+  `[0, blob_size)` are meaningful; anything after — e.g. carrier padding up to the
+  EIP-4844 blob size — MUST be ignored.
 
 ---
 
@@ -76,7 +76,7 @@ and the shape of `message_params`.
 * Messages are laid out back-to-back immediately after the header; the `message_params`
   length prefix lets a reader skip any message without understanding its type.
 
-### 2.2 Stream order
+### 2.2 Message order
 
 Messages appear in **global execution order**, and call/return matching is positional —
 a `Result` carries no call reference:
@@ -88,6 +88,9 @@ a `Result` carries no call reference:
   `InitiateCrossChainTransaction` MUST NOT appear before the previous one's
   `FinishCrossChainTransaction`, and `ChainOperation` messages MUST NOT appear inside an
   Initiate…Finish window.
+
+In v1 a window opens and closes within a single blob; multi-blob windows are future
+work (§9).
 
 ---
 
@@ -146,9 +149,9 @@ A `NewBlock` item starts a new block on `to_chain` — implicitly closing the pr
 — and the transactions that follow it belong to that block. The transaction signature is
 optional (same as `InitiateCrossChainTransaction`, §4.2).
 
-In v1 the *internal* schema of `rlp_transaction` and `block_params` is chain-specific
-and out of scope for this envelope format — readers treat them as opaque,
-length-prefixed bytes.
+In v1 the *internal* schema of `rlp_transaction`, `TxData` (§4.2), and `block_params`
+is chain-specific and out of scope for this envelope format — readers treat them as
+opaque, length-prefixed bytes.
 
 ### 4.2 `InitiateCrossChainTransaction`
 Opens one cross-chain transaction. Born from the system, so
@@ -173,9 +176,10 @@ u64 call_number      // per-chain counter: the from_chain's own call index
 
 **Call numbering is per chain.** Each chain keeps its own call counter; `call_number` is
 that chain's index for this call. The counter is **1-based**, increments on every `Call`
-the chain emits, and **never resets** — not per block, not per cross-chain transaction —
-so the pair *(chain, call_number)* is unique across the whole stream. A `Revert`
-references a call by exactly that pair.
+the chain emits, and **never resets** — not per block, not per cross-chain transaction,
+**not per blob**: it persists across blobs, so the pair *(chain, call_number)* is unique
+across the entire published history. A `Revert` references a call by exactly that pair —
+possibly a call published in an earlier blob.
 
 ### 4.4 `Result`  (a.k.a. Return)
 The return of a finished `Call`, flowing back to the caller chain.
@@ -188,7 +192,7 @@ result_fields {
 ```
 
 A `Result` carries no call reference: it closes the most recently opened unmatched
-`Call` by stream position (§2.2).
+`Call` by position in the blob (§2.2).
 
 `success = false` means the call **finished by reverting** on the callee chain: the
 caller receives the failure and handles it; nothing is unwound. This is a different
@@ -294,7 +298,7 @@ Call#A_2 (from L2_A, to L2_B, call_fields: ...)
 
 ## 6. Test vector
 
-A complete 242-byte stream — one cross-chain transaction on chains `1` (L2_A) and `2`
+A complete 242-byte blob — one cross-chain transaction on chains `1` (L2_A) and `2`
 (L2_B): a `Call` that succeeds and is then force-reverted (the §5.2 scenario, framed by
 Initiate/Finish). Implementations MUST reproduce these bytes exactly.
 
@@ -330,7 +334,7 @@ revert   0100000000000000 0200000000000000 05 10000000
 finish   0100000000000000 ffffffffffffffff 06 00000000
 ```
 
-Full stream (242 bytes):
+Full blob (242 bytes):
 
 ```
 454d53470100000005000000f2000000ffffffffffffffff0100000000000000020b00000003000000c0ffee
@@ -345,10 +349,10 @@ Full stream (242 bytes):
 
 ## 7. Relation to the on-chain protocol
 
-The stream *describes* execution; the contracts *verify* it via execution entries
+Blobs *describe* execution; the contracts *verify* it via execution entries
 (`EXECUTION_ENTRY_SPEC.md`). Rough vocabulary mapping:
 
-| Stream | Entry / contract vocabulary |
+| Blob | Entry / contract vocabulary |
 |---|---|
 | `Call` + `Result { success: true }` | flat-array call, `CALL_END(true, retData)` |
 | `Call` + `Result { success: false }` | natural revert — flat-array call with `revertSpan = 0`, `CALL_END(false, retData)` |
@@ -361,11 +365,12 @@ Caveats:
   destination chain* — not the same use as "top-level" (vs reentrant/nested) in the
   entry and lookup specs.
 * **Lookups are not represented.** Cross-chain static reads (`LOOKUP_SPEC.md`) are
-  read-only and deliberately absent from the v1 stream; a future revision may add a
+  read-only and deliberately absent from v1 blobs; a future revision may add a
   `StaticCall` type.
 * **Chain id width.** `from_chain` / `to_chain` are `u64`, while contracts use
-  `uint256 rollupId`. Registry-assigned ids fit; ids ≥ `MAX_CHAIN_ID` are not
-  representable, and `MAX_CHAIN_ID` itself must never be a valid rollup id.
+  `uint256 rollupId`. Registry-assigned ids fit; larger ids don't fit in `u64`, and
+  `MAX_CHAIN_ID` itself is reserved as the sentinel — it must never be a valid
+  rollup id.
 
 ---
 
@@ -374,3 +379,37 @@ Caveats:
 * **Endianness — LE vs BE.** v1 specifies little-endian throughout (§2.1); whether to
   switch to big-endian (the EVM convention) is still under discussion. The §6 test
   vector would change accordingly.
+
+Further open questions live in `docs/openquestions.md`.
+
+---
+
+## 9. Future work: multi-blob transactions
+
+An Initiate…Finish window **will be allowed to span blobs** — but not in v1, where
+every window opens and closes within a single blob (§2.2). v1 readers stay safe when
+this lands: they MUST reject non-zero header `flags` (§1), so continuation blobs are
+rejected rather than misparsed.
+
+The planned expansion:
+
+* **Continuation flags.** Two bits in the header's `flags` field: `CONTINUES` (bit 0) —
+  this blob ends with an open window (and possibly unmatched `Call`s) that resumes in
+  the next blob; `CONTINUATION` (bit 1) — this blob resumes the window left open by its
+  predecessor instead of starting fresh.
+* **Messages are never split.** The cut point is always a message boundary —
+  `message_count` and `blob_size` already enforce that a blob holds whole messages, and
+  that stays true.
+* **Carried state.** A reader carries three things across the boundary: the open
+  Initiate…Finish window, the stack of unmatched `Call`s (§2.2 matching continues as if
+  the two blobs' messages were laid end to end), and the per-chain call counters —
+  which already persist across blobs today (§4.3).
+* **Adjacency.** A `CONTINUATION` blob is only valid as the immediate successor of a
+  `CONTINUES` blob in consumption order; any other arrangement MUST be rejected.
+* **Atomicity on failure.** Cross-chain transactions are atomic: if the continuation
+  blob is missing or malformed, the spanning transaction is invalid all the way back to
+  its `Initiate` — a partial window is never executed.
+
+When this ships, §2.2's "most recently opened unmatched `Call`" rule reads across the
+blob sequence rather than within one blob, and the `flags` bits say which mode each
+blob is in.
