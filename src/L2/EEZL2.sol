@@ -362,7 +362,7 @@ contract EEZL2 is EEZBase {
         //    reverts with the cached `returnData`.
         uint64 callNum = uint64(_currentIncomingCall);
         uint64 lastNA = uint64(idx);
-        uint64 execIdx = _insideRevertedLookup ? uint64(_revertedLookupIndex + 1) : 0;
+        uint64 execIdx = _activeLookupContext();
         ExpectedLookup[] storage lookups = _getActiveLookups();
         for (uint256 i = 0; i < lookups.length; i++) {
             ExpectedLookup storage el = lookups[i];
@@ -613,7 +613,7 @@ contract EEZL2 is EEZBase {
         if (_insideExecution()) {
             uint64 callNum = uint64(_currentIncomingCall);
             uint64 lastNA = uint64(_lastOutgoingCallConsumed);
-            uint64 execIdx = _insideRevertedLookup ? uint64(_revertedLookupIndex + 1) : 0;
+            uint64 execIdx = _activeLookupContext();
             ExpectedLookup[] storage lookups = _getActiveLookups();
             for (uint256 i = 0; i < lookups.length; i++) {
                 ExpectedLookup storage el = lookups[i];

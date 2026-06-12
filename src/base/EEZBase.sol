@@ -11,7 +11,8 @@ import {CrossChainProxy} from "./CrossChainProxy.sol";
 ///        - Rolling-hash tag constants, the `_rollingHash` accumulator, and the fold helpers
 ///          (they operate on primitives, so they don't reference any execution struct).
 ///        - Neutral transient pointers: `_currentEntryIndex`, `_insideRevertedLookup`,
-///          `_revertedLookupIndex`, `_revertedLookupTopLevel`, and `_topLevelLookupIndex`.
+///          `_revertedLookupIndex`, `_revertedLookupTopLevel`, and `_topLevelLookupIndex` —
+///          plus `_activeLookupContext()`, the match-key component derived from them.
 ///        - The `authorizedProxies` registry, the external `createCrossChainProxy` entry point,
 ///          and the internal CREATE2 deploy helper (`_createCrossChainProxyInternal`).
 ///        - Pure / view helpers (`computeCrossChainCallHash`, `computeCrossChainProxyAddress`).
@@ -192,6 +193,16 @@ abstract contract EEZBase is IEEZ {
         returns (bytes32)
     {
         return keccak256(abi.encode(targetRollupId, targetAddress, value, data, sourceAddress, sourceRollupId));
+    }
+
+    // ──────────────────────────────────────────────
+    //  Lookup-context helper
+    // ──────────────────────────────────────────────
+
+    /// @notice Fourth component of the nested-lookup match key (`executingLookupIndex`):
+    ///         0 = host level; k = inside the sub-execution of the host's `expectedLookups[k-1]`.
+    function _activeLookupContext() internal view returns (uint64) {
+        return _insideRevertedLookup ? uint64(_revertedLookupIndex + 1) : 0;
     }
 
     // ──────────────────────────────────────────────

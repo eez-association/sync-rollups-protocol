@@ -136,7 +136,8 @@ struct ExpectedL1ToL2Call {
 ///         looked up rather than executed — a reentrant STATICCALL (static mode) or a
 ///         reverting reentrant call the caller try/catches (reverted mode). Lives INSIDE the
 ///         entry (`ExecutionEntry.expectedLookups`) — entry-scoped by construction, no queue
-///         routing. Matched by `(crossChainCallHash, l2ToL1CallNumber, lastL1ToL2CallConsumed)`.
+///         routing. Matched by `(crossChainCallHash, l2ToL1CallNumber, lastL1ToL2CallConsumed,
+///         executingLookupIndex)`.
 /// @dev Reverted mode (`failed == true`) runs `l2ToL1Calls` as a mini-entry (tagged hash
 ///      schema, partitioned by `callCount` against `expectedL1ToL2Calls`) then reverts with
 ///      `returnData`; static mode runs them via STATICCALL (untagged schema) and returns

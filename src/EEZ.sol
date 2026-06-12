@@ -574,9 +574,9 @@ contract EEZ is EEZBase {
         }
 
         // Per-entry hash binds the FULL entry content: stateDeltas, proxyEntryHash,
-        // destinationRollupId, l2ToL1Calls[], expectedL1ToL2Calls[], callCount, returnData,
-        // rollingHash. Prevents an orchestrator from swapping call/reentrant-call/returnData
-        // at execution time without invalidating the proof.
+        // destinationRollupId, l2ToL1Calls[], expectedL1ToL2Calls[], expectedLookups[],
+        // callCount, returnData, rollingHash. Prevents an orchestrator from swapping
+        // call/reentrant-call/returnData at execution time without invalidating the proof.
         bytes32[] memory entryHashes = new bytes32[](batch.entries.length);
         for (uint256 i = 0; i < batch.entries.length; i++) {
             entryHashes[i] = keccak256(abi.encode(batch.entries[i]));
@@ -779,9 +779,9 @@ contract EEZ is EEZBase {
     ///      2. Otherwise scan the active host's nested-lookup table (`_getActiveLookups()` — the
     ///         entry's `expectedLookups`, or the top-level lookup's own table while one is
     ///         executing) for a `failed=true` `ExpectedLookup` keyed by
-    ///         (crossChainCallHash, _currentL2ToL1Call, idx) where `idx` is the current cursor
-    ///         value → execute it and revert with cached returnData. Entry-scoped — no queue
-    ///         routing.
+    ///         (crossChainCallHash, _currentL2ToL1Call, idx, executingLookupIndex) where `idx`
+    ///         is the current cursor value → execute it and revert with the pre-computed
+    ///         returnData. Entry-scoped — no queue routing.
     ///      3. No match → set the deferred-revert flag `_l1ToL2CallNotFound` and return
     ///         empty bytes. The end-of-entry check in `_applyAndExecute` reverts
     ///         `ExecutionNotFound`. The cursor stays at `idx` so further reentrant calls in
@@ -816,7 +816,7 @@ contract EEZ is EEZBase {
         //    `callCount == 0` case).
         uint64 callNum = uint64(_currentL2ToL1Call);
         uint64 lastNA = uint64(idx);
-        uint64 execIdx = _insideRevertedLookup ? uint64(_revertedLookupIndex + 1) : 0;
+        uint64 execIdx = _activeLookupContext();
         ExpectedLookup[] storage lookups = _getActiveLookups();
         for (uint256 i = 0; i < lookups.length; i++) {
             ExpectedLookup storage el = lookups[i];
@@ -847,10 +847,12 @@ contract EEZ is EEZBase {
     /// @dev Consults the transient table first ("always look for transient calls before storage calls").
     ///      While a postAndVerifyBatch call is running, `_transientExecutions` is non-empty and ALL consumption
     ///      is routed through it via a global cursor — entries are NOT popped, only `_transientExecutionIndex`
-    ///      advances. Outside the transient batch, consumption is routed by the destination rollup to
-    ///      `verificationByRollup[destRid].executionQueue` with that rollup's own cursor — `destinationRollupId`
-    ///      doesn't need a separate consistency check because (a) the proof bound it into the entry hash,
-    ///      and (b) the crossChainCallHash preimage already commits to the target rollup.
+    ///      advances. Because that cursor is GLOBAL (not per-rollup), the transient branch also requires
+    ///      `destinationRollupId == destRid`: the block gate passes for any rollup verified this block
+    ///      (including by an earlier batch), and `proxyEntryHash == 0` (executeL2TX) carries no rollup
+    ///      binding of its own. Outside the transient batch, consumption is routed by the destination
+    ///      rollup to `verificationByRollup[destRid].executionQueue` with that rollup's own cursor —
+    ///      there `destinationRollupId` is consistent by construction (entries are published under it).
     ///
     ///      Miss path: when the cursor is out of bounds or the next entry's `proxyEntryHash` doesn't match,
     ///      `_tryRevertedTopLevelLookup` scans the transient + persistent lookup tables for a
@@ -868,7 +870,10 @@ contract EEZ is EEZBase {
 
         if (_transientExecutions.length != 0) {
             idx = _transientExecutionIndex;
-            if (idx >= _transientExecutions.length || _transientExecutions[idx].proxyEntryHash != crossChainCallHash) {
+            if (
+                idx >= _transientExecutions.length || _transientExecutions[idx].proxyEntryHash != crossChainCallHash
+                    || _transientExecutions[idx].destinationRollupId != destRid
+            ) {
                 // Try reverted-lookup fallback (always reverts on match); otherwise ExecutionNotFound
                 _tryRevertedTopLevelLookup(crossChainCallHash, destRid);
                 revert ExecutionNotFound();
@@ -1129,12 +1134,18 @@ contract EEZ is EEZBase {
     )
         internal
     {
+        // Fresh sub-execution context. The flag reset shields this sub-execution from an
+        // earlier no-match in the outer entry; the terminal revert restores the outer value.
+        _l1ToL2CallNotFound = false;
         _rollingHash = bytes32(0);
         _currentL2ToL1Call = 0;
         _lastL1ToL2CallConsumed = 0;
 
         _processNCalls(callCount);
 
+        // Deferred no-match flag first, same order as `_applyAndExecute` — a cross-chain call
+        // unaccounted for by the tables must fail even when the prover pre-hashed its "" result.
+        if (_l1ToL2CallNotFound) revert ExecutionNotFound();
         if (_rollingHash != rollingHash) revert RollingHashMismatch();
         if (_currentL2ToL1Call != callsLength) revert UnconsumedL2ToL1Calls();
         if (_lastL1ToL2CallConsumed != reentrantLength) revert UnconsumedL1ToL2Calls();
@@ -1167,7 +1178,8 @@ contract EEZ is EEZBase {
 
     /// @notice Looks up a pre-computed lookup result.
     /// @dev Inside an execution: scans the active host's entry-scoped `expectedLookups` by
-    ///      `(crossChainCallHash, l2ToL1CallNumber, lastL1ToL2CallConsumed)`. Outside: scans
+    ///      `(crossChainCallHash, l2ToL1CallNumber, lastL1ToL2CallConsumed, executingLookupIndex)`.
+    ///      Outside: scans
     ///      the transient table then the routed rollup's `lookupQueue` for a top-level
     ///      `LookupCall` matching `crossChainCallHash` with every state-root pin live (full
     ///      scan — a non-matching candidate is skipped). tload works in static context, so
@@ -1191,7 +1203,7 @@ contract EEZ is EEZBase {
         if (_insideExecution()) {
             uint64 callNum = uint64(_currentL2ToL1Call);
             uint64 lastNA = uint64(_lastL1ToL2CallConsumed);
-            uint64 execIdx = _insideRevertedLookup ? uint64(_revertedLookupIndex + 1) : 0;
+            uint64 execIdx = _activeLookupContext();
             ExpectedLookup[] storage lookups = _getActiveLookups();
             for (uint256 i = 0; i < lookups.length; i++) {
                 ExpectedLookup storage el = lookups[i];
