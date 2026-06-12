@@ -503,6 +503,18 @@ contract EEZTest is Base {
         _postBatchSingle(r1, entries, 1);
     }
 
+    /// @notice Transient lookups without transient entries are unreachable (no immediate drain,
+    ///         no meta hook) — `_validateStructure` rejects the shape.
+    function test_SubBatch_TransientLookupsWithoutTransientEntriesReverts() public {
+        (uint256 rid,) = _makeRollupLocal(bytes32(0), alice);
+
+        LookupCall[] memory lookups = new LookupCall[](1);
+        lookups[0] = _revertedLookup(rid, keccak256("h"), hex"deadbeef");
+
+        vm.expectRevert(EEZ.TransientLookupCallsWithoutTransientEntries.selector);
+        _postBatchSingle(rid, new ExecutionEntry[](0), lookups, 0, 1);
+    }
+
     // ──────────────────────────────────────────────
     //  Per-rollup queue routing (executeCrossChainCall / executeL2TX)
     // ──────────────────────────────────────────────

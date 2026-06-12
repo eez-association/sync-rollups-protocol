@@ -237,6 +237,10 @@ contract EEZ is EEZBase {
     /// @notice Error when `transientLookupCallCount` exceeds the lookup call count
     error TransientLookupCallCountExceedsLookupCalls();
 
+    /// @notice Error when transient lookup calls come without transient entries (unreachable —
+    ///         no entries means no immediate drain and no meta hook, so nothing can consume them)
+    error TransientLookupCallsWithoutTransientEntries();
+
     /// @notice Error when batch validation fails for malformed inputs
     error InvalidProofSystemConfig();
 
@@ -511,6 +515,11 @@ contract EEZ is EEZBase {
         if (batch.transientLookupCallCount > batch.l1ToL2lookupCalls.length) {
             revert TransientLookupCallCountExceedsLookupCalls();
         }
+        // Transient lookups are only reachable while transient entries are mid-flight
+        // (`_activeLookupCalls` keys off `_transientExecutions`) — reject the dead-weight shape.
+        if (batch.transientExecutionEntryCount == 0 && batch.transientLookupCallCount != 0) {
+            revert TransientLookupCallsWithoutTransientEntries();
+        }
     }
 
     /// @notice Fetches the (rollup × chosen-PS-subset) vkey matrix — one external call to
@@ -764,10 +773,7 @@ contract EEZ is EEZBase {
     /// @notice The TOP-LEVEL LookupCall currently being executed, reconstructed from the
     ///         transient pointers. Only valid while `_revertedLookupTopLevel`.
     function _currentTopLevelLookup() internal view returns (LookupCall storage) {
-        if (_transientExecutions.length != 0) {
-            return _transientLookupCalls[_topLevelLookupIndex];
-        }
-        return verificationByRollup[_revertedLookupRollupId].lookupQueue[_topLevelLookupIndex];
+        return _activeLookupCalls(_revertedLookupRollupId)[_topLevelLookupIndex];
     }
 
     /// @notice Consumes the next ExpectedL1ToL2Call entry, or runs a pre-computed
@@ -1179,11 +1185,11 @@ contract EEZ is EEZBase {
     /// @notice Looks up a pre-computed lookup result.
     /// @dev Inside an execution: scans the active host's entry-scoped `expectedLookups` by
     ///      `(crossChainCallHash, l2ToL1CallNumber, lastL1ToL2CallConsumed, executingLookupIndex)`.
-    ///      Outside: scans
-    ///      the transient table then the routed rollup's `lookupQueue` for a top-level
-    ///      `LookupCall` matching `crossChainCallHash` with every state-root pin live (full
-    ///      scan — a non-matching candidate is skipped). tload works in static context, so
-    ///      the transient tracking variables are readable.
+    ///      Outside: while a batch is mid-flight, ONLY its transient pool (the transient phase
+    ///      is self-contained — see docs/CAVEATS.md); otherwise the routed rollup's persistent
+    ///      `lookupQueue`. Match: a top-level `LookupCall` with `crossChainCallHash` and every
+    ///      state-root pin live (full scan — a non-matching candidate is skipped). tload works
+    ///      in static context, so the transient tracking variables are readable.
     /// @dev TODO (perf): linear scans are O(n) — sort + binary-search once profiling shows
     ///      it matters (the publicInputsHash already binds the arrays, so prover re-ordering
     ///      can't sneak in).
@@ -1217,16 +1223,10 @@ contract EEZ is EEZBase {
             revert ExecutionNotFound();
         }
 
-        // Top-level: transient pool first, then the routed rollup's persistent queue.
-        for (uint256 i = 0; i < _transientLookupCalls.length; i++) {
-            LookupCall storage sc = _transientLookupCalls[i];
-            if (sc.crossChainCallHash == crossChainCallHash && _stateRootsMatch(sc)) {
-                return _resolveStaticLookup(sc.l2ToL1Calls, sc.rollingHash, sc.failed, sc.returnData);
-            }
-        }
-        LookupCall[] storage lookupQueue = verificationByRollup[destRid].lookupQueue;
-        for (uint256 i = 0; i < lookupQueue.length; i++) {
-            LookupCall storage sc = lookupQueue[i];
+        // Top-level: scan the single table in scope (see `_activeLookupCalls`).
+        LookupCall[] storage lookupCalls = _activeLookupCalls(destRid);
+        for (uint256 i = 0; i < lookupCalls.length; i++) {
+            LookupCall storage sc = lookupCalls[i];
             if (sc.crossChainCallHash == crossChainCallHash && _stateRootsMatch(sc)) {
                 return _resolveStaticLookup(sc.l2ToL1Calls, sc.rollingHash, sc.failed, sc.returnData);
             }
@@ -1235,25 +1235,30 @@ contract EEZ is EEZBase {
         revert ExecutionNotFound();
     }
 
-    /// @notice Top-level fallback: scan the transient table then the routed rollup's persistent
-    ///         `lookupQueue` for a `failed` `LookupCall` matching `crossChainCallHash` with
-    ///         every state-root pin live (full scan). Only reachable outside an execution —
-    ///         nested lookups live on the entry. A match is resolved by `_executeRevertedTopLevelLookup`
-    ///         (always reverts); no match returns so the caller reverts `ExecutionNotFound`.
+    /// @notice Top-level fallback: scan the transient pool while a batch is mid-flight
+    ///         (transient phase is self-contained — see docs/CAVEATS.md), otherwise the routed
+    ///         rollup's persistent `lookupQueue`, for a `failed` `LookupCall` matching
+    ///         `crossChainCallHash` with every state-root pin live (full scan). Only reachable
+    ///         outside an execution — nested lookups live on the entry. A match is resolved by
+    ///         `_executeRevertedTopLevelLookup` (always reverts); no match returns so the
+    ///         caller reverts `ExecutionNotFound`.
     function _tryRevertedTopLevelLookup(bytes32 crossChainCallHash, uint256 destRid) internal {
-        for (uint256 i = 0; i < _transientLookupCalls.length; i++) {
-            LookupCall storage sc = _transientLookupCalls[i];
+        LookupCall[] storage lookupCalls = _activeLookupCalls(destRid);
+        for (uint256 i = 0; i < lookupCalls.length; i++) {
+            LookupCall storage sc = lookupCalls[i];
             if (sc.failed && sc.crossChainCallHash == crossChainCallHash && _stateRootsMatch(sc)) {
                 _executeRevertedTopLevelLookup(sc, i); // always reverts
             }
         }
-        LookupCall[] storage lookupQueue = verificationByRollup[destRid].lookupQueue;
-        for (uint256 i = 0; i < lookupQueue.length; i++) {
-            LookupCall storage sc = lookupQueue[i];
-            if (sc.failed && sc.crossChainCallHash == crossChainCallHash && _stateRootsMatch(sc)) {
-                _executeRevertedTopLevelLookup(sc, i); // always reverts
-            }
-        }
+    }
+
+    /// @notice The top-level `LookupCall` table in scope: the batch's transient table while
+    ///         one is mid-flight (the transient phase is self-contained — see docs/CAVEATS.md),
+    ///         otherwise `destRid`'s persistent `lookupQueue`. Single source of the phase
+    ///         rule — also what makes `_currentTopLevelLookup` sound: a persistent match
+    ///         implies the transient tables are empty.
+    function _activeLookupCalls(uint256 destRid) internal view returns (LookupCall[] storage) {
+        return _transientExecutions.length != 0 ? _transientLookupCalls : verificationByRollup[destRid].lookupQueue;
     }
 
     // ──────────────────────────────────────────────
