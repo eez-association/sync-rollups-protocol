@@ -107,7 +107,9 @@ struct StateDelta {
 
 /// @notice Represents a cross-chain call within an execution entry (L2→L1 on L1)
 /// @dev revertSpan > 0 opens an isolated revert context spanning the next revertSpan calls (including this one)
+/// @dev isStatic dispatches the call via STATICCALL — read-only, carries no value, reverts on any state write
 struct L2ToL1Call {
+    bool isStatic;
     address targetAddress;
     uint256 value;
     bytes data;
@@ -209,11 +211,12 @@ struct ExecutionEntry {
     /// state transition, and every entry must carry at least one StateDelta (never empty) —
     /// asserted by the prover, not enforced on-chain.
     StateDelta[] stateDeltas;
-    bytes32 proxyEntryHash; // hashed call (L2 -> L1), otherwise bytes32(0) for L2 txs
-    uint256 destinationRollupId;
+    bytes32 proxyEntryHash; // hashed call (L1 -> L2), otherwise bytes32(0) for L2 txs
+    uint256 destinationRollupId; // double check
     /// All calls executed by this entry, flat, in execution order. Partitioned between
     /// the entry's outermost frame and any reentrant (L1→L2) frames — see the natspec
     /// above for the `callCount` partition invariant.
+    bytes returnData;
     L2ToL1Call[] l2ToL1Calls;
     /// Parallel partition table: each `ExpectedL1ToL2Call` consumes a slice of `l2ToL1Calls[]`
     /// during a reentrant frame. Order matches the order in which reentrant calls fire.
@@ -224,7 +227,6 @@ struct ExecutionEntry {
     /// Top-level iterations. Together with `expectedL1ToL2Calls[i].callCount`, partitions
     /// `l2ToL1Calls[]` across the execution tree. See the natspec above.
     uint256 callCount;
-    bytes returnData;
     bytes32 rollingHash;
 }
 

@@ -177,6 +177,7 @@ abstract contract DeepNestedActions {
         //           counterProxy → triggers _consumeNestedAction(expectedL1ToL2Calls[1]).
         L2ToL1Call[] memory calls = new L2ToL1Call[](2);
         calls[0] = L2ToL1Call({
+            isStatic: false,
             targetAddress: nestedCaller,
             value: 0,
             data: abi.encodeWithSelector(NestedCaller.callNested.selector),
@@ -185,6 +186,7 @@ abstract contract DeepNestedActions {
             revertSpan: 0
         });
         calls[1] = L2ToL1Call({
+            isStatic: false,
             targetAddress: cap,
             value: 0,
             data: abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),
@@ -230,6 +232,7 @@ abstract contract DeepNestedActions {
         //           counterProxyOnL2 → triggers _consumeNestedAction(expectedOutgoingCalls[1]).
         CrossChainCall[] memory calls = new CrossChainCall[](2);
         calls[0] = CrossChainCall({
+            isStatic: false,
             targetAddress: ncL2,
             value: 0,
             data: abi.encodeWithSelector(NestedCaller.callNested.selector),
@@ -238,6 +241,7 @@ abstract contract DeepNestedActions {
             revertSpan: 0
         });
         calls[1] = CrossChainCall({
+            isStatic: false,
             targetAddress: capL2,
             value: 0,
             data: abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),

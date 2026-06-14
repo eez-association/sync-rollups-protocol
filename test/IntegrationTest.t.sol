@@ -393,6 +393,7 @@ contract IntegrationTest is Test {
 
             CrossChainCall[] memory calls = new CrossChainCall[](1);
             calls[0] = CrossChainCall({
+                isStatic: false,
                 targetAddress: address(counterAndProxy), // A
                 value: 0,
                 data: incrementProxyCallData,
@@ -509,6 +510,7 @@ contract IntegrationTest is Test {
 
             L2ToL1Call[] memory calls = new L2ToL1Call[](1);
             calls[0] = L2ToL1Call({
+                isStatic: false,
                 targetAddress: address(counterAndProxyL2), // D
                 value: 0,
                 data: incrementProxyCallData,

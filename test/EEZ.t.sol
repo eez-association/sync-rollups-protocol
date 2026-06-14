@@ -527,6 +527,7 @@ contract EEZTest is Base {
 
         L2ToL1Call[] memory calls = new L2ToL1Call[](1);
         calls[0] = L2ToL1Call({
+            isStatic: false,
             targetAddress: address(target),
             value: 0,
             data: cd,
@@ -696,6 +697,7 @@ contract EEZTest is Base {
 
         L2ToL1Call[] memory calls = new L2ToL1Call[](1);
         calls[0] = L2ToL1Call({
+            isStatic: false,
             targetAddress: address(forwarder),
             value: 2 ether,
             data: abi.encodeCall(ValueForwarder.forward, (1.5 ether)),
@@ -823,6 +825,7 @@ contract EEZTest is Base {
         bytes32 ah = _computeActionHash(rid, address(target), 0, cd, address(this), MAINNET_ROLLUP_ID);
         L2ToL1Call[] memory calls = new L2ToL1Call[](1);
         calls[0] = L2ToL1Call({
+            isStatic: false,
             targetAddress: address(target),
             value: 0,
             data: cd,
@@ -852,6 +855,7 @@ contract EEZTest is Base {
         bytes32 ah = _computeActionHash(rid, address(target), 0, cd, address(this), MAINNET_ROLLUP_ID);
         L2ToL1Call[] memory calls = new L2ToL1Call[](2);
         calls[0] = L2ToL1Call({
+            isStatic: false,
             targetAddress: address(target),
             value: 0,
             data: cd,
@@ -1045,6 +1049,7 @@ contract EEZTest is Base {
     {
         L2ToL1Call[] memory subCalls = new L2ToL1Call[](1);
         subCalls[0] = L2ToL1Call({
+            isStatic: false,
             targetAddress: subTarget,
             value: 0,
             data: abi.encodeCall(TestTarget.setValue, (subValue)),
@@ -1177,6 +1182,7 @@ contract EEZTest is Base {
 
         L2ToL1Call[] memory calls = new L2ToL1Call[](1);
         calls[0] = L2ToL1Call({
+            isStatic: false,
             targetAddress: address(scap),
             value: 0,
             data: outerCd,
@@ -1239,6 +1245,7 @@ contract EEZTest is Base {
 
         L2ToL1Call[] memory calls = new L2ToL1Call[](1);
         calls[0] = L2ToL1Call({
+            isStatic: false,
             targetAddress: address(scap),
             value: 0,
             data: outerCd,

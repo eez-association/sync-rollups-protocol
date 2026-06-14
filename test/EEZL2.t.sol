@@ -176,6 +176,7 @@ contract EEZL2Test is Test {
             _computeActionHash(TEST_ROLLUP_ID, address(target), 0, callData, address(this), TEST_ROLLUP_ID);
 
         CrossChainCall memory cc = CrossChainCall({
+            isStatic: false,
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (42)),
@@ -203,6 +204,7 @@ contract EEZL2Test is Test {
             _computeActionHash(TEST_ROLLUP_ID, address(target), 0, callData, address(this), TEST_ROLLUP_ID);
 
         CrossChainCall memory cc = CrossChainCall({
+            isStatic: false,
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (42)),
@@ -361,6 +363,7 @@ contract EEZL2Test is Test {
         bytes32 innerHash = _computeActionHash(0, counterL1, 0, innerCd, address(scap), TEST_ROLLUP_ID);
 
         CrossChainCall memory cc = CrossChainCall({
+            isStatic: false,
             targetAddress: address(scap),
             value: 0,
             data: outerCd,
@@ -401,6 +404,7 @@ contract EEZL2Test is Test {
             _computeActionHash(TEST_ROLLUP_ID, address(target), 0, callData, address(this), TEST_ROLLUP_ID);
 
         CrossChainCall memory cc = CrossChainCall({
+            isStatic: false,
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (42)),
@@ -428,6 +432,7 @@ contract EEZL2Test is Test {
             _computeActionHash(TEST_ROLLUP_ID, address(target), 0, callData, address(this), TEST_ROLLUP_ID);
 
         CrossChainCall memory cc = CrossChainCall({
+            isStatic: false,
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.getValue, ()),
@@ -463,6 +468,7 @@ contract EEZL2Test is Test {
             _computeActionHash(TEST_ROLLUP_ID, address(target), 0, callData, address(this), TEST_ROLLUP_ID);
 
         CrossChainCall memory cc = CrossChainCall({
+            isStatic: false,
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.getValue, ()),
@@ -512,6 +518,7 @@ contract EEZL2Test is Test {
             _computeActionHash(TEST_ROLLUP_ID, address(target), 0, callData, address(this), TEST_ROLLUP_ID);
 
         CrossChainCall memory cc = CrossChainCall({
+            isStatic: false,
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (42)),
@@ -539,6 +546,7 @@ contract EEZL2Test is Test {
 
         CrossChainCall[] memory calls = new CrossChainCall[](2);
         calls[0] = CrossChainCall({
+            isStatic: false,
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (42)),
@@ -547,6 +555,7 @@ contract EEZL2Test is Test {
             revertSpan: 0
         });
         calls[1] = CrossChainCall({
+            isStatic: false,
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (99)),
@@ -584,6 +593,7 @@ contract EEZL2Test is Test {
 
         CrossChainCall[] memory calls = new CrossChainCall[](2);
         calls[0] = CrossChainCall({
+            isStatic: false,
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (10)),
@@ -592,6 +602,7 @@ contract EEZL2Test is Test {
             revertSpan: 0
         });
         calls[1] = CrossChainCall({
+            isStatic: false,
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (20)),
@@ -642,6 +653,7 @@ contract EEZL2Test is Test {
 
         CrossChainCall[] memory calls = new CrossChainCall[](1);
         calls[0] = CrossChainCall({
+            isStatic: false,
             targetAddress: address(revTarget),
             value: 0,
             data: hex"deadbeef",
@@ -726,6 +738,7 @@ contract EEZL2Test is Test {
             _computeActionHash(TEST_ROLLUP_ID, address(target), 0, callData, address(this), TEST_ROLLUP_ID);
 
         CrossChainCall memory cc = CrossChainCall({
+            isStatic: false,
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (42)),
@@ -765,6 +778,7 @@ contract EEZL2Test is Test {
             _computeActionHash(TEST_ROLLUP_ID, address(target), 0, callData, address(this), TEST_ROLLUP_ID);
 
         CrossChainCall memory cc = CrossChainCall({
+            isStatic: false,
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (42)),
@@ -811,6 +825,7 @@ contract EEZL2Test is Test {
             _computeActionHash(TEST_ROLLUP_ID, address(target), 0, callData, address(this), TEST_ROLLUP_ID);
 
         CrossChainCall memory cc = CrossChainCall({
+            isStatic: false,
             targetAddress: address(target),
             value: 0,
             data: abi.encodeCall(L2TestTarget.setValue, (42)),

@@ -164,6 +164,7 @@ abstract contract ReentrantActions {
 
         L2ToL1Call[] memory calls = new L2ToL1Call[](2);
         calls[0] = L2ToL1Call({
+            isStatic: false,
             targetAddress: rcL1,
             value: 0,
             data: abi.encodeWithSelector(ReentrantCounter.deepCall.selector, uint256(3)),
@@ -172,6 +173,7 @@ abstract contract ReentrantActions {
             revertSpan: 0
         });
         calls[1] = L2ToL1Call({
+            isStatic: false,
             targetAddress: rcL1,
             value: 0,
             data: abi.encodeWithSelector(ReentrantCounter.deepCall.selector, uint256(1)),
@@ -210,6 +212,7 @@ abstract contract ReentrantActions {
     {
         CrossChainCall[] memory calls = new CrossChainCall[](2);
         calls[0] = CrossChainCall({
+            isStatic: false,
             targetAddress: rcL2,
             value: 0,
             data: abi.encodeWithSelector(ReentrantCounter.deepCall.selector, uint256(2)),
@@ -218,6 +221,7 @@ abstract contract ReentrantActions {
             revertSpan: 0
         });
         calls[1] = CrossChainCall({
+            isStatic: false,
             targetAddress: rcL2,
             value: 0,
             data: abi.encodeWithSelector(ReentrantCounter.deepCall.selector, uint256(0)),

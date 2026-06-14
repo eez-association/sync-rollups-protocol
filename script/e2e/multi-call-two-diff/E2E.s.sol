@@ -143,6 +143,7 @@ abstract contract TwoDiffActions {
     {
         CrossChainCall[] memory calls = new CrossChainCall[](1);
         calls[0] = CrossChainCall({
+            isStatic: false,
             targetAddress: target,
             value: 0,
             data: _incrementCallData(),

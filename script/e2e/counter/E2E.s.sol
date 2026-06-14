@@ -96,6 +96,7 @@ abstract contract CounterActions {
     {
         CrossChainCall[] memory calls = new CrossChainCall[](1);
         calls[0] = CrossChainCall({
+            isStatic: false,
             targetAddress: counterL2,
             value: 0,
             data: _incrementCallData(),

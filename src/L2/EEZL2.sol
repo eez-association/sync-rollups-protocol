@@ -457,9 +457,18 @@ contract EEZL2 is EEZBase {
                     _createCrossChainProxyInternal(cc.sourceAddress, cc.sourceRollupId);
                 }
 
-                (bool success, bytes memory retData) = sourceProxy.call{
-                    value: cc.value
-                }(abi.encodeCall(CrossChainProxy.executeOnBehalf, (cc.targetAddress, cc.data)));
+                bool success;
+                bytes memory retData;
+                if (cc.isStatic) {
+                    // Read-only dispatch: STATICCALL carries no value and reverts on any state write.
+                    (success, retData) = sourceProxy.staticcall(
+                        abi.encodeCall(CrossChainProxy.executeOnBehalf, (cc.targetAddress, cc.data))
+                    );
+                } else {
+                    (success, retData) = sourceProxy.call{
+                        value: cc.value
+                    }(abi.encodeCall(CrossChainProxy.executeOnBehalf, (cc.targetAddress, cc.data)));
+                }
 
                 _rollingHashCallEnd(_currentIncomingCall, success, retData);
                 emit CallResult(_currentEntryIndex, _currentIncomingCall, success, retData);

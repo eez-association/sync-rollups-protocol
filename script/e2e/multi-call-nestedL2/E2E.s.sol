@@ -97,6 +97,7 @@ abstract contract MultiCallNestedL2Actions {
     ///      drained by one executeL2TX call.
     function _l1Entries(address counterL1, address cap) internal pure returns (ExecutionEntry[] memory entries) {
         L2ToL1Call memory innerCall = L2ToL1Call({
+            isStatic: false,
             targetAddress: counterL1,
             value: 0,
             data: abi.encodeWithSelector(Counter.increment.selector),
@@ -141,6 +142,7 @@ abstract contract MultiCallNestedL2Actions {
     {
         CrossChainCall[] memory calls = new CrossChainCall[](2);
         calls[0] = CrossChainCall({
+            isStatic: false,
             targetAddress: cap,
             value: 0,
             data: abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),
@@ -149,6 +151,7 @@ abstract contract MultiCallNestedL2Actions {
             revertSpan: 0
         });
         calls[1] = CrossChainCall({
+            isStatic: false,
             targetAddress: cap,
             value: 0,
             data: abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),

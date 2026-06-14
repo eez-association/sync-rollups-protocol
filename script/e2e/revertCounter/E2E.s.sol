@@ -124,6 +124,7 @@ abstract contract RevertActions {
         // entry's outer source (Alice on Mainnet) per the spec convention.
         L2ToL1Call[] memory calls = new L2ToL1Call[](1);
         calls[0] = L2ToL1Call({
+            isStatic: false,
             targetAddress: counterL1,
             value: 0,
             data: abi.encodeWithSelector(Counter.increment.selector),
@@ -156,6 +157,7 @@ abstract contract RevertActions {
     function _l2Entries(address counterL2, address alice) internal pure returns (L2ExecutionEntry[] memory entries) {
         CrossChainCall[] memory calls = new CrossChainCall[](1);
         calls[0] = CrossChainCall({
+            isStatic: false,
             targetAddress: counterL2,
             value: 0,
             data: abi.encodeWithSelector(Counter.increment.selector),

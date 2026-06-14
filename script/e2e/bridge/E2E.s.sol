@@ -94,6 +94,7 @@ abstract contract BridgeActions {
     {
         CrossChainCall[] memory calls = new CrossChainCall[](1);
         calls[0] = CrossChainCall({
+            isStatic: false,
             targetAddress: l2Destination,
             value: 1 ether,
             data: "",

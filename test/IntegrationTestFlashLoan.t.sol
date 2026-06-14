@@ -294,6 +294,7 @@ contract IntegrationTestFlashLoan is Test {
 
         CrossChainCall[] memory phase1L2Calls = new CrossChainCall[](1);
         phase1L2Calls[0] = CrossChainCall({
+            isStatic: false,
             targetAddress: address(bridgeL2),
             value: 0,
             data: phase1ReceiveCalldata,
@@ -457,6 +458,7 @@ contract IntegrationTestFlashLoan is Test {
         //   sourceProxy = rollups.proxy(executorL2, L2)
         //   Since msg.sender=EEZ (manager), proxy calls executorL2.claimAndBridgeBack(...)
         l1Entry1Calls[0] = L2ToL1Call({
+            isStatic: false,
             targetAddress: address(executorL2),
             value: 0,
             data: claimAndBridgeBackCalldata,
@@ -470,6 +472,7 @@ contract IntegrationTestFlashLoan is Test {
         //   proxy calls bridgeL1.receiveTokens(...)
         //   bridgeL1.onlyBridgeProxy(L2): checks msg.sender == rollups.proxy(bridgeL2, L2) -> MATCH
         l1Entry1Calls[1] = L2ToL1Call({
+            isStatic: false,
             targetAddress: address(bridgeL1),
             value: 0,
             data: retReceiveCalldata,

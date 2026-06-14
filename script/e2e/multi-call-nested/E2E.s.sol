@@ -178,6 +178,7 @@ abstract contract MCNActions {
         // Inner call shared by entries [0] and [1]: CAP2 (logically on L2) reentrant-calls
         // CounterL1 on L1. The L1 manager auto-resolves CAP2's source-proxy and forwards.
         L2ToL1Call memory cap2CallsCounterL1 = L2ToL1Call({
+            isStatic: false,
             targetAddress: counterL1,
             value: 0,
             data: abi.encodeWithSelector(Counter.increment.selector),
@@ -264,6 +265,7 @@ abstract contract MCNActions {
 
         // Outer call shared by entries [0] and [1]: app→CAP2 on L2.
         CrossChainCall memory cap2RunCall = CrossChainCall({
+            isStatic: false,
             targetAddress: cap2L2,
             value: 0,
             data: abi.encodeWithSelector(CounterAndProxy.incrementProxy.selector),
@@ -273,6 +275,7 @@ abstract contract MCNActions {
         });
         // Outer call for entry [2]: app→CounterL2 on L2.
         CrossChainCall memory counterL2RunCall = CrossChainCall({
+            isStatic: false,
             targetAddress: counterL2,
             value: 0,
             data: abi.encodeWithSelector(Counter.increment.selector),
