@@ -193,6 +193,7 @@ abstract contract RevertContinueActions {
         ExpectedL1ToL2Call[] memory nested = new ExpectedL1ToL2Call[](1);
         nested[0] = ExpectedL1ToL2Call({
             crossChainCallHash: _innerActionHash(counterL2, selfCaller),
+            destinationRollupId: L2_ROLLUP_ID,
             callCount: 0,
             returnData: abi.encode(uint256(1))
         });

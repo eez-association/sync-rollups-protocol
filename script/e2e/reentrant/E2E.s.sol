@@ -184,10 +184,16 @@ abstract contract ReentrantActions {
 
         ExpectedL1ToL2Call[] memory nested = new ExpectedL1ToL2Call[](2);
         nested[0] = ExpectedL1ToL2Call({
-            crossChainCallHash: _l1NestedHash0(rcL2, rcL1), callCount: 1, returnData: abi.encode(uint256(2))
+            crossChainCallHash: _l1NestedHash0(rcL2, rcL1),
+            destinationRollupId: L2_ROLLUP_ID,
+            callCount: 1,
+            returnData: abi.encode(uint256(2))
         });
         nested[1] = ExpectedL1ToL2Call({
-            crossChainCallHash: _l1NestedHash1(rcL2, rcL1), callCount: 0, returnData: abi.encode(uint256(1))
+            crossChainCallHash: _l1NestedHash1(rcL2, rcL1),
+            destinationRollupId: L2_ROLLUP_ID,
+            callCount: 0,
+            returnData: abi.encode(uint256(1))
         });
 
         entries = new ExecutionEntry[](1);

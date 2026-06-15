@@ -196,10 +196,17 @@ abstract contract DeepNestedActions {
         });
 
         ExpectedL1ToL2Call[] memory nested = new ExpectedL1ToL2Call[](2);
-        nested[0] =
-            ExpectedL1ToL2Call({crossChainCallHash: _capActionHash(cap, nestedCaller), callCount: 1, returnData: ""});
+        nested[0] = ExpectedL1ToL2Call({
+            crossChainCallHash: _capActionHash(cap, nestedCaller),
+            destinationRollupId: L2_ROLLUP_ID,
+            callCount: 1,
+            returnData: ""
+        });
         nested[1] = ExpectedL1ToL2Call({
-            crossChainCallHash: _counterActionHash(counterL2, cap), callCount: 0, returnData: abi.encode(uint256(1))
+            crossChainCallHash: _counterActionHash(counterL2, cap),
+            destinationRollupId: L2_ROLLUP_ID,
+            callCount: 0,
+            returnData: abi.encode(uint256(1))
         });
 
         entries = new ExecutionEntry[](1);

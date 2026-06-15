@@ -129,9 +129,20 @@ abstract contract EEZBase is IEEZ {
     /// @dev STATICCALL to a codeless address returns `(true, "")`; prover could pre-hash that.
     error LookupCallProxyNotDeployed(address sourceProxy);
 
+    /// @notice Error when a proxy is requested for an address on THIS manager's own network.
+    /// @dev A CrossChainProxy stands in for a REMOTE address; a same-network proxy is meaningless
+    ///      and unsafe. L1 (EEZ) forbids `MAINNET_ROLLUP_ID` (0); L2 (EEZL2) forbids its own
+    ///      `ROLLUP_ID`. Enforced in `_createCrossChainProxyInternal`, so it also blocks the
+    ///      auto-creation path during execution, not just the external entry point.
+    error SameNetworkProxy(uint256 rollupId);
+
     // ──────────────────────────────────────────────
     //  Proxy creation
     // ──────────────────────────────────────────────
+
+    /// @notice This manager's own network rollup id — a proxy may NOT be created for it.
+    /// @dev L1 (EEZ) returns `MAINNET_ROLLUP_ID` (0); L2 (EEZL2) returns its own `ROLLUP_ID`.
+    function _getRollupId() internal view virtual returns (uint256);
 
     /// @notice Creates a new CrossChainProxy for an address on another rollup
     /// @param originalAddress The address this proxy represents on the source rollup
@@ -146,6 +157,8 @@ abstract contract EEZBase is IEEZ {
         internal
         returns (address proxy)
     {
+        // A proxy stands in for a REMOTE address — never one on this manager's own network.
+        if (originalRollupId == _getRollupId()) revert SameNetworkProxy(originalRollupId);
         bytes32 salt = keccak256(abi.encodePacked(originalRollupId, originalAddress));
         proxy = address(new CrossChainProxy{salt: salt}(address(this), originalAddress, originalRollupId));
         authorizedProxies[proxy] = ProxyInfo(originalAddress, uint64(originalRollupId));

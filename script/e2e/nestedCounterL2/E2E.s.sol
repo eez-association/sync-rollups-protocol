@@ -158,7 +158,10 @@ abstract contract NestedL2Actions {
 
         ExpectedL1ToL2Call[] memory nested = new ExpectedL1ToL2Call[](1);
         nested[0] = ExpectedL1ToL2Call({
-            crossChainCallHash: _l1InnerHash(counterL2Target, capL1), callCount: 0, returnData: abi.encode(uint256(1))
+            crossChainCallHash: _l1InnerHash(counterL2Target, capL1),
+            destinationRollupId: L2_ROLLUP_ID,
+            callCount: 0,
+            returnData: abi.encode(uint256(1))
         });
 
         entries = new ExecutionEntry[](1);

@@ -132,6 +132,7 @@ abstract contract NestedCallRevertActions {
         nested = new ExpectedLookup[](1);
         nested[0] = ExpectedLookup({
             crossChainCallHash: _innerActionHash(counterL2, scap),
+            destinationRollupId: L2_ROLLUP_ID,
             returnData: bytes("inner reverts"),
             failed: true,
             l2ToL1CallNumber: 1,

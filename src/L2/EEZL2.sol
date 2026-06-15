@@ -169,6 +169,11 @@ contract EEZL2 is EEZBase {
         return _currentIncomingCall != 0;
     }
 
+    /// @notice This L2's own network — `createCrossChainProxy` may not proxy a local address.
+    function _getRollupId() internal view override returns (uint256) {
+        return ROLLUP_ID;
+    }
+
     // ──────────────────────────────────────────────
     //  Execution entry points
     // ──────────────────────────────────────────────

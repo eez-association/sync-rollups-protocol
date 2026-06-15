@@ -707,7 +707,7 @@ contract EEZTest is Base {
         });
 
         ExpectedL1ToL2Call[] memory nested = new ExpectedL1ToL2Call[](1);
-        nested[0] = ExpectedL1ToL2Call({crossChainCallHash: nestedHash, callCount: 0, returnData: ""});
+        nested[0] = ExpectedL1ToL2Call({crossChainCallHash: nestedHash, destinationRollupId: rid, callCount: 0, returnData: ""});
 
         bytes32 h = bytes32(0);
         h = _hCallBegin(h, 1);
@@ -1194,6 +1194,7 @@ contract EEZTest is Base {
         ExpectedLookup[] memory lookups = new ExpectedLookup[](1);
         lookups[0] = ExpectedLookup({
             crossChainCallHash: innerHash,
+            destinationRollupId: rid,
             returnData: bytes("inner reverts"),
             failed: true,
             l2ToL1CallNumber: 1,
@@ -1257,6 +1258,7 @@ contract EEZTest is Base {
         ExpectedLookup[] memory lookups = new ExpectedLookup[](1);
         lookups[0] = ExpectedLookup({
             crossChainCallHash: innerHash,
+            destinationRollupId: rid,
             returnData: bytes("inner reverts"),
             failed: true,
             l2ToL1CallNumber: 1,
